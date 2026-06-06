@@ -275,10 +275,10 @@ offset  size  meaning
 The RF side stays the same across modes. Only USB enumeration changes.
 
 There are three switchable modes (`0=Steam 1=Xbox 2=Switch`). Steam mode is a CDC + WebUSB composite;
-Xbox and Switch are **clean, non-composite, single-function** devices — the auto-added CDC/WebUSB
+Xbox and Switch are **clean controller-only** devices — the auto-added CDC/WebUSB
 interfaces are torn down (`clearConfiguration`) and `bcdUSB` stays `0x0200` (no USB-2.1 BOS). This is
-required because Windows' `xusb` driver matches `045E:028E` at the device level (a composite hides the
-gamepad behind an `MI_xx`) and a real Switch console rejects composite devices. Every boot/mode-switch
+required because Windows' `xusb` driver expects the Xbox 360 controller on the primary device/interface,
+and a real Switch console rejects composite devices. Every boot/mode-switch
 does a `detach -> rebuild -> attach` so the host re-reads the descriptor cleanly.
 
 ### 9.1 Steam mode
@@ -295,7 +295,7 @@ does a `detach -> rebuild -> attach` so the host re-reads the descriptor cleanly
 ### 9.2 Xbox mode
 
 - VID:PID `045E:028E`, clean device (no CDC/WebUSB)
-- Custom XInput-compatible vendor interface on `MI_00` + a HID mouse on `MI_01` (right-pad emulation)
+- Custom XInput-compatible vendor interface on `MI_00` + HID boot mouse on `MI_01` (right-pad emulation)
 - `0x45` is converted into a 20-byte XInput report
 
 ### 9.3 Switch mode

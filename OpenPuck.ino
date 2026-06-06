@@ -7,8 +7,8 @@
 //
 // USB presentations: Steam = the genuine 4-slot Valve puck (28DE:1304) with the feature-report command
 // channel (0x83/0xAE/0xB4/0xA3/0xA2/0xAD); desktop keyboard+mouse "lizard" is automatic when Steam is
-// closed. Xbox = a clean XInput controller (045E:028E) + right-pad mouse. Switch = a HORIPAD pad
-// (0F0D:0092). Xbox/Switch are non-composite (no CDC/WebUSB) so strict hosts bind them.
+// closed. Xbox = a clean XInput controller (045E:028E) + right-pad mouse. Switch = a HORIPAD pad (0F0D:0092).
+// Xbox/Switch omit CDC/WebUSB so strict hosts bind them without vendor/config side effects.
 //
 // Protocol reference: docs/PROTOCOL.md.  Bond record = [8 uuid][16 serial].
 
@@ -61,7 +61,7 @@ static const uint8_t PUCK_HID_DESC[] = {
 #define NSLOT 4
 Adafruit_USBD_HID hid[NSLOT];
 // XBOX MODE = a MUTUALLY-EXCLUSIVE USB presentation: the device enumerates as EITHER the 4 puck slot
-// interfaces (Steam mode) OR a standard gamepad + a mouse (Xbox mode) — never both. The mode is persisted to
+// interfaces (Steam mode) OR an XInput controller + a mouse (Xbox mode) — never both. The mode is persisted to
 // flash and a button combo (back4+X -> xbox, back4+A -> steam) saves it and reboots, so each boot enumerates
 // the right interface set. RF (beacon/poll/bonds) is identical in both modes; only the USB side differs.
 static const uint8_t MOUSE_HID_DESC[] = { TUD_HID_REPORT_DESC_MOUSE() };
@@ -74,7 +74,7 @@ static bool    g_xbox = false;   // == (g_usbMode != 0); kept for the existing p
 // last selected mode across reboots.
 static bool    g_persistMode = false;   // false (default) = always boot Steam; true = boot into last mode
 static uint8_t g_bootMode = 0xFF;       // one-shot: boot into this mode once then clear (used when !persistMode + explicit switch)
-volatile uint8_t g_rumble = 0;   // Xbox-mode rumble strength from the host's XInput OUT packet (0=off); drives the haptic relay
+volatile uint8_t g_rumble = 0;   // legacy XInput rumble strength from the host's OUT packet (0=off); drives the haptic relay when the XInput descriptor is used
 volatile unsigned long g_rumbleMs = 0;   // millis of last rumble OUT packet (declared here — used by xi_xfer above the watchdog block); stuck-rumble watchdog
 // persisted, runtime-tunable config (Cfg struct + load/saveCfg below; CDC M/F/D/W/B + WebUSB set these):
 static int     g_mDiv = 64, g_mFric = 94, g_padSmooth = 35;  // xbox mouse sens/friction%, steam pad smoothing%
@@ -201,8 +201,10 @@ static volatile uint8_t g_testHaptic = 0;   // 't<n>' injects n test haptics (ou
 // can likewise latch on the controller if Steam's stop relay is lost. We auto-release on host silence.
 static unsigned long g_haptic82Ms = 0;            // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
 static bool          g_haptic82On = false;        // a non-zero 0x82 haptic is currently active (awaiting host stop)
+static unsigned long g_hapticBlockUntil = 0;        // drop Steam haptics briefly during reconnect settle
 #define RUMBLE_STUCK_MS   2500u   // Xbox: release a held rumble if no OUT packet refreshes it for this long (covers a lost stop without cutting normal short rumbles)
-#define HAPTIC_QUIET_MS    300u   // Steam: if 0x82 haptics go silent this long after being active, send an explicit off (glide stream is ~25ms-spaced, so 300ms silence = really stopped)
+#define HAPTIC_QUIET_MS    300u   // Steam: after this much host silence, consider the current 0x82 haptic stream inactive
+#define HAPTIC_RECONNECT_BLOCK_MS 1500u
 // Seamless lizard (Steam mode): exactly like the real puck — when Steam is running it forwards the gamepad
 // report 0x45; when Steam is closed it drives mouse(0x40)+keyboard(0x41) on the SAME puck interface. This is
 // a PURELY USB-SIDE decision — it changes nothing about the RF poll or the host->controller relay, so the
@@ -269,14 +271,34 @@ static void loadBonds() {
   f.close();
 }
 
+static bool hapticLinkUp(){
+  return g_connSlot>=0 && (millis()-g_connReplyMs) < 300;
+}
+static bool haptic82Blocked(){
+  return !hapticLinkUp() || (g_hapticBlockUntil && (int32_t)(millis()-g_hapticBlockUntil) < 0);
+}
+static bool haptic82PayloadOn(const uint8_t* p, uint16_t n){
+  if(n<3) return false;
+  for(uint16_t i=2;i<n;i++) if(p[i]) return true;   // observed form is [01 01 gain], but treat any trailing non-zero as active
+  return false;
+}
+static void haptic82HostReport(const uint8_t* p, uint16_t n){
+  if(n<3) return;
+  g_haptic82Ms = millis();
+  g_haptic82On = haptic82PayloadOn(p,n);
+}
+
 // ---- command channel; `slot` is the interface index (interface N == bond slot N) ----
 static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t const *b, uint16_t n) {
   if (type == HID_REPORT_TYPE_OUTPUT) {   // Steam haptic/LED OUTPUT reports 0x80-0x89 -> relay to controller
     if (rid >= 0x80 && rid <= 0x89 && n >= 1) {                 // wrap as a SET sub-TLV like the report-01 path
-      uint8_t m = n > (uint16_t)(sizeof g_relayBuf - 2) ? (sizeof g_relayBuf - 2) : n;
-      g_relayBuf[0] = rid; g_relayBuf[1] = m; memcpy(g_relayBuf + 2, b, m);
-      g_relayN = m + 2; g_relayPend = true;
-      if (rid == 0x82) { g_haptic82Ms = millis(); g_haptic82On = (n >= 3 && b[2] != 0); }  // track on/off for the stuck-haptic watchdog
+      bool haptic82 = (rid == 0x82);
+      if (!haptic82 || !haptic82Blocked()) {
+        uint8_t m = n > (uint16_t)(sizeof g_relayBuf - 2) ? (sizeof g_relayBuf - 2) : n;
+        g_relayBuf[0] = rid; g_relayBuf[1] = m; memcpy(g_relayBuf + 2, b, m);
+        g_relayN = m + 2; g_relayPend = true;
+      }
+      if (haptic82) haptic82HostReport(b, n);  // track on/off for the stuck-haptic watchdog
     }
     if (Serial.availableForWrite() > 80) {                      // log so we can see what Steam actually sends (e.g. glide haptics)
       Serial.printf("# OUT if%d rid=%02X n=%u:", slot, rid, n);
@@ -291,8 +313,12 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
   const uint8_t *pl = b + 2; uint16_t pln = (n >= 2) ? n - 2 : 0;
   if (cmd == 0x87) g_steamAliveMs = millis();   // Steam's settings/lizard-off heartbeat (~every 3s) -> keep forwarding gamepad, suppress auto-lizard
   if (rid == 1 && n >= 2) {   // report 0x01 = raw passthrough -> queue for RF relay to the controller
-    uint16_t m = n > sizeof g_relayBuf ? sizeof g_relayBuf : n;
-    memcpy(g_relayBuf, b, m); g_relayN = m; g_relayPend = true;
+    bool haptic82 = (cmd == 0x82 && len <= pln);
+    if (!haptic82 || !haptic82Blocked()) {
+      uint16_t m = n > sizeof g_relayBuf ? sizeof g_relayBuf : n;
+      memcpy(g_relayBuf, b, m); g_relayN = m; g_relayPend = true;
+    }
+    if (haptic82) haptic82HostReport(pl, len);  // Steam can send haptics through feature passthrough too
   }
   if (Serial.availableForWrite() > 80) {   // log host feature writes (non-blocking)
     Serial.printf("# SET if%d rid=%02X cmd=%02X len=%u:", slot, rid, cmd, len);
@@ -724,7 +750,7 @@ static void smoothPad(uint8_t* rep){     // rep = report 0x45; smooth LPad(@18/2
     int16_t ox=(int16_t)rsx,oy=(int16_t)rsy; rep[24]=ox;rep[25]=ox>>8;rep[26]=oy;rep[27]=oy>>8; }
   rpt=rt;
 }
-// button code (g_back[], g_abSwap targets) -> XInput bit. 0=none 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=Start 11=Guide
+// button code (g_back[], g_abSwap targets) -> legacy XInput bit. 0=none 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=Start 11=Guide
 static uint16_t codeToXB(uint8_t c){
   switch(c){ case 1:return XB_A; case 2:return XB_B; case 3:return XB_X; case 4:return XB_Y;
     case 5:return XB_LB; case 6:return XB_RB; case 7:return XB_L3; case 8:return XB_R3;
@@ -751,8 +777,7 @@ static void rfXboxGamepad(const uint8_t* r){
 // as Lizard's right pad (velocity injected from pad deltas, friction decay, sub-pixel carry). This is purely
 // a USB-side translation of the received 0x45 report — it touches NOTHING about the RF poll or relay, so the
 // controller behaves exactly as it does for the bare gamepad. RPad click = left button, LPad click = right.
-// (The earlier "mouse vs controller race" was actually the CDC composite, now fixed: Xbox drops CDC/WebUSB,
-//  so the only interfaces are XInput (MI_00) + mouse (MI_01).)
+// Xbox drops CDC/WebUSB, so the only active USB interfaces are XInput (MI_00) + boot mouse (MI_01).
 static void rfXboxMouse(const uint8_t* r){
   uint32_t b=btnsOf(r);
   static int prx=0,pry=0; static bool prt=false; static float vx=0,vy=0,rmx=0,rmy=0; static uint8_t pmb=0;
@@ -1278,21 +1303,20 @@ void setup() {
   InternalFS.begin();
   loadCfg(); g_xbox = (g_usbMode != 0);   // load persisted config + decide USB presentation BEFORE registering interfaces
 
-  // ---- CLEAN, NON-COMPOSITE presentation for Xbox + Switch ----
+  // ---- CLEAN presentation for Xbox + Switch ----
   // The Adafruit core auto-adds a CDC (Serial) interface at startup, making every device a CDC composite
-  // (bDeviceClass=0xEF/IAD). That breaks the two real-controller personalities:
+  // (bDeviceClass=0xEF/IAD). That breaks the clean controller personalities:
   //   * XBOX: Windows' xusb (Xbox 360) driver matches 045E:028E at the DEVICE level. In a composite the
-  //     gamepad is interface MI_02 and xusb's INF never matches it -> the controller never appears. (Dropping
-  //     only the mouse earlier left the device composite, so it stayed broken on every host.)
+  //     gamepad must stay MI_00 and the extra mouse must be a plain boot mouse interface.
   //   * SWITCH: a real console rejects composite devices outright; it accepts only a bare HID gamepad.
-  // Fix: tear the auto CDC composite down and rebuild a single-interface device. clearConfiguration() also
+  // Fix: tear the auto CDC composite down and rebuild only the intended controller interfaces. clearConfiguration() also
   // resets bDeviceClass to 0x00 (single function). We deliberately KEEP bcdUSB at 0x0200 (no WebUSB / USB 2.1)
   // so the host never requests the WebUSB BOS — whose MS-OS-2.0 blob would otherwise tell Windows to bind
   // WinUSB to interface 0 (our gamepad). detach()/attach() forces the host to re-read the rebuilt descriptor.
   // Force a CLEAN re-enumeration on every boot / mode-switch: detach FIRST so the host drops the previous
   // identity, rebuild the descriptor, then re-attach (at the end of setup). This is done in ALL modes, not
   // just the clean ones: switching Xbox->Steam while Steam holds the device open could otherwise leave the
-  // host caching the old 045E:028E device, so the puck sometimes failed to enumerate. The detach gives the OS
+  // host caching the old controller identity, so the puck sometimes failed to enumerate. The detach gives the OS
   // an unambiguous disconnect to release its handles before the new descriptor comes up.
   const bool cleanDevice = (g_usbMode == 1 || g_usbMode == 2);
   USBDevice.detach(); delay(30);
@@ -1303,13 +1327,15 @@ void setup() {
   // identity. Steam keeps the exact unit serial (its pairing identity); the others get a 1-char suffix.
   if (g_usbMode == 0) { USBDevice.setSerialDescriptor(g_unit); }
   else { snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c", g_unit, g_usbMode==1?'X':'N'); USBDevice.setSerialDescriptor(g_usbSerial); }
-  if (g_usbMode == 1) {                // XBOX presentation: a LONE XInput vendor interface == a real wired Xbox 360 pad
+  if (g_usbMode == 1) {                // XBOX presentation: XInput vendor interface + HID boot mouse
     USBDevice.setID(0x045E, 0x028E);   // device-level 045E:028E match -> Windows xusb / SDL / Linux xpad all bind it
     USBDevice.setVersion(0x0200); USBDevice.setDeviceVersion(0x0114);   // bcdUSB 0x0200 = no BOS request (clean, no WinUSB fight)
     USBDevice.setManufacturerDescriptor("Microsoft");
     USBDevice.setProductDescriptor("Controller");
     g_xinput.setStringDescriptor("Controller"); g_xinput.begin();   // XInput vendor interface (FF/5D/01) -> MI_00
-    g_mouse.setReportDescriptor(MOUSE_HID_DESC, sizeof MOUSE_HID_DESC); g_mouse.setPollInterval(1); g_mouse.begin();   // right-pad mouse -> MI_01 (no CDC/WebUSB, so XInput stays MI_00)
+    g_mouse.setStringDescriptor("OpenPuck Mouse");
+    g_mouse.setBootProtocol(HID_ITF_PROTOCOL_MOUSE);
+    g_mouse.setReportDescriptor(MOUSE_HID_DESC, sizeof MOUSE_HID_DESC); g_mouse.setPollInterval(1); g_mouse.begin();
   } else if (g_usbMode == 2) {         // SWITCH presentation: a LONE HID HORIPAD/Pokkén pad (console-compatible)
     USBDevice.setID(0x0F0D, 0x0092);   // HORI Pokkén Tournament Pro Pad (whitelisted by a real Switch console)
     USBDevice.setVersion(0x0200); USBDevice.setDeviceVersion(0x0200);
@@ -1371,8 +1397,13 @@ void loop() {
     if (millis()-g_lastDisc >= (connNow ? 200u : 0u)) { g_lastDisc=millis(); g_rfCh=2; for (int s=0;s<NSLOT;s++) rfHostFrameOnce(s); }
   }
   if (g_connOn && millis()-g_connCooldown > 2500) { rfConnStep(); }            // connected-mode: poll controller, read input
-  // Xbox-mode rumble -> relay the haptic (0x82 [01 01 gain]) to the controller while the host commands it,
-  // re-queued ~40/s like Steam's glide haptic so it sustains. gain scaled by the XInput motor strength.
+  { static bool wasHapticLinkUp=false;
+    bool up=hapticLinkUp();
+    if(up && !wasHapticLinkUp) g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // reconnect hygiene: don't replay Steam's stale startup haptics
+    wasHapticLinkUp=up;
+  }
+  // Legacy XInput rumble -> relay the haptic (0x82 [01 01 gain]) to the controller while the host commands it,
+  // re-queued ~40/s like Steam's glide haptic so it sustains. Not active in the current HID Xbox presentation.
   if (g_usbMode==1 && g_rumble && millis()-g_rumbleMs > RUMBLE_STUCK_MS) g_rumble=0;   // watchdog: lost stop packet -> release the held rumble instead of buzzing forever
   if (g_usbMode==1 && g_rumble && !g_relayPend && g_connSlot>=0) {
     static unsigned long lastRumble=0;
@@ -1381,12 +1412,9 @@ void loop() {
       g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=gain; g_relayPend=true;
     }
   }
-  // Steam-mode haptic watchdog: glide haptics are one-shot relays, but if Steam's stop is lost the controller
-  // can latch buzzing. If a 0x82 haptic was active and the host's stream has gone quiet, send one explicit off.
-  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS && !g_relayPend && g_connSlot>=0) {
-    g_haptic82On=false;
-    g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=0x00; g_relayN=5; g_relayPend=true;   // 0x82 [01 01 00] = haptic off
-  }
+  // Steam-mode haptic guard: do not synthesize haptic packets. The reconnect guard above only drops stale
+  // host 0x82 traffic until the link is stable; active-session haptics are relayed verbatim.
+  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) g_haptic82On=false;
   // QoS: if the current channel is degrading (crcfail+noRx), hop to the next clean candidate (conservative).
   if (g_qos && g_connSlot>=0 && millis()-g_qosCheckMs>=600) {
     uint16_t bad=g_qosBad; g_qosBad=0; g_qosCheckMs=millis();
