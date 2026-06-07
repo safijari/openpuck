@@ -999,6 +999,10 @@ static uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t 
             const uint8_t* rep=&rfrx[idx+2];            // report 0x45: [0x45][seq][buttons u32]...
             bool fresh=(rep[1]!=g_lastSeq); if(fresh){ g_stNew++; g_lastSeq=rep[1]; }  // genuine new report vs stale poll-repeat
             uint32_t bb=btnsOf(rep);
+            // USB remote wakeup: if the host is sleeping and the user presses any button, signal it to wake up.
+            // The host must have enabled remote wakeup (SET_FEATURE DEVICE_REMOTE_WAKEUP) for this to succeed;
+            // tud_remote_wakeup() is a no-op when not suspended, so it is always safe to call here.
+            if(fresh && bb && USBDevice.suspended()) USBDevice.remoteWakeup();
             // cache the latest decoded frame for the Switch streamer + Xbox/Steam paths
             g_swBtns=bb; g_swLX=(int16_t)s16off(rep,8); g_swLY=(int16_t)s16off(rep,10);
             g_swRX=(int16_t)s16off(rep,12); g_swRY=(int16_t)s16off(rep,14);
@@ -1407,6 +1411,9 @@ void setup() {
   // adding a vendor config interface (and the USB-2.1 BOS it forces) would re-create the exact composite that
   // stops them binding. In those modes, reconfigure over RF (back-paddle chord) or from Steam mode.
   if (g_usbMode == 0) usb_web.begin();   // no landing page -> no Chrome auto-notification
+  // Enable USB Remote Wakeup (bit 5) so the host lets us signal wake-from-sleep. Bit 7 is always required.
+  // The host OS enables device wakeup via SET_FEATURE(DEVICE_REMOTE_WAKEUP); we assert the capability here.
+  USBDevice.setConfigurationAttribute(0x80 | 0x20);  // bmAttributes: required(0x80) | remote_wakeup(0x20)
   USBDevice.attach();   // re-connect with the final descriptor (host re-reads it fresh -> deterministic enumeration)
   Serial.begin(115200);
   for (int i=0; i<300 && !USBDevice.mounted(); i++) delay(10);   // wait up to 3s for USB mount, but NEVER hang:
