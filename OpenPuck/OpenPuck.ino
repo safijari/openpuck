@@ -201,6 +201,7 @@ static volatile uint8_t g_testHaptic = 0;   // 't<n>' injects n test haptics (ou
 // can likewise latch on the controller if Steam's stop relay is lost. We auto-release on host silence.
 static unsigned long g_haptic82Ms = 0;            // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
 static bool          g_haptic82On = false;        // a non-zero 0x82 haptic is currently active (awaiting host stop)
+static volatile uint8_t g_hapticStop = 0;         // pending haptic-STOP frames to relay: the controller's haptic LATCHES until told to stop, so when the host's stop is lost over RF (or goes silent, or we reconnect) we actively send 0x82-zero a few times to kill the whine
 static unsigned long g_hapticBlockUntil = 0;        // drop Steam haptics briefly during reconnect settle
 #define RUMBLE_STUCK_MS   2500u   // Xbox: release a held rumble if no OUT packet refreshes it for this long (covers a lost stop without cutting normal short rumbles)
 #define HAPTIC_QUIET_MS    300u   // Steam: after this much host silence, consider the current 0x82 haptic stream inactive
@@ -285,7 +286,9 @@ static bool haptic82PayloadOn(const uint8_t* p, uint16_t n){
 static void haptic82HostReport(const uint8_t* p, uint16_t n){
   if(n<3) return;
   g_haptic82Ms = millis();
-  g_haptic82On = haptic82PayloadOn(p,n);
+  bool nowOn = haptic82PayloadOn(p,n);
+  if(g_haptic82On && !nowOn) g_hapticStop = 4;   // host commanded stop -> resend it a few times (one RF frame can be lost)
+  g_haptic82On = nowOn;
 }
 
 // ---- command channel; `slot` is the interface index (interface N == bond slot N) ----
@@ -1058,6 +1061,9 @@ static void rfConnStep(){
     if(!g_relayPend && g_testHaptic){                // buzz-hunt: synthesize a haptic relay (output 0x82 [01 01 F7])
       g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=0xF7; g_relayPend=true; g_testHaptic--;
     }
+    if(!g_relayPend && g_hapticStop && !g_xbox){     // kill a latched haptic: relay 0x82 [01 01 00] (zero gain = stop), a few times to beat RF loss
+      g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=0x00; g_relayPend=true; g_hapticStop--;
+    }
     if(g_relayPend){                                 // relay host cmd: [op][len][sub][rid][payload] (op/sub tunable for the buzz hunt)
       uint8_t rid=g_relayBuf[0], rl=g_relayBuf[1]; if(rl>18)rl=18;
       uint8_t p[24]; p[0]=g_relayOp; p[1]=(uint8_t)(1+rl); p[2]=g_relaySub; p[3]=rid;   // len = sub-id + payload bytes
@@ -1430,7 +1436,7 @@ void loop() {
   if (g_connOn && millis()-g_connCooldown > 2500) { rfConnStep(); }            // connected-mode: poll controller, read input
   { static bool wasHapticLinkUp=false;
     bool up=hapticLinkUp();
-    if(up && !wasHapticLinkUp) g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // reconnect hygiene: don't replay Steam's stale startup haptics
+    if(up && !wasHapticLinkUp){ g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS; g_hapticStop=4; }   // reconnect: drop Steam's stale startup haptics AND clear any haptic that latched on the controller before/across the switch (the "whine until Steam button" on entering Steam mode)
     wasHapticLinkUp=up;
   }
   // Legacy XInput rumble -> relay the haptic (0x82 [01 01 gain]) to the controller while the host commands it,
@@ -1445,7 +1451,7 @@ void loop() {
   }
   // Steam-mode haptic guard: do not synthesize haptic packets. The reconnect guard above only drops stale
   // host 0x82 traffic until the link is stable; active-session haptics are relayed verbatim.
-  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) g_haptic82On=false;
+  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) { g_haptic82On=false; g_hapticStop=4; }  // host went silent mid-haptic (its stop was lost / never sent) -> actively stop the latched buzz
   // QoS: if the current channel is degrading (crcfail+noRx), hop to the next clean candidate (conservative).
   if (g_qos && g_connSlot>=0 && millis()-g_qosCheckMs>=600) {
     uint16_t bad=g_qosBad; g_qosBad=0; g_qosCheckMs=millis();
