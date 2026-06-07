@@ -28,7 +28,7 @@ brew install arduino-cli
 
 Use your package manager if it ships a recent `arduino-cli`, or download the release archive from Arduino and place `arduino-cli` on `PATH`.
 
-### Windows
+### Windows (CLI)
 
 Install the official Arduino CLI zip or MSI, then ensure `arduino-cli.exe` is on `PATH`.
 
@@ -51,6 +51,9 @@ board_manager:
 ```
 
 Then rerun `arduino-cli core update-index`.
+
+If uing the GUI, go to File -> Preferences and paste the board manager URL above into the "Additional Boards Manager URLs" dialog.
+The go to Tools -> Boards -> Boards Manager, search for nrf and install the Adafruit nRF52 module.
 
 ## 4. Build the firmware
 
