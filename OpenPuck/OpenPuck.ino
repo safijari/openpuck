@@ -978,7 +978,9 @@ static uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t 
         while(idx+1<end){                               // mod-256 back to itself -> infinite loop -> USB hang/"crash".
           uint8_t tlen=rfrx[idx], ttype=rfrx[idx+1];    // pace with the real puck — taking only [0] halved our rate.
           if(tlen==0) break;
-          if(ttype==6 && tlen>=2 && rfrx[idx+2]==0x45){
+          // Only a FULL 0x45 report that fits entirely in rfrx: a short or late/garbled TLV must not let the
+          // decode read — or smoothPad WRITE rep[18..27] — past the RF buffer (corrupts rftx/RAM -> eventual crash).
+          if(ttype==6 && tlen>=28 && (size_t)(idx+2)+tlen<=sizeof(rfrx) && rfrx[idx+2]==0x45){
             const uint8_t* rep=&rfrx[idx+2];            // report 0x45: [0x45][seq][buttons u32]...
             bool fresh=(rep[1]!=g_lastSeq); if(fresh){ g_stNew++; g_lastSeq=rep[1]; }  // genuine new report vs stale poll-repeat
             uint32_t bb=btnsOf(rep);
@@ -1385,9 +1387,18 @@ void setup() {
   for (int i=0; i<300 && !USBDevice.mounted(); i++) delay(10);   // wait up to 3s for USB mount, but NEVER hang:
   loadBonds();                                                   // if a mode fails to enumerate, still run loop() so RF + the back-paddle mode chord keep working (can always switch back)
   Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit, g_board, g_usbMode==1?"XBOX(controller+mouse)":g_usbMode==2?"SWITCH(pro controller)":"STEAM(puck; auto-lizard when Steam closed)");
+  // Hardware watchdog: if loop() ever stops feeding it (a wedged radio busy-wait, a HardFault spin, a blocked
+  // CDC write) the WDT resets the nRF52 after ~8s — re-enumerating USB and re-initialising RF on its own, so a
+  // hang no longer needs a physical replug. RUN keeps it counting in sleep; PAUSE freezes it under a debugger.
+  // 8s is far above any legitimate stall (flash writes are tens of ms) and leaves the bootloader room on DFU.
+  NRF_WDT->CONFIG  = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) | (WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos);
+  NRF_WDT->CRV     = 8UL * 32768UL - 1;     // timeout in 32.768 kHz ticks (~8 s)
+  NRF_WDT->RREN    = WDT_RREN_RR0_Msk;       // arm reload register 0
+  NRF_WDT->TASKS_START = 1;
 }
 
 void loop() {
+  NRF_WDT->RR[0] = WDT_RR_RR_Reload;   // feed the watchdog each loop; if we ever stop, the ~8s WDT auto-resets us
   if (g_dirty) { g_dirty = false; saveBonds(); }
   webusbPoll();
   swStream();        // SWITCH mode: stream 0x30 input reports once the host enabled mode 0x30
