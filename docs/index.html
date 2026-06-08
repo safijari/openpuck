@@ -51,16 +51,28 @@
   <div id="panel" class="hide">
     <div class="card">
       <h2>USB mode</h2>
-      <div class="modes">
+      <div class="modes" style="flex-wrap:wrap">
         <button data-mode="0" class="modebtn">Steam (puck)</button>
         <button data-mode="1" class="modebtn">Xbox 360</button>
-        <button data-mode="2" class="modebtn">Switch Pro</button>
+        <button data-mode="2" class="modebtn">Switch (HORIPAD)</button>
+        <button data-mode="3" class="modebtn">Lizard (always)</button>
+        <button data-mode="4" class="modebtn">Switch Pro + gyro</button>
+        <button data-mode="5" class="modebtn">PS5 DualSense</button>
+        <button data-mode="6" class="modebtn">HID gyro (DS4)</button>
       </div>
-      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). The RF link reconnects automatically. Desktop keyboard+mouse (lizard) is automatic in Steam mode whenever Steam is closed — no separate mode.</p>
+      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only.</p>
       <div class="row"><label>Persist last mode</label>
         <button id="persistMode">off</button>
         <span class="note" style="flex:1">Off (default): every restart / fresh reconnect boots into Steam mode. On: remembers the last mode you selected.</span>
       </div>
+    </div>
+
+    <div class="card">
+      <h2>Back4 + face button chords</h2>
+      <p class="note" style="margin-top:0">Hold all four back paddles (L4+R4+L5+R5) plus a face button to switch mode without the WebUI. <strong>A is always Steam.</strong> B / X / Y are configurable below (defaults: B=Lizard, X=Xbox, Y=Switch HORIPAD).</p>
+      <div class="row"><label>B + back4 →</label><select class="chord" data-i="0"></select></div>
+      <div class="row"><label>X + back4 →</label><select class="chord" data-i="1"></select></div>
+      <div class="row"><label>Y + back4 →</label><select class="chord" data-i="2"></select></div>
     </div>
 
     <div class="card">
@@ -76,7 +88,7 @@
     <div class="card">
       <h2>RF poll rate</h2>
       <div class="row"><label>Poll interval</label><input type="range" id="pollUs" min="1" max="120" step="1"><span class="val" id="pollUsV"></span></div>
-      <p class="note">Microseconds between RF polls (×100). Lower = poll harder = more fresh reports/s (peaks ~60/s near 700&nbsp;µs). Too aggressive can collapse the reply rate during heavy trackpad use — watch the “New reports” stat and trackpad feel as you tune.</p>
+      <p class="note">Microseconds between RF polls (×100). Default 4000&nbsp;µs (250&nbsp;Hz) matches the controller. Lower polls harder (more RF traffic, diminishing returns); higher adds latency. Watch “New reports” and trackpad feel as you tune.</p>
     </div>
 
     <div class="card" id="mouseCard">
@@ -110,32 +122,37 @@
 </div>
 
 <script>
-const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch Pro"];
+const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)"];
+const CHORD_FIELD = [17, 18, 19];
 const BTN_CODES = [[0,"— none —"],[1,"A"],[2,"B"],[3,"X"],[4,"Y"],[5,"LB"],[6,"RB"],[7,"L3"],[8,"R3"],[9,"Back"],[10,"Start"],[11,"Guide"]];
 let dev=null, epIn=0, epOut=0, ifNum=0, polling=false;
 const $ = s=>document.querySelector(s);
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
 
-// populate back-paddle dropdowns
+// populate back-paddle + chord dropdowns
 for(const sel of document.querySelectorAll("select.back")){
   for(const [c,n] of BTN_CODES){ const o=document.createElement("option"); o.value=c; o.textContent=n; sel.appendChild(o); }
+}
+for(const sel of document.querySelectorAll("select.chord")){
+  MODE_NAMES.forEach((n,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
 }
 
 async function connect(){
   try{
-    dev = await navigator.usb.requestDevice({filters:[{vendorId:0x28DE},{vendorId:0x045E},{vendorId:0x057E},{vendorId:0x0F0D}]});
+    dev = await navigator.usb.requestDevice({filters:[{vendorId:0x28DE},{vendorId:0x045E},{vendorId:0x057E},{vendorId:0x0F0D},{vendorId:0x054C}]});
     await dev.open();
     if(dev.configuration===null) await dev.selectConfiguration(1);
-    // find the WebUSB vendor interface: class 0xFF with one bulk-IN + one bulk-OUT (XInput is 0xFF but interrupt; CDC data is 0x0A)
+    // WebUSB = vendor class 0xFF with bulk IN + bulk OUT (skip XInput 0xFF/5D/01 which uses interrupt only)
     let found=null;
     for(const itf of dev.configuration.interfaces){
       const a=itf.alternate;
       if(a.interfaceClass!==0xFF) continue;
+      if(a.interfaceSubClass===0x5D) continue;   // Xbox XInput vendor
       let bin=0,bout=0;
       for(const e of a.endpoints){ if(e.type==="bulk"){ if(e.direction==="in")bin=e.endpointNumber; else bout=e.endpointNumber; } }
       if(bin&&bout){ found={ifNum:itf.interfaceNumber, epIn:bin, epOut:bout}; break; }
     }
-    if(!found){ log("no WebUSB interface found on this device"); return; }
+    if(!found){ log("no WebUSB bulk vendor interface — reflash firmware with WebUSB enabled, or another app may be holding the device"); return; }
     ifNum=found.ifNum; epIn=found.epIn; epOut=found.epOut;
     await dev.claimInterface(ifNum);
     // WebUSB "connect" handshake: Adafruit_USBD_WebUSB only enables write() / connected()
@@ -178,9 +195,10 @@ function applyBlob(p){
   const mode=p[1], mDiv=p[2], mFric=p[3], padSmooth=p[4], abSwap=p[5];
   const back=[p[6],p[7],p[8],p[9]], slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const pollU100=p[14], newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
+  const chord=(p.length>25)?[p[23],p[24],p[25]]:[3,1,2];   // v2 blob: chordBtn after qos/persist
   // mode buttons
   for(const b of document.querySelectorAll(".modebtn")) b.classList.toggle("active", +b.dataset.mode===mode);
-  $("#mouseCard").style.opacity = mode===1?1:0.5;
+  $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
   $("#steamCard").style.opacity = mode===0?1:0.5;
   // status
   $("#stLink").innerHTML = up? '<span class="pill up">up</span>' : '<span class="pill dn">down</span>';
@@ -193,6 +211,7 @@ function applyBlob(p){
   $("#abSwap").textContent = abSwap? "on":"off"; $("#abSwap").classList.toggle("active",!!abSwap);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
   for(const sel of document.querySelectorAll("select.back")){ if(document.activeElement!==sel) sel.value=back[+sel.dataset.i]; }
+  for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
 }
 function fmtSlider(id,v){ return id==="pollUs" ? (v*100)+"µs" : (""+v); }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
@@ -222,6 +241,9 @@ for(const id of ["mDiv","mFric","padSmooth","pollUs"]){
 }
 for(const sel of document.querySelectorAll("select.back")){
   sel.addEventListener("change", ()=>setField(5 + +sel.dataset.i, +sel.value));
+}
+for(const sel of document.querySelectorAll("select.chord")){
+  sel.addEventListener("change", ()=>setField(CHORD_FIELD[+sel.dataset.i], +sel.value));
 }
 for(const b of document.querySelectorAll(".modebtn")){
   b.onclick=()=>{ if(confirm("Switch to "+MODE_NAMES[+b.dataset.mode]+"? The copycat will reboot.")){ send([0x03, +b.dataset.mode]); log("mode switch requested — device will reboot"); } };

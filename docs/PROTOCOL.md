@@ -302,7 +302,7 @@ does a `detach -> rebuild -> attach` so the host re-reads the descriptor cleanly
 
 - VID:PID `0F0D:0092` (HORI Pokkén Tournament Pro Pad), clean device (no CDC/WebUSB)
 - Single HID interface with the canonical HORIPAD descriptor (interrupt IN + OUT endpoints), accepted by
-  a real Switch console with no handshake; an 8-byte report is streamed at ~125 Hz
+  a real Switch console with no handshake; an 8-byte report is streamed at ~250 Hz
 
 ## 10. WebUSB control channel
 
@@ -348,7 +348,7 @@ Status blob payload:
 
 ## 11. Timing notes
 
-- Default poll interval: `800` microseconds
+- Default poll interval: `4000` microseconds (250 Hz, matches SC2 report rate)
 - Default RX window: `1200` microseconds
 - Discovery beacon continues on channel 2 even after a connected session exists
 - Connected session can be moved to a cleaner channel such as 18 or 52

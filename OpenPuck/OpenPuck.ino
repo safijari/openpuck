@@ -5,10 +5,10 @@
 // personalities. The real puck exposes four separate HID control interfaces; interface N owns bond
 // slot N, so this sketch does the same. Build with -DCFG_TUD_HID=4 (the Adafruit nRF port defaults to 2).
 //
-// USB presentations: Steam = the genuine 4-slot Valve puck (28DE:1304) with the feature-report command
-// channel (0x83/0xAE/0xB4/0xA3/0xA2/0xAD); desktop keyboard+mouse "lizard" is automatic when Steam is
-// closed. Xbox = a clean XInput controller (045E:028E) + right-pad mouse. Switch = a HORIPAD pad (0F0D:0092).
-// Xbox/Switch omit CDC/WebUSB so strict hosts bind them without vendor/config side effects.
+// USB presentations (7 modes): Steam puck (28DE:1304) with auto-lizard when Steam closes; Lizard = always
+// kb/mouse on the puck; Xbox = XInput+mouse; Switch HORIPAD (0F0D:0092); Switch Pro (057E:2009)+gyro;
+// PS5 DualSense (054C:0CE6)+gyro+split trackpad; HID gyro = DS4-layout (054C:05C4) for motion-aware games.
+// Every mode exposes a WebUSB config channel (USB 2.1 + BOS). Clean controller modes omit CDC Serial.
 //
 // Protocol reference: docs/PROTOCOL.md.  Bond record = [8 uuid][16 serial].
 
@@ -59,6 +59,7 @@ static const uint8_t PUCK_HID_DESC[] = {
 };
 
 #define NSLOT 4
+static uint8_t g_usbCfgDesc[512];   // puck composite (4 HID + WebUSB) exceeds the default 256 B config buffer
 Adafruit_USBD_HID hid[NSLOT];
 // XBOX MODE = a MUTUALLY-EXCLUSIVE USB presentation: the device enumerates as EITHER the 4 puck slot
 // interfaces (Steam mode) OR an XInput controller + a mouse (Xbox mode) — never both. The mode is persisted to
@@ -66,8 +67,20 @@ Adafruit_USBD_HID hid[NSLOT];
 // the right interface set. RF (beacon/poll/bonds) is identical in both modes; only the USB side differs.
 static const uint8_t MOUSE_HID_DESC[] = { TUD_HID_REPORT_DESC_MOUSE() };
 Adafruit_USBD_HID g_mouse;   // Xbox-mode mouse interface (right trackpad). Steam-mode lizard reuses the puck's own 0x40 mouse report instead.
-static uint8_t g_usbMode = 0;   // 0=STEAM(puck; auto-lizard when Steam closed) 1=XBOX(xinput+mouse) 2=SWITCH(HORIPAD); loaded from flash at boot
-static bool    g_xbox = false;   // == (g_usbMode != 0); kept for the existing puck-vs-other checks (true for xbox/switch)
+// USB presentation modes (g_usbMode). RF poll/relay is identical across all; only USB enumeration + report mapping differs.
+#define MODE_STEAM   0   // Valve puck; auto-lizard when Steam closed
+#define MODE_XBOX    1   // XInput + right-pad mouse
+#define MODE_SW_HORI 2   // HORIPAD (Switch console whitelist)
+#define MODE_LIZARD  3   // Puck HID; always keyboard+mouse (ignores Steam heartbeat)
+#define MODE_SW_PRO  4   // Nintendo Switch Pro Controller (057E:2009) + gyro
+#define MODE_PS5     5   // Sony DualSense (054C:0CE6) + gyro + split trackpad
+#define MODE_HIDGYRO 6   // DS4-layout generic HID gamepad + gyro (Fortnite-friendly)
+#define MODE_MAX     6
+static uint8_t g_usbMode = 0;   // loaded from flash at boot
+static bool    g_xbox = false;   // true for all non-puck presentations (not STEAM/LIZARD)
+static uint8_t g_chordBtn[3] = { MODE_LIZARD, MODE_XBOX, MODE_SW_HORI };   // back4+B/X/Y -> these modes (A always STEAM)
+static inline bool modeIsPuck(uint8_t m){ return m==MODE_STEAM || m==MODE_LIZARD; }
+static inline bool modeValid(uint8_t m){ return m<=MODE_MAX; }
 // Mode persistence policy: by DEFAULT every fresh power-on/reconnect lands in STEAM mode (0). An explicit
 // mode switch still works for the session via a ONE-SHOT bootMode (honored once, then cleared, so the next
 // cold boot reverts to Steam). The WebUI "persist last mode" toggle (g_persistMode) instead remembers the
@@ -80,8 +93,10 @@ volatile unsigned long g_rumbleMs = 0;   // millis of last rumble OUT packet (de
 static int     g_mDiv = 64, g_mFric = 94, g_padSmooth = 35;  // xbox mouse sens/friction%, steam pad smoothing%
 static uint8_t g_abSwap = 0;                 // 1 = swap A/B and X/Y (Nintendo face-button layout)
 static uint8_t g_back[4] = {5,6,7,8};        // back paddles L4,R4,L5,R5 -> button codes (see codeToXB; 5=LB 6=RB 7=L3 8=R3)
-static uint32_t g_pollUs = 800;              // RF poll cadence (us). LOCKED default: 800us is the measured peak (~706 polls/s -> ~400 new/s with PID cycling; below 800 = RX-turnaround-limited, above 800 declines). NOT persisted — WebUSB/CDC 'U' tune it for the session only, reverts to 800 on reboot.
-                                             // but too-aggressive over-polls -> reply collapse during trackpad. Live-tunable.
+#define POLL_US_DEFAULT 4000u                 // 250 Hz — matches SC2 input report rate (1000000/250 = 4000 us)
+#define USB_STREAM_MS   4u                    // host-side HID stream cadence for translated modes (~250 Hz)
+static uint32_t g_pollUs = POLL_US_DEFAULT;   // RF poll cadence (us). NOT persisted — WebUSB/CDC 'U' tune for the session only, reverts to POLL_US_DEFAULT on reboot.
+                                             // Faster than the controller can refresh wastes airtime; slower adds latency.
 static uint32_t g_rxWin = 1200;              // poll RX-window (us): max wait for the reply. This (not pollUs) caps poll rate
                                              // (~1e6/rxWin). Shorter=more polls/s but may miss the controller's DELAYED replies
                                              // during trackpad. Tunable 'r<us>'. The reply normally arrives fast; 1200 is the worst-case wait.
@@ -215,7 +230,8 @@ static void hapLogAdd(uint8_t slot, uint8_t rid, const uint8_t* b, uint16_t n){
 static unsigned long g_hapticBlockUntil = 0;        // drop Steam haptics briefly during reconnect settle
 #define RUMBLE_STUCK_MS   2500u   // Xbox: release a held rumble if no OUT packet refreshes it for this long (covers a lost stop without cutting normal short rumbles)
 #define HAPTIC_QUIET_MS    300u   // Steam: after this much host silence, consider the current 0x82 haptic stream inactive
-#define HAPTIC_RECONNECT_BLOCK_MS 1500u
+#define HAPTIC_RECONNECT_BLOCK_MS 1500u   // drop stale host 0x82 after RF reconnect (Steam floods on attach)
+#define HAPTIC_STOP_BURST         4u      // 0x82-zero relays per event (sent at poll cadence — not loop rate)
 // Seamless lizard (Steam mode): exactly like the real puck — when Steam is running it forwards the gamepad
 // report 0x45; when Steam is closed it drives mouse(0x40)+keyboard(0x41) on the SAME puck interface. This is
 // a PURELY USB-SIDE decision — it changes nothing about the RF poll or the host->controller relay, so the
@@ -244,11 +260,12 @@ static void saveBonds() {
   }
 }
 #define CFG_FILE "/cfg.bin"
-#define CFG_MAGIC 0xC6   // bumped (added persistMode+bootMode): old cfg ignored -> clean defaults on first boot
-struct Cfg { uint8_t magic, mode, mDiv, mFric, padSmooth, abSwap, back[4], pollU100, persistMode, bootMode; };
+#define CFG_MAGIC 0xC7   // bumped (chordBtn[3]): old cfg ignored -> clean defaults on first boot
+struct Cfg { uint8_t magic, mode, mDiv, mFric, padSmooth, abSwap, back[4], pollU100, persistMode, bootMode, chordBtn[3]; };
 static void saveCfg(){
   Cfg c={CFG_MAGIC,g_usbMode,(uint8_t)g_mDiv,(uint8_t)g_mFric,(uint8_t)g_padSmooth,g_abSwap,
-         {g_back[0],g_back[1],g_back[2],g_back[3]},(uint8_t)(g_pollUs/100),(uint8_t)(g_persistMode?1:0),g_bootMode};
+         {g_back[0],g_back[1],g_back[2],g_back[3]},(uint8_t)(g_pollUs/100),(uint8_t)(g_persistMode?1:0),g_bootMode,
+         {g_chordBtn[0],g_chordBtn[1],g_chordBtn[2]}};
   InternalFS.remove(CFG_FILE); File f(InternalFS);
   if(f.open(CFG_FILE,FILE_O_WRITE)){ f.write((uint8_t*)&c,sizeof c); f.close(); }
 }
@@ -260,9 +277,11 @@ static void loadCfg(){
       g_abSwap=c.abSwap; for(int i=0;i<4;i++) g_back[i]=c.back[i];
       g_persistMode = c.persistMode?true:false;
       // boot-mode policy: a one-shot bootMode (set by an explicit switch when !persist) wins once and is then
-      // cleared; otherwise persist->last mode, else->Steam. (poll rate stays the locked 800us default — never restored.)
-      if(c.bootMode!=0xFF){ g_usbMode=(c.bootMode<=2)?c.bootMode:0; consume=true; }   // 0=Steam 1=Xbox 2=Switch (mode 3/Lizard removed; old cfgs fall back to Steam)
-      else                 g_usbMode = g_persistMode ? ((c.mode<=2)?c.mode:0) : 0;
+      // cleared; otherwise persist->last mode, else->Steam. (poll rate stays POLL_US_DEFAULT — never restored from cfg.)
+      if(c.bootMode!=0xFF){ g_usbMode=modeValid(c.bootMode)?c.bootMode:0; consume=true; }
+      else                 g_usbMode = g_persistMode ? (modeValid(c.mode)?c.mode:0) : 0;
+      static const uint8_t CHORD_DEF[3]={MODE_LIZARD,MODE_XBOX,MODE_SW_HORI};
+      for(int i=0;i<3;i++) g_chordBtn[i]=modeValid(c.chordBtn[i])?c.chordBtn[i]:CHORD_DEF[i];
     }
     f.close();
   }
@@ -288,17 +307,41 @@ static bool hapticLinkUp(){
 static bool haptic82Blocked(){
   return !hapticLinkUp() || (g_hapticBlockUntil && (int32_t)(millis()-g_hapticBlockUntil) < 0);
 }
+static bool hapticRelaySlotOk(int slot){
+  return g_connSlot>=0 && slot==g_connSlot;
+}
 static bool haptic82PayloadOn(const uint8_t* p, uint16_t n){
   if(n<3) return false;
   for(uint16_t i=2;i<n;i++) if(p[i]) return true;   // observed form is [01 01 gain], but treat any trailing non-zero as active
   return false;
 }
+static void hapticCancelPendingOn(){
+  if(g_relayPend && g_relayBuf[0]==0x82 && haptic82PayloadOn(g_relayBuf+2, g_relayBuf[1]))
+    g_relayPend = false;
+}
 static void haptic82HostReport(const uint8_t* p, uint16_t n){
   if(n<3) return;
   g_haptic82Ms = millis();
   bool nowOn = haptic82PayloadOn(p,n);
-  if(g_haptic82On && !nowOn) g_hapticStop = 4;   // host commanded stop -> resend it a few times (one RF frame can be lost)
+  if(g_haptic82On && !nowOn) g_hapticStop = HAPTIC_STOP_BURST;
   g_haptic82On = nowOn;
+}
+// Queue a pending host haptic / test-haptic / stop relay (runs inside the poll cadence — never at raw loop rate).
+static void rfConnQueueHapticRelay(){
+  if(g_relayPend) return;
+  if(g_testHaptic){
+    g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=0xF7; g_relayPend=true; g_testHaptic--;
+  } else if(g_hapticStop && !g_xbox){
+    g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=0x00; g_relayPend=true; g_hapticStop--;
+  }
+}
+static void rfConnFlushRelay(uint8_t ch){
+  if(!g_relayPend) return;
+  uint8_t rid=g_relayBuf[0], rl=g_relayBuf[1]; if(rl>18)rl=18;
+  uint8_t p[24]; p[0]=g_relayOp; p[1]=(uint8_t)(1+rl); p[2]=g_relaySub; p[3]=rid;
+  for(uint8_t i=0;i<rl;i++) p[4+i]=g_relayBuf[2+i];
+  rfConnTx(ch,0x07,p,(uint8_t)(4+rl));
+  g_relayPend=false;
 }
 
 // ---- command channel; `slot` is the interface index (interface N == bond slot N) ----
@@ -308,7 +351,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
     // expose 4 puck slots; forwarding the other 0x80-0x89 reports (LED/config), or a haptic Steam aimed at a
     // different slot, made the controller buzz at random. The real puck (4 independent slots) never does that.
     if (rid >= 0x80 && rid <= 0x89) hapLogAdd((uint8_t)slot, rid, b, n);   // capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
-    if (rid == 0x82 && n >= 1 && slot == g_connSlot) {          // wrap as a SET sub-TLV like the report-01 path
+    if (rid == 0x82 && n >= 1 && hapticRelaySlotOk(slot)) {       // wrap as a SET sub-TLV like the report-01 path
       if (!haptic82Blocked()) {
         uint8_t m = n > (uint16_t)(sizeof g_relayBuf - 2) ? (sizeof g_relayBuf - 2) : n;
         g_relayBuf[0] = rid; g_relayBuf[1] = m; memcpy(g_relayBuf + 2, b, m);
@@ -331,7 +374,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type, uint8_t con
   if (rid == 1 && n >= 2) {   // report 0x01 = raw passthrough -> queue for RF relay to the controller
     if (cmd >= 0x80 && cmd <= 0x89) hapLogAdd((uint8_t)slot, cmd, b, n);   // capture feature-passthrough haptics/LED too (rid shown = cmd; bytes start [cmd][len]...)
     bool haptic82 = (cmd == 0x82 && len <= pln);
-    if (!haptic82 || !haptic82Blocked()) {
+    bool relayOk = hapticRelaySlotOk(slot);
+    if (relayOk && (!haptic82 || !haptic82Blocked())) {
       uint16_t m = n > sizeof g_relayBuf ? sizeof g_relayBuf : n;
       memcpy(g_relayBuf, b, m); g_relayN = m; g_relayPend = true;
     }
@@ -878,7 +922,7 @@ static void rfLizard(const uint8_t* r, Adafruit_USBD_HID* mdev, Adafruit_USBD_HI
 // NO handshake / SPI calibration / encryption — unlike the genuine Pro Controller (057E:2009), whose USB
 // init the console handles fussily. This is the descriptor every DIY Switch controller copies (the LUFA
 // "Splatoon printer" descriptor). Also recognized by SDL/Steam on PC. 8-byte input report streamed at
-// ~125Hz: [btn_lo][btn_hi][hat][LX][LY][RX][RY][vendor], sticks uint8 center 0x80.
+// ~250Hz stream: [btn_lo][btn_hi][hat][LX][LY][RX][RY][vendor], sticks uint8 center 0x80.
 static const uint8_t SWITCH_HID_DESC[]={
   0x05,0x01, 0x09,0x05, 0xA1,0x01,           // Usage Page (Generic Desktop), Usage (Game Pad), Collection (App)
   0x15,0x00, 0x25,0x01, 0x35,0x00, 0x45,0x01, 0x75,0x01, 0x95,0x10,   // 16 x 1-bit buttons
@@ -933,11 +977,294 @@ static void switchBuildHoripad(uint8_t out[8]){
   out[5]=swStick(g_swRX,false); out[6]=swStick(g_swRY,true);
   out[7]=0;
 }
-static void swStream(){   // call from loop(); stream the 8-byte HORIPAD report at ~125Hz (no handshake needed)
-  if(g_usbMode!=2 || !g_switch.ready()) return;
-  if(millis()-g_swLastMs < 8) return; g_swLastMs=millis();
+static void swStream(){   // call from loop(); stream the 8-byte HORIPAD report at ~250Hz (no handshake needed)
+  if(g_usbMode!=MODE_SW_HORI || !g_switch.ready()) return;
+  if(millis()-g_swLastMs < USB_STREAM_MS) return; g_swLastMs=millis();
   uint8_t p[8]; switchBuildHoripad(p);
   g_switch.sendReport(0, p, sizeof p);   // report-id-less descriptor
+}
+
+// ---- report 0x45 IMU offsets (PROTOCOL.md §8): accel @0x22, gyro @0x28 from report start ----
+static void imuFrom45(const uint8_t* r, int16_t* ax, int16_t* ay, int16_t* az, int16_t* gx, int16_t* gy, int16_t* gz){
+  *ax=s16off(r,32); *ay=s16off(r,34); *az=s16off(r,36);
+  *gx=s16off(r,38); *gy=s16off(r,40); *gz=s16off(r,42);
+}
+// Map Steam trackpad s16 coords into a 0..max axis (centered touch -> mid-range).
+static uint16_t padNormU16(int16_t v, uint16_t maxv){
+  int32_t t=((int32_t)v+32768); if(t<0)t=0; if(t>65535)t=65535;
+  return (uint16_t)((t*(int32_t)maxv)/65535);
+}
+#define TOUCH_PAD_W 1920u
+static uint16_t touchHalfX(int16_t v, bool rightHalf){
+  uint16_t halfMax = TOUCH_PAD_W/2 - 1;
+  uint16_t x = padNormU16(v, halfMax);
+  return rightHalf ? (uint16_t)(TOUCH_PAD_W/2 + x) : x;
+}
+static uint16_t touchYInv(int16_t v, uint16_t height){
+  uint16_t maxy = height - 1;
+  return (uint16_t)(maxy - padNormU16(v, maxy));
+}
+static void touchPackPoint(uint8_t* base, int finger, bool touch, uint16_t x, uint16_t y){
+  uint8_t* f=base+finger*4;
+  if(!touch){ f[0]=0x80; f[1]=0; f[2]=0; f[3]=0; return; }
+  f[0]=(uint8_t)(finger&0x7F);
+  f[1]=(uint8_t)(x&0xFF);
+  f[2]=(uint8_t)(((x>>8)&0x0F)|((y&0x0F)<<4));
+  f[3]=(uint8_t)((y>>4)&0xFF);
+}
+// DualSense / DS4: many hosts only honor contact slot 0 — put a lone pad in slot 0, both pads in 0+1.
+static void touchPackPads(uint8_t* pts, bool lTouch, bool rTouch,
+    uint16_t lx, uint16_t ly, uint16_t rx, uint16_t ry){
+  touchPackPoint(pts, 0, false, 0, 0);
+  touchPackPoint(pts, 1, false, 0, 0);
+  if(lTouch && rTouch){
+    touchPackPoint(pts, 0, true, lx, ly);
+    touchPackPoint(pts, 1, true, rx, ry);
+  } else if(lTouch){
+    touchPackPoint(pts, 0, true, lx, ly);
+  } else if(rTouch){
+    touchPackPoint(pts, 0, true, rx, ry);
+  }
+}
+static void steamPadsToTouch(uint32_t b, uint16_t touchH, int16_t lpx, int16_t lpy, int16_t rpx, int16_t rpy,
+    uint16_t* lx, uint16_t* ly, uint16_t* rx, uint16_t* ry){
+  bool lt=(b&TB_LPADT)||(b&TB_LPADC), rt=(b&TB_RPADT)||(b&TB_RPADC);
+  *lx=touchHalfX(lpx, false); *ly=touchYInv(lpy, touchH);
+  *rx=touchHalfX(rpx, true);  *ry=touchYInv(rpy, touchH);
+  if(lt && !(b&TB_LPADT)){ *lx=TOUCH_PAD_W/4; *ly=touchH/2; }
+  if(rt && !(b&TB_RPADT)){ *rx=TOUCH_PAD_W/4*3; *ry=touchH/2; }
+}
+// Map g_back[] paddle code -> Steam button flags (same codes as codeToXB / codeToSwitch).
+static void psOrBackCode(uint32_t* b, uint8_t c){
+  switch(c){ case 1:*b|=TB_A; break; case 2:*b|=TB_B; break; case 3:*b|=TB_X; break; case 4:*b|=TB_Y; break;
+    case 5:*b|=TB_LB; break; case 6:*b|=TB_RB; break; case 7:*b|=TB_L3; break; case 8:*b|=TB_R3; break;
+    case 9:*b|=TB_VIEW; break; case 10:*b|=TB_MENU; break; case 11:*b|=TB_STEAM; break; default: break; }
+}
+static uint32_t psButtonsFromSteam(uint32_t raw){
+  uint32_t b=raw;
+  if((b&(TB_R4|TB_L4|TB_R5|TB_L5))==(TB_R4|TB_L4|TB_R5|TB_L5)) b&=~(uint32_t)(TB_A|TB_B|TB_X|TB_Y);
+  if(b&TB_L4) psOrBackCode(&b, g_back[0]); if(b&TB_R4) psOrBackCode(&b, g_back[1]);
+  if(b&TB_L5) psOrBackCode(&b, g_back[2]); if(b&TB_R5) psOrBackCode(&b, g_back[3]);
+  return b;
+}
+// DualSense / DS4 buttons[1]: L1..R3, Create(Share), Options(Start)
+static uint8_t psShouldersByte(uint32_t b){
+  return ((b&TB_LB)?0x01:0)|((b&TB_RB)?0x02:0)
+         |((g_swLT>SW_TRIG_ON||(b&0x8000000u))?0x04:0)|((g_swRT>SW_TRIG_ON||(b&0x800000u))?0x08:0)
+         |((b&TB_MENU)?0x10:0)|((b&TB_VIEW)?0x20:0)   // Menu=Options, View=Create/Share
+         |((b&TB_L3)?0x40:0)|((b&TB_R3)?0x80:0);
+}
+
+// ===================== SWITCH PRO mode (4) — 057E:2009, report 0x30 + IMU (hid-nintendo layout) =====================
+// Linux hid-nintendo hardcodes joycon_input_report for USB 0x30 (not the bogus descriptor fields).
+// Payload: timer, bat_con, btn[3], sticks[3+3], vib, imu×3 — sendReport(0x30,…) prepends the report ID.
+static const uint8_t SWPRO_HID_DESC[]={
+  0x05,0x01,0x15,0x00,0x09,0x04,0xA1,0x01,0x85,0x30,0x05,0x01,0x05,0x09,0x19,0x01,
+  0x29,0x0A,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x0A,0x55,0x00,0x65,0x00,0x81,0x02,
+  0x05,0x09,0x19,0x0B,0x29,0x0E,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x04,0x81,0x02,
+  0x75,0x01,0x95,0x02,0x81,0x03,0x0B,0x01,0x00,0x01,0x00,0xA1,0x00,0x0B,0x30,0x00,
+  0x01,0x00,0x0B,0x31,0x00,0x01,0x00,0x0B,0x32,0x00,0x01,0x00,0x0B,0x35,0x00,0x01,
+  0x00,0x15,0x00,0x27,0xFF,0xFF,0x00,0x00,0x75,0x10,0x95,0x04,0x81,0x02,0xC0,0x0B,
+  0x39,0x00,0x01,0x00,0x15,0x00,0x25,0x07,0x35,0x00,0x46,0x3B,0x01,0x65,0x14,0x75,
+  0x04,0x95,0x01,0x81,0x42,0x05,0x09,0x19,0x0F,0x29,0x12,0x15,0x00,0x25,0x01,0x75,
+  0x01,0x95,0x04,0x81,0x02,0x75,0x08,0x95,0x34,0x81,0x03,0x06,0x00,0xFF,0x85,0x21,
+  0x09,0x01,0x75,0x08,0x95,0x3F,0x81,0x03,0x85,0x81,0x09,0x02,0x75,0x08,0x95,0x3F,
+  0x81,0x03,0x85,0x01,0x09,0x03,0x75,0x08,0x95,0x3F,0x91,0x83,0x85,0x10,0x09,0x04,
+  0x75,0x08,0x95,0x3F,0x91,0x83,0x85,0x80,0x09,0x05,0x75,0x08,0x95,0x3F,0x91,0x83,
+  0x85,0x82,0x09,0x06,0x75,0x08,0x95,0x3F,0x91,0x83,0xC0
+};
+#define JC_BTN_Y      (1u<<0)
+#define JC_BTN_X      (1u<<1)
+#define JC_BTN_B      (1u<<2)
+#define JC_BTN_A      (1u<<3)
+#define JC_BTN_R      (1u<<6)
+#define JC_BTN_ZR     (1u<<7)
+#define JC_BTN_MINUS  (1u<<8)
+#define JC_BTN_PLUS   (1u<<9)
+#define JC_BTN_RSTICK (1u<<10)
+#define JC_BTN_LSTICK (1u<<11)
+#define JC_BTN_HOME   (1u<<12)
+#define JC_BTN_DOWN   (1u<<16)
+#define JC_BTN_UP     (1u<<17)
+#define JC_BTN_RIGHT  (1u<<18)
+#define JC_BTN_LEFT   (1u<<19)
+#define JC_BTN_L      (1u<<22)
+#define JC_BTN_ZL     (1u<<23)
+static uint32_t codeToJc(uint8_t c, uint32_t fA,uint32_t fB,uint32_t fX,uint32_t fY){
+  switch(c){ case 1:return fA; case 2:return fB; case 3:return fX; case 4:return fY;
+    case 5:return JC_BTN_L; case 6:return JC_BTN_R; case 7:return JC_BTN_LSTICK; case 8:return JC_BTN_RSTICK;
+    case 9:return JC_BTN_MINUS; case 10:return JC_BTN_PLUS; case 11:return JC_BTN_HOME; default:return 0; }
+}
+static int16_t g_swProAX=0,g_swProAY=0,g_swProAZ=0,g_swProGX=0,g_swProGY=0,g_swProGZ=0;
+static unsigned long g_swProLastMs=0;
+Adafruit_USBD_HID g_swPro;
+static void jcPackStick(uint8_t s[3], int16_t lx, int16_t ly){
+  uint8_t LX=swStick(lx,false), LY=swStick(ly,true);
+  int plx=(int)LX-127;
+  s[0]=(uint8_t)((plx&0x0F)<<4);
+  s[1]=(uint8_t)((plx>>4)&0x0F);
+  s[2]=(uint8_t)LY;
+}
+static void switchProBuild(uint8_t out[63]){
+  uint32_t b=g_swBtns;
+  if((b&(TB_R4|TB_L4|TB_R5|TB_L5))==(TB_R4|TB_L4|TB_R5|TB_L5)) b&=~(uint32_t)(TB_A|TB_B|TB_X|TB_Y);
+  uint32_t fA=g_abSwap?JC_BTN_B:JC_BTN_A, fB=g_abSwap?JC_BTN_A:JC_BTN_B;
+  uint32_t fX=g_abSwap?JC_BTN_Y:JC_BTN_X, fY=g_abSwap?JC_BTN_X:JC_BTN_Y;
+  uint32_t jc=0;
+  if(b&TB_Y)jc|=fY; if(b&TB_B)jc|=fB; if(b&TB_A)jc|=fA; if(b&TB_X)jc|=fX;
+  if(b&TB_LB)jc|=JC_BTN_L; if(b&TB_RB)jc|=JC_BTN_R;
+  if((g_swLT>=SW_TRIG_ON)||(b&0x8000000u))jc|=JC_BTN_ZL; if((g_swRT>=SW_TRIG_ON)||(b&0x800000u))jc|=JC_BTN_ZR;
+  if(b&TB_VIEW)jc|=JC_BTN_MINUS; if(b&TB_MENU)jc|=JC_BTN_PLUS;
+  if(b&TB_L3)jc|=JC_BTN_LSTICK; if(b&TB_R3)jc|=JC_BTN_RSTICK;
+  if(b&TB_STEAM)jc|=JC_BTN_HOME;
+  if(b&TB_DDN)jc|=JC_BTN_DOWN; if(b&TB_DUP)jc|=JC_BTN_UP;
+  if(b&TB_DRT)jc|=JC_BTN_RIGHT; if(b&TB_DLF)jc|=JC_BTN_LEFT;
+  if(b&TB_L4)jc|=codeToJc(g_back[0],fA,fB,fX,fY); if(b&TB_R4)jc|=codeToJc(g_back[1],fA,fB,fX,fY);
+  if(b&TB_L5)jc|=codeToJc(g_back[2],fA,fB,fX,fY); if(b&TB_R5)jc|=codeToJc(g_back[3],fA,fB,fX,fY);
+  memset(out,0,63); static uint8_t ts=0;
+  out[0]=ts++;
+  out[1]=0x81;   // full battery + USB powered (hid-nintendo bat_con)
+  out[2]=(uint8_t)(jc); out[3]=(uint8_t)(jc>>8); out[4]=(uint8_t)(jc>>16);
+  jcPackStick(out+5, g_swLX, g_swLY);
+  jcPackStick(out+8, g_swRX, g_swRY);
+  out[11]=0;
+  for(int k=0;k<3;k++){
+    int o=12+k*12;
+    out[o+0]=g_swProAX&0xFF; out[o+1]=g_swProAX>>8;
+    out[o+2]=g_swProAY&0xFF; out[o+3]=g_swProAY>>8;
+    out[o+4]=g_swProAZ&0xFF; out[o+5]=g_swProAZ>>8;
+    out[o+6]=g_swProGX&0xFF; out[o+7]=g_swProGX>>8;
+    out[o+8]=g_swProGY&0xFF; out[o+9]=g_swProGY>>8;
+    out[o+10]=g_swProGZ&0xFF; out[o+11]=g_swProGZ>>8;
+  }
+}
+static void swProStream(){
+  if(g_usbMode!=MODE_SW_PRO || !g_swPro.ready()) return;
+  if(millis()-g_swProLastMs<USB_STREAM_MS) return; g_swProLastMs=millis();
+  uint8_t p[63]; switchProBuild(p);
+  g_swPro.sendReport(0x30, p, sizeof p);
+}
+
+// ===================== PS5 DualSense mode (5) — 054C:0CE6 + gyro + split trackpad =====================
+static const uint8_t PS5_HID_DESC[]={
+  0x05,0x01,0x09,0x05,0xA1,0x01,0x85,0x01,0x09,0x30,0x09,0x31,0x09,0x32,0x09,0x35,
+  0x09,0x33,0x09,0x34,0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,0x06,0x81,0x02,0x06,
+  0x00,0xFF,0x09,0x20,0x95,0x01,0x81,0x02,0x05,0x01,0x09,0x39,0x15,0x00,0x25,0x07,
+  0x35,0x00,0x46,0x3B,0x01,0x65,0x14,0x75,0x04,0x95,0x01,0x81,0x42,0x65,0x00,0x05,
+  0x09,0x19,0x01,0x29,0x0F,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x0F,0x81,0x02,0x06,
+  0x00,0xFF,0x09,0x21,0x95,0x0D,0x81,0x02,0x06,0x00,0xFF,0x09,0x22,0x15,0x00,0x26,
+  0xFF,0x00,0x75,0x08,0x95,0x34,0x81,0x02,0x85,0x02,0x09,0x23,0x95,0x2F,0x91,0x02,
+  0x85,0x05,0x09,0x33,0x95,0x28,0xB1,0x02,0x85,0x08,0x09,0x34,0x95,0x2F,0xB1,0x02,
+  0x85,0x09,0x09,0x24,0x95,0x13,0xB1,0x02,0x85,0x0A,0x09,0x25,0x95,0x1A,0xB1,0x02,
+  0x85,0x20,0x09,0x26,0x95,0x3F,0xB1,0x02,0x85,0x21,0x09,0x27,0x95,0x04,0xB1,0x02,
+  0x85,0x22,0x09,0x40,0x95,0x3F,0xB1,0x02,0x85,0x80,0x09,0x28,0x95,0x3F,0xB1,0x02,
+  0x85,0x81,0x09,0x29,0x95,0x3F,0xB1,0x02,0x85,0x82,0x09,0x2A,0x95,0x09,0xB1,0x02,
+  0x85,0x83,0x09,0x2B,0x95,0x3F,0xB1,0x02,0x85,0x84,0x09,0x2C,0x95,0x3F,0xB1,0x02,
+  0x85,0x85,0x09,0x2D,0x95,0x02,0xB1,0x02,0x85,0xA0,0x09,0x2E,0x95,0x01,0xB1,0x02,
+  0x85,0xE0,0x09,0x2F,0x95,0x3F,0xB1,0x02,0x85,0xF0,0x09,0x30,0x95,0x3F,0xB1,0x02,
+  0x85,0xF1,0x09,0x31,0x95,0x3F,0xB1,0x02,0x85,0xF2,0x09,0x32,0x95,0x0F,0xB1,0x02,
+  0x85,0xF4,0x09,0x35,0x95,0x3F,0xB1,0x02,0x85,0xF5,0x09,0x36,0x95,0x03,0xB1,0x02,0xC0
+};
+#define PS5_TOUCH_H 1080
+#define DS4_TOUCH_H 942
+#define PS5_STATUS_USB 0x1A   // charging + level 10 (~100%)
+#define DS4_STATUS_USB 0x1B   // cable + level 11 (full)
+static int16_t g_ps5AX=0,g_ps5AY=0,g_ps5AZ=0,g_ps5GX=0,g_ps5GY=0,g_ps5GZ=0;
+static int16_t g_ps5LPX=0,g_ps5LPY=0,g_ps5RPX=0,g_ps5RPY=0;
+static unsigned long g_ps5LastMs=0;
+Adafruit_USBD_HID g_ps5;
+static uint8_t psHatNibble(uint32_t b){
+  bool u=b&TB_DUP,d=b&TB_DDN,l=b&TB_DLF,r=b&TB_DRT;
+  if(u&&r)return 1; if(r&&d)return 3; if(d&&l)return 5; if(l&&u)return 7;
+  if(u)return 0; if(r)return 2; if(d)return 4; if(l)return 6; return 8;
+}
+static uint8_t psFaceNibble(uint32_t b){
+  uint8_t f=0;
+  if(g_abSwap){
+    if(b&TB_A)f|=0x40; if(b&TB_B)f|=0x20; if(b&TB_X)f|=0x80; if(b&TB_Y)f|=0x10;
+  } else {
+    if(b&TB_A)f|=0x20; if(b&TB_B)f|=0x40; if(b&TB_X)f|=0x10; if(b&TB_Y)f|=0x80;
+  }
+  return f;
+}
+static void ps5Build(uint8_t out[63]){
+  uint32_t b=psButtonsFromSteam(g_swBtns);
+  bool lTouch=(b&TB_LPADT)||(b&TB_LPADC), rTouch=(b&TB_RPADT)||(b&TB_RPADC);
+  memset(out,0,63);
+  out[0]=swStick(g_swLX,false); out[1]=swStick(g_swLY,true);
+  out[2]=swStick(g_swRX,false); out[3]=swStick(g_swRY,true);
+  out[4]=g_swLT; out[5]=g_swRT;
+  static uint8_t seq=0; out[6]=seq++;
+  out[7]=psHatNibble(b)|psFaceNibble(b);
+  out[8]=psShouldersByte(b);
+  out[9]=((b&TB_STEAM)?0x01:0)|((b&TB_LPADC||b&TB_RPADC)?0x02:0);
+  out[15]=g_ps5GX&0xFF; out[16]=g_ps5GX>>8;
+  out[17]=g_ps5GZ&0xFF; out[18]=g_ps5GZ>>8;
+  out[19]=g_ps5GY&0xFF; out[20]=g_ps5GY>>8;
+  out[21]=g_ps5AX&0xFF; out[22]=g_ps5AX>>8;
+  out[23]=g_ps5AY&0xFF; out[24]=g_ps5AY>>8;
+  out[25]=g_ps5AZ&0xFF; out[26]=g_ps5AZ>>8;
+  uint16_t lx, ly, rx, ry;
+  steamPadsToTouch(b, PS5_TOUCH_H, g_ps5LPX, g_ps5LPY, g_ps5RPX, g_ps5RPY, &lx, &ly, &rx, &ry);
+  touchPackPads(out+32, lTouch, rTouch, lx, ly, rx, ry);
+  out[52]=PS5_STATUS_USB;
+}
+static void ps5Stream(){
+  if(g_usbMode!=MODE_PS5 || !g_ps5.ready()) return;
+  if(millis()-g_ps5LastMs<USB_STREAM_MS) return; g_ps5LastMs=millis();
+  uint8_t p[63]; ps5Build(p);
+  g_ps5.sendReport(0x01, p, sizeof p);
+}
+
+// ===================== Generic HID gyro mode (6) — DS4 USB report layout + motion =====================
+// Standard DS4 054C:05C4 descriptor (input report 0x01, 64 B). Gyro/accel at bytes 13-24 (GIMX layout).
+static const uint8_t GYRO_HID_DESC[]={
+  0x05,0x01,0x09,0x05,0xA1,0x01,0x85,0x01,0x09,0x30,0x09,0x31,0x09,0x32,0x09,0x35,
+  0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,0x04,0x81,0x02,0x09,0x39,0x15,0x00,0x25,
+  0x07,0x35,0x00,0x46,0x3B,0x01,0x65,0x14,0x75,0x04,0x95,0x01,0x81,0x42,0x65,0x00,
+  0x05,0x09,0x19,0x01,0x29,0x0E,0x15,0x00,0x25,0x01,0x75,0x01,0x95,0x0E,0x81,0x02,
+  0x06,0x00,0xFF,0x09,0x20,0x75,0x06,0x95,0x01,0x15,0x00,0x25,0x7F,0x81,0x02,0x05,
+  0x01,0x09,0x33,0x09,0x34,0x15,0x00,0x26,0xFF,0x00,0x75,0x08,0x95,0x02,0x81,0x02,
+  0x06,0x00,0xFF,0x09,0x21,0x95,0x36,0x81,0x02,0x85,0x05,0x09,0x22,0x95,0x1F,0x91,
+  0x02,0x85,0x04,0x09,0x23,0x95,0x24,0xB1,0x02,0x85,0x02,0x09,0x24,0x95,0x24,0xB1,
+  0x02,0xC0
+};
+static int16_t g_gyroAX=0,g_gyroAY=0,g_gyroAZ=0,g_gyroGX=0,g_gyroGY=0,g_gyroGZ=0;
+static unsigned long g_gyroLastMs=0;
+Adafruit_USBD_HID g_hidGyro;
+static void hidGyroBuild(uint8_t out[63]){
+  uint32_t b=psButtonsFromSteam(g_swBtns);
+  bool lTouch=(b&TB_LPADT)||(b&TB_LPADC), rTouch=(b&TB_RPADT)||(b&TB_RPADC);
+  memset(out,0,63);
+  out[0]=swStick(g_swLX,false); out[1]=swStick(g_swLY,true);
+  out[2]=swStick(g_swRX,false); out[3]=swStick(g_swRY,true);
+  out[4]=psHatNibble(b)|psFaceNibble(b);
+  out[5]=psShouldersByte(b);
+  static uint8_t ctr=0; out[6]=((ctr++&0x0F)<<4)|((b&TB_LPADC||b&TB_RPADC)?0x02:0)|((b&TB_STEAM)?0x01:0);
+  out[7]=g_swLT; out[8]=g_swRT;
+  out[12]=g_gyroGX&0xFF; out[13]=g_gyroGX>>8;
+  out[14]=g_gyroGY&0xFF; out[15]=g_gyroGY>>8;
+  out[16]=g_gyroGZ&0xFF; out[17]=g_gyroGZ>>8;
+  out[18]=g_gyroAX&0xFF; out[19]=g_gyroAX>>8;
+  out[20]=g_gyroAY&0xFF; out[21]=g_gyroAY>>8;
+  out[22]=g_gyroAZ&0xFF; out[23]=g_gyroAZ>>8;
+  out[29]=DS4_STATUS_USB;
+  if(lTouch || rTouch){
+    uint16_t lx, ly, rx, ry;
+    steamPadsToTouch(b, DS4_TOUCH_H, g_ps5LPX, g_ps5LPY, g_ps5RPX, g_ps5RPY, &lx, &ly, &rx, &ry);
+    static uint8_t tstamp=0;
+    out[32]=1; out[33]=tstamp++;
+    touchPackPads(out+34, lTouch, rTouch, lx, ly, rx, ry);
+  } else {
+    out[32]=0;
+    touchPackPads(out+34, false, false, 0, 0, 0, 0);   // contact 0x80 — memset(0) reads as touch @0,0
+  }
+}
+static void hidGyroStream(){
+  if(g_usbMode!=MODE_HIDGYRO || !g_hidGyro.ready()) return;
+  if(millis()-g_gyroLastMs<USB_STREAM_MS) return; g_gyroLastMs=millis();
+  uint8_t p[63]; hidGyroBuild(p);
+  g_hidGyro.sendReport(0x01, p, sizeof p);
 }
 
 // RECIPE (IBEX disasm @0x18d80): controller streams 0xF1 input report ONLY when (a) connstate==3 [host
@@ -1013,21 +1340,25 @@ static uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t 
             g_swBtns=bb; g_swLX=(int16_t)s16off(rep,8); g_swLY=(int16_t)s16off(rep,10);
             g_swRX=(int16_t)s16off(rep,12); g_swRY=(int16_t)s16off(rep,14);
             g_swLT=trigU8(u16off(rep,4)); g_swRT=trigU8(u16off(rep,6));   // for the Switch digital-trigger threshold
-            // Mode-switch chord (all 4 back + A/X/Y): don't leak the face press to the host. While the back-4
-            // are held, strip A/X/Y from the report Steam/Xbox forward (g_swBtns stays intact below so the chord
-            // detector still fires; the Switch path masks the same bits in switchBuildHoripad).
+            g_ps5LPX=(int16_t)s16off(rep,16); g_ps5LPY=(int16_t)s16off(rep,18);
+            g_ps5RPX=(int16_t)s16off(rep,22); g_ps5RPY=(int16_t)s16off(rep,24);
+            imuFrom45(rep, &g_swProAX,&g_swProAY,&g_swProAZ,&g_swProGX,&g_swProGY,&g_swProGZ);
+            g_ps5AX=g_swProAX; g_ps5AY=g_swProAY; g_ps5AZ=g_swProAZ;
+            g_ps5GX=g_swProGX; g_ps5GY=g_swProGY; g_ps5GZ=g_swProGZ;
+            g_gyroAX=g_swProAX; g_gyroAY=g_swProAY; g_gyroAZ=g_swProAZ;
+            g_gyroGX=g_swProGX; g_gyroGY=g_swProGY; g_gyroGZ=g_swProGZ;
+            // Mode-switch chord (all 4 back + face): don't leak the face press to the host. g_swBtns stays intact
+            // so the chord detector still fires; per-mode builders mask the same bits while back-4 are held.
             const uint32_t CHORD_BACK4 = TB_R4|TB_L4|TB_R5|TB_L5;
             if((bb&CHORD_BACK4)==CHORD_BACK4)
-              ((uint8_t*)rep)[2] &= ~(uint8_t)(TB_A|TB_X|TB_Y);   // A=0x01 X=0x04 Y=0x08 -> all in the low buttons byte
-            if(g_usbMode==2){                           // SWITCH: streamed from loop() (swStream); nothing to send here
-            } else if(g_xbox){                          // XBOX: standard gamepad + right-pad mouse (2nd interface)
+              ((uint8_t*)rep)[2] &= ~(uint8_t)(TB_A|TB_B|TB_X|TB_Y);
+            if(g_usbMode==MODE_SW_HORI || g_usbMode==MODE_SW_PRO || g_usbMode==MODE_PS5 || g_usbMode==MODE_HIDGYRO){
+              // streamed from loop(); nothing to send here
+            } else if(g_usbMode==MODE_XBOX){            // XBOX: standard gamepad + right-pad mouse (2nd interface)
               rfXboxGamepad(rep); rfXboxMouse(rep);
-            } else if(g_connSlot>=0 && g_connSlot<NSLOT){  // STEAM (puck interface)
-              // Seamless lizard, exactly like the real puck: while Steam's 0x87 heartbeat is alive -> forward
-              // the gamepad report 0x45; once it stops (Steam closed) -> drive mouse(0x40)+keyboard(0x41) on the
-              // SAME puck interface (the cloned descriptor exposes both). Pure USB-side switch — RF/relay unchanged.
+            } else if(g_connSlot>=0 && g_connSlot<NSLOT){  // STEAM / LIZARD (puck interface)
               bool steamAlive = g_steamAliveMs && (millis()-g_steamAliveMs < LIZARD_WD_MS);
-              if(g_autoLizard && !steamAlive){
+              if(g_usbMode==MODE_LIZARD || (g_autoLizard && !steamAlive)){
                 rfLizard(rep, &hid[g_connSlot], &hid[g_connSlot], 0x40, 0x41);
               } else {
                 uint8_t blen=tlen-1; if(blen>45)blen=45;  // body after the 0x45 id byte
@@ -1042,12 +1373,16 @@ static uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t 
           }
           idx+=tlen+2;
         }
-        // mode-switch chord (back4 R4|L4|R5|L5 + A/X/Y), checked ONCE per frame + DEBOUNCED: a single
-        // garbled/misaligned report must not trigger saveMode+reset (that looked like a crash under heavy input).
+        // mode-switch chord (back4 + face): A=always Steam; B/X/Y=configurable (g_chordBtn[]). Debounced.
         { static uint8_t chWant=0xFF, chCnt=0;
           const uint32_t BACK4=TB_R4|TB_L4|TB_R5|TB_L5; uint8_t want=0xFF;
-          if((g_swBtns&BACK4)==BACK4){ if(g_swBtns&TB_A)want=0; else if(g_swBtns&TB_X)want=1; else if(g_swBtns&TB_Y)want=2; }  // back4 + A=Steam X=Xbox Y=Switch (lizard is automatic in Steam mode now)
-          if(want!=0xFF && want==chWant){ if(++chCnt>=12 && want!=g_usbMode && !USBDevice.suspended()){ saveMode(want); delay(40); NVIC_SystemReset(); } }
+          if((g_swBtns&BACK4)==BACK4){
+            if(g_swBtns&TB_A) want=MODE_STEAM;
+            else if(g_swBtns&TB_B) want=g_chordBtn[0];
+            else if(g_swBtns&TB_X) want=g_chordBtn[1];
+            else if(g_swBtns&TB_Y) want=g_chordBtn[2];
+          }
+          if(want!=0xFF && want==chWant){ if(++chCnt>=12 && want!=g_usbMode && modeValid(want) && !USBDevice.suspended()){ saveMode(want); delay(40); NVIC_SystemReset(); } }
           else { chWant=want; chCnt=(want!=0xFF)?1:0; }
         }
         // compact stream for rf_controller_ui.py — NON-BLOCKING: skip if CDC TX is backed up (a blocking
@@ -1072,27 +1407,17 @@ static uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t 
 static void rfConnStep(){
   g_connSlot=-1; for(int s=0;s<NSLOT;s++) if(g_slot[s].used){g_connSlot=s;break;}
   if(g_connSlot<0) return;               // need a bonded slot (session established by host frame)
+  uint8_t ch=g_sessCh;
   if(g_connSt==0){                       // announce HOST AWAKE: E7 00 00, a few times
-    uint8_t p[3]={0xE7,0x00,g_e7b}; rfConnTx(g_sessCh,0x01,p,3);
+    uint8_t p[3]={0xE7,0x00,g_e7b}; rfConnTx(ch,0x01,p,3);
     if(++g_connStep>=4){ g_connSt=1; g_connStep=0; Serial.println("# CONN: awake announced -> polling GET report 0x45"); }
   } else {                               // poll loop: E3 + GET report 0x45 every poll; re-assert awake periodically
     if((uint32_t)(micros()-g_lastPollUs) < g_pollUs) return;   // CONTROLLED CADENCE: poll ~every g_pollUs,
     g_lastPollUs=micros();                                     // not as-fast-as-possible (over-polling starves replies)
-    uint8_t ch=g_sessCh;                                       // controller stays on the session channel (no hop)
     if((g_connPoll & 0x1F)==0){ uint8_t pa[3]={0xE7,0x00,g_e7b}; rfConnTx(ch,0x01,pa,3); }   // re-assert awake/version
-    if(!g_relayPend && g_testHaptic){                // buzz-hunt: synthesize a haptic relay (output 0x82 [01 01 F7])
-      g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=0xF7; g_relayPend=true; g_testHaptic--;
-    }
-    if(!g_relayPend && g_hapticStop && !g_xbox){     // kill a latched haptic: relay 0x82 [01 01 00] (zero gain = stop), a few times to beat RF loss
-      g_relayBuf[0]=0x82; g_relayBuf[1]=3; g_relayBuf[2]=0x01; g_relayBuf[3]=0x01; g_relayBuf[4]=0x00; g_relayPend=true; g_hapticStop--;
-    }
-    if(g_relayPend){                                 // relay host cmd: [op][len][sub][rid][payload] (op/sub tunable for the buzz hunt)
-      uint8_t rid=g_relayBuf[0], rl=g_relayBuf[1]; if(rl>18)rl=18;
-      uint8_t p[24]; p[0]=g_relayOp; p[1]=(uint8_t)(1+rl); p[2]=g_relaySub; p[3]=rid;   // len = sub-id + payload bytes
-      for(uint8_t i=0;i<rl;i++) p[4+i]=g_relayBuf[2+i];
-      rfConnTx(ch,0x07,p,(uint8_t)(4+rl));
-      g_relayPend=false;
-    } else {
+    rfConnQueueHapticRelay();
+    rfConnFlushRelay(ch);
+    {
       uint8_t p[5]={0xE3,0x02,0x01,0x45,g_getParam}; // E3 + TLV [len=02][subtype=01 GET][id=0x45][param]
       uint8_t s1 = (g_e3mode==1) ? (uint8_t)((((g_e3pid++)&3)<<1)|1)   // cycle PID (S1 1,3,5,7), NO_ACK=1
                  : (g_e3mode==2) ? (uint8_t)(((g_e3pid++)&3)<<1)       // cycle PID (S1 0,2,4,6), NO_ACK=0
@@ -1215,17 +1540,19 @@ static void rfBeaconOnce(){
 // ===================== WebUSB config channel =====================
 // Browser panel (copycat_config.html) <-> firmware, binary framed.
 //   host->dev:  0x01                  GET  -> reply status blob
-//               0x02 <field> <value>  SET one byte field (1=mDiv 2=mFric 3=padSmooth 4=abSwap 5..8=back[0..3] 9=pollU100 10=e7b 11=relayOp 12=relaySub 13=testHaptic)
-//               0x03 <mode>           switch USB mode (0=steam 1=xbox 2=switch): persist + reboot
+//               0x02 <field> <value>  SET one byte field (1=mDiv 2=mFric 3=padSmooth 4=abSwap 5..8=back[0..3] 9=pollU100
+//                                     10=e7b 11=relayOp 12=relaySub 13=testHaptic 14=fwdNewOnly 15=qos 16=persistMode
+//                                     17..19=chordBtn B/X/Y mode assignments)
+//               0x03 <mode>           switch USB mode (0..6): persist + reboot
 //   dev->host:  0xA5 <len> <payload>  payload = [ver=1][mode][mDiv][mFric][padSmooth][abSwap]
 //                                                [back0..3][connSlot(0xFF=none)][linkUp][f1ps_lo][f1ps_hi][pollU100][newps_lo][newps_hi][e7b][relayOp][relaySub]
-#define WB_PAYLEN 23
+#define WB_PAYLEN 26
 static void webusbSendBlob(){
   if(!usb_web.connected()) return;
   bool up = (g_connSlot>=0 && (millis()-g_connReplyMs) < 300);
   uint8_t p[2+WB_PAYLEN];
   p[0]=0xA5; p[1]=WB_PAYLEN;
-  p[2]=1;                          // protocol version
+  p[2]=2;                          // protocol version (2 = chordBtn[3] in blob)
   p[3]=g_usbMode; p[4]=(uint8_t)g_mDiv; p[5]=(uint8_t)g_mFric; p[6]=(uint8_t)g_padSmooth; p[7]=g_abSwap;
   p[8]=g_back[0]; p[9]=g_back[1]; p[10]=g_back[2]; p[11]=g_back[3];
   p[12]=(g_connSlot>=0)?(uint8_t)g_connSlot:0xFF;
@@ -1235,6 +1562,7 @@ static void webusbSendBlob(){
   p[17]=(uint8_t)g_newps; p[18]=(uint8_t)(g_newps>>8);
   p[19]=g_e7b;
   p[20]=g_relayOp; p[21]=g_relaySub; p[22]=g_fwdNewOnly; p[23]=g_qos; p[24]=g_persistMode?1:0;
+  p[25]=g_chordBtn[0]; p[26]=g_chordBtn[1]; p[27]=g_chordBtn[2];
   usb_web.write(p,sizeof p); usb_web.flush();
 }
 static void webusbPoll(){
@@ -1260,7 +1588,7 @@ static void webusbPoll(){
           case 3: g_padSmooth = v<5?5:(v>100?100:v); break;
           case 4: g_abSwap = v?1:0; break;
           case 5: case 6: case 7: case 8: g_back[f-5]=v; break;
-          case 9: g_pollUs = (uint32_t)(v<1?1:v)*100; persist=false; break;   // pollU100 -> us. SESSION-ONLY: poll rate is locked; this tunes it live but reverts to 800 on reboot.
+          case 9: g_pollUs = (uint32_t)(v<1?1:v)*100; persist=false; break;   // pollU100 -> us. SESSION-ONLY: reverts to POLL_US_DEFAULT on reboot.
           case 10: g_e7b = v?1:0; break;                       // E7 protocol-version B-byte (experimental v1 fast)
           case 11: g_relayOp = v; break;                       // haptic-relay opcode (buzz hunt)
           case 12: g_relaySub = v; break;                      // haptic-relay sub-type (buzz hunt)
@@ -1268,11 +1596,12 @@ static void webusbPoll(){
           case 14: g_fwdNewOnly = v?1:0; break;                // Steam: forward only fresh reports (dedupe)
           case 15: g_qos = v?1:0; g_hopIdx=0; g_qosBad=0; g_qosCheckMs=millis(); break;  // QoS adaptive channel hopping
           case 16: g_persistMode = v?true:false; break;   // persist last mode across reboots (else always boot Steam)
+          case 17: case 18: case 19: if(modeValid(v)) g_chordBtn[f-17]=v; break;   // back4+B/X/Y mode assignments
         }
         if(persist) saveCfg();
         webusbSendBlob();
       } else if(op==0x03){
-        uint8_t m=buf[1]; if(m<=2 && !USBDevice.suspended()){ webusbSendBlob(); usb_web.flush(); saveMode(m); delay(40); NVIC_SystemReset(); }
+        uint8_t m=buf[1]; if(modeValid(m) && !USBDevice.suspended()){ webusbSendBlob(); usb_web.flush(); saveMode(m); delay(40); NVIC_SystemReset(); }
       }
       memmove(buf,buf+need,n-need); n-=need;
     }
@@ -1298,10 +1627,10 @@ static void rfSerialPoll(){
           g_slot[0].rec[4],g_slot[0].rec[5],g_slot[0].rec[6],g_slot[0].rec[7]); }
       else if (line[0]=='C'){ g_rfBeacon=g_rfListen=g_rfRaw=g_rfSweep=g_rfHost=false; rfRespondStart(); }
       else if (line[0]=='s'){ g_rfListen=false; g_rfBeacon=false; g_rfRaw=false; g_rfSweep=false; g_rfHost=false; g_rfRespond=false; NRF_RADIO->TASKS_DISABLE=1; Serial.println("# RF off"); }
-      else if (line[0]=='x'){ uint8_t m=strtoul(line+1,0,10); if(m<=2){
+      else if (line[0]=='x'){ uint8_t m=strtoul(line+1,0,10); if(modeValid(m)){
         if(USBDevice.suspended()){ Serial.println("# mode change blocked: host suspended"); }
         else { Serial.printf("# switch mode %u (reboot)\n",m); delay(20); saveMode(m); delay(40); NVIC_SystemReset(); }
-      } }   // switch USB mode 0=steam 1=xbox 2=switch (lizard is automatic in steam mode)
+      } }   // switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro
       else if (line[0]=='c'){ g_rfCh=atoi(line+1); Serial.printf("# ch=%u\n",g_rfCh); if(g_rfListen) rfListenStart(); }
       else if (line[0]=='p'){ g_rfPrefix=strtol(line+1,0,16); Serial.printf("# prefix=%02X\n",g_rfPrefix); if(g_rfListen) rfListenStart(); }
       else if (line[0]=='i'){ g_crcinit=strtoul(line+1,0,16); Serial.printf("# crcinit=%06lX\n",(unsigned long)g_crcinit); }
@@ -1319,7 +1648,7 @@ static void rfSerialPoll(){
       else if (line[0]=='q'){ g_getParam = g_getParam ? 0x00 : 0x2D; Serial.printf("# GET-0x45 param=%02X\n",g_getParam); }
       else if (line[0]=='v'){ g_connVerbose=!g_connVerbose; Serial.printf("# conn verbose %s (F1 seen=%lu)\n",g_connVerbose?"ON":"off",(unsigned long)g_connF1); }
       else if (line[0]=='C'){ g_sessCh=strtoul(line+1,0,10); Serial.printf("# session channel=%u (re-pair/reconnect to apply)\n",g_sessCh); }
-      else if (line[0]=='U'){ g_pollUs=strtoul(line+1,0,10); if(g_pollUs<50)g_pollUs=50; Serial.printf("# poll interval=%lu us (~%lu/s) SESSION-ONLY (locked default 800us on reboot)\n",(unsigned long)g_pollUs,(unsigned long)(1000000/g_pollUs)); }
+      else if (line[0]=='U'){ g_pollUs=strtoul(line+1,0,10); if(g_pollUs<50)g_pollUs=50; Serial.printf("# poll interval=%lu us (~%lu/s) SESSION-ONLY (default %u us on reboot)\n",(unsigned long)g_pollUs,(unsigned long)(1000000/g_pollUs),(unsigned)POLL_US_DEFAULT); }
       else if (line[0]=='E'){ g_mDiv=strtoul(line+1,0,10); if(g_mDiv<4)g_mDiv=4; saveCfg(); Serial.printf("# xbox-mouse sensitivity divisor=%d (lower=faster)\n",g_mDiv); }
       else if (line[0]=='F'){ g_mFric=strtoul(line+1,0,10); if(g_mFric>99)g_mFric=99; saveCfg(); Serial.printf("# xbox-mouse friction=%d%% (higher=more glide/momentum)\n",g_mFric); }
       else if (line[0]=='D'){ g_padSmooth=strtoul(line+1,0,10); if(g_padSmooth<5)g_padSmooth=5; if(g_padSmooth>100)g_padSmooth=100; saveCfg(); Serial.printf("# steam pad smoothing alpha=%d%% (100=off, lower=smoother/laggier)\n",g_padSmooth); }
@@ -1361,51 +1690,73 @@ static void rfSerialPoll(){
 void setup() {
   genSerial();
   InternalFS.begin();
-  loadCfg(); g_xbox = (g_usbMode != 0);   // load persisted config + decide USB presentation BEFORE registering interfaces
+  loadCfg(); g_xbox = !modeIsPuck(g_usbMode);   // load persisted config + decide USB presentation BEFORE registering interfaces
 
-  // ---- CLEAN presentation for Xbox + Switch ----
-  // The Adafruit core auto-adds a CDC (Serial) interface at startup, making every device a CDC composite
-  // (bDeviceClass=0xEF/IAD). That breaks the clean controller personalities:
-  //   * XBOX: Windows' xusb (Xbox 360) driver matches 045E:028E at the DEVICE level. In a composite the
-  //     gamepad must stay MI_00 and the extra mouse must be a plain boot mouse interface.
-  //   * SWITCH: a real console rejects composite devices outright; it accepts only a bare HID gamepad.
-  // Fix: tear the auto CDC composite down and rebuild only the intended controller interfaces. clearConfiguration() also
-  // resets bDeviceClass to 0x00 (single function). We deliberately KEEP bcdUSB at 0x0200 (no WebUSB / USB 2.1)
-  // so the host never requests the WebUSB BOS — whose MS-OS-2.0 blob would otherwise tell Windows to bind
-  // WinUSB to interface 0 (our gamepad). detach()/attach() forces the host to re-read the rebuilt descriptor.
-  // Force a CLEAN re-enumeration on every boot / mode-switch: detach FIRST so the host drops the previous
-  // identity, rebuild the descriptor, then re-attach (at the end of setup). This is done in ALL modes, not
-  // just the clean ones: switching Xbox->Steam while Steam holds the device open could otherwise leave the
-  // host caching the old controller identity, so the puck sometimes failed to enumerate. The detach gives the OS
-  // an unambiguous disconnect to release its handles before the new descriptor comes up.
-  const bool cleanDevice = (g_usbMode == 1 || g_usbMode == 2);
+  // ---- USB descriptor rebuild ----
+  // Puck (Steam/Lizard): KEEP the boot CDC composite (do NOT clearConfiguration) and append 4 HID + WebUSB — this
+  // is the layout that worked with Steam running + Chrome WebUSB at the same time. Clearing puck to "save space"
+  // broke that coexistence. Clean controller modes still clear the CDC composite and rebuild bare.
+  const bool puckMode = modeIsPuck(g_usbMode);
   USBDevice.detach(); delay(30);
-  if (cleanDevice) USBDevice.clearConfiguration();   // clean modes also drop the auto CDC composite (resets bDeviceClass=0)
+  if (puckMode) {
+    USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);   // headroom over the default 256 B cap
+  } else {
+    USBDevice.clearConfiguration();
+    USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);
+  }
 
   // Distinct USB serial PER MODE (must be set AFTER clearConfiguration, which nulls it). Hosts cache USB
   // identity by VID:PID:serial; reusing one serial under a changing VID:PID can make a host refuse the new
   // identity. Steam keeps the exact unit serial (its pairing identity); the others get a 1-char suffix.
-  if (g_usbMode == 0) { USBDevice.setSerialDescriptor(g_unit); }
-  else { snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c", g_unit, g_usbMode==1?'X':'N'); USBDevice.setSerialDescriptor(g_usbSerial); }
-  if (g_usbMode == 1) {                // XBOX presentation: XInput vendor interface + HID boot mouse
+  static const char MODE_SUFFIX[] = {'X','N','L','P','S','G'};   // modes 1..6
+  if (modeIsPuck(g_usbMode)) { USBDevice.setSerialDescriptor(g_unit); }
+  else { snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c", g_unit, MODE_SUFFIX[g_usbMode-1]); USBDevice.setSerialDescriptor(g_usbSerial); }
+  if (g_usbMode == MODE_XBOX) {        // XBOX presentation: XInput vendor interface + HID boot mouse
     USBDevice.setID(0x045E, 0x028E);   // device-level 045E:028E match -> Windows xusb / SDL / Linux xpad all bind it
-    USBDevice.setVersion(0x0200); USBDevice.setDeviceVersion(0x0114);   // bcdUSB 0x0200 = no BOS request (clean, no WinUSB fight)
+    USBDevice.setDeviceVersion(0x0114);
     USBDevice.setManufacturerDescriptor("Microsoft");
     USBDevice.setProductDescriptor("Controller");
     g_xinput.setStringDescriptor("Controller"); g_xinput.begin();   // XInput vendor interface (FF/5D/01) -> MI_00
     g_mouse.setStringDescriptor("OpenPuck Mouse");
     g_mouse.setBootProtocol(HID_ITF_PROTOCOL_MOUSE);
     g_mouse.setReportDescriptor(MOUSE_HID_DESC, sizeof MOUSE_HID_DESC); g_mouse.setPollInterval(1); g_mouse.begin();
-  } else if (g_usbMode == 2) {         // SWITCH presentation: a LONE HID HORIPAD/Pokkén pad (console-compatible)
-    USBDevice.setID(0x0F0D, 0x0092);   // HORI Pokkén Tournament Pro Pad (whitelisted by a real Switch console)
-    USBDevice.setVersion(0x0200); USBDevice.setDeviceVersion(0x0200);
+  } else if (g_usbMode == MODE_SW_HORI) {   // SWITCH HORIPAD (console whitelist; composite w/ WebUSB won't pair on-console)
+    USBDevice.setID(0x0F0D, 0x0092);
+    USBDevice.setDeviceVersion(0x0200);
     USBDevice.setManufacturerDescriptor("HORI CO.,LTD.");
     USBDevice.setProductDescriptor("POKKEN CONTROLLER");
-    g_switch.enableOutEndpoint(true);  // real HORIPAD has an interrupt OUT ep (the descriptor declares an output report); the console expects the bidirectional interface
+    g_switch.enableOutEndpoint(true);
     g_switch.setReportDescriptor(SWITCH_HID_DESC, sizeof SWITCH_HID_DESC);
-    g_switch.setPollInterval(8);       // 8ms (~125Hz); we stream the 8-byte report (no handshake needed)
+    g_switch.setPollInterval(8);
     g_switch.begin();
-  } else {                             // STEAM presentation: the 4 puck slot interfaces (desktop lizard is automatic when Steam is closed)
+  } else if (g_usbMode == MODE_SW_PRO) {    // Switch Pro Controller + gyro (057E:2009, report 0x30)
+    USBDevice.setID(0x057E, 0x2009);
+    USBDevice.setDeviceVersion(0x0210);
+    USBDevice.setManufacturerDescriptor("Nintendo Co., Ltd.");
+    USBDevice.setProductDescriptor("Pro Controller");
+    g_swPro.enableOutEndpoint(true);
+    g_swPro.setReportDescriptor(SWPRO_HID_DESC, sizeof SWPRO_HID_DESC);
+    g_swPro.setPollInterval(4);
+    g_swPro.begin();
+  } else if (g_usbMode == MODE_PS5) {       // DualSense + gyro + trackpad
+    USBDevice.setID(0x054C, 0x0CE6);
+    USBDevice.setDeviceVersion(0x0100);
+    USBDevice.setManufacturerDescriptor("Sony Interactive Entertainment");
+    USBDevice.setProductDescriptor("DualSense Wireless Controller");
+    g_ps5.enableOutEndpoint(true);
+    g_ps5.setReportDescriptor(PS5_HID_DESC, sizeof PS5_HID_DESC);
+    g_ps5.setPollInterval(4);
+    g_ps5.begin();
+  } else if (g_usbMode == MODE_HIDGYRO) {   // DS4-layout generic HID + gyro
+    USBDevice.setID(0x054C, 0x05C4);
+    USBDevice.setDeviceVersion(0x0100);
+    USBDevice.setManufacturerDescriptor("Sony Computer Entertainment");
+    USBDevice.setProductDescriptor("Wireless Controller");
+    g_hidGyro.enableOutEndpoint(true);
+    g_hidGyro.setReportDescriptor(GYRO_HID_DESC, sizeof GYRO_HID_DESC);
+    g_hidGyro.setPollInterval(4);
+    g_hidGyro.begin();
+  } else {                             // STEAM / LIZARD: 4 puck slot interfaces (+ WebUSB)
     USBDevice.setID(0x28DE, 0x1304);
     USBDevice.setManufacturerDescriptor("Valve Software");
     USBDevice.setProductDescriptor("Steam Controller Puck");
@@ -1416,10 +1767,9 @@ void setup() {
       hid[i].begin();
     }
   }
-  // WebUSB config panel: only in STEAM mode (the one composite mode). Xbox/Switch are clean controllers —
-  // adding a vendor config interface (and the USB-2.1 BOS it forces) would re-create the exact composite that
-  // stops them binding. In those modes, reconfigure over RF (back-paddle chord) or from Steam mode.
-  if (g_usbMode == 0) usb_web.begin();   // no landing page -> no Chrome auto-notification
+  // WebUSB config panel — every mode. Puck: historical CDC+HID+vendor stack (Steam + Chrome can share it).
+  // Clean modes: bare gamepad + WebUSB (begin() sets bcdUSB 0x0210 + BOS).
+  usb_web.begin();
   // Enable USB Remote Wakeup (bit 5) so the host lets us signal wake-from-sleep. Bit 7 is always required.
   // The host OS enables device wakeup via SET_FEATURE(DEVICE_REMOTE_WAKEUP); we assert the capability here.
   USBDevice.setConfigurationAttribute(0x80 | 0x20);  // bmAttributes: required(0x80) | remote_wakeup(0x20)
@@ -1427,8 +1777,12 @@ void setup() {
   Serial.begin(115200);
   for (int i=0; i<300 && !USBDevice.mounted(); i++) delay(10);   // wait up to 3s for USB mount, but NEVER hang:
   if (USBDevice.suspended()) USBDevice.remoteWakeup();             // wake host if bus was sleeping when we (re-)attached (e.g. after a mode change)
-  loadBonds();                                                   // if a mode fails to enumerate, still run loop() so RF + the back-paddle mode chord keep working (can always switch back)
-  Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit, g_board, g_usbMode==1?"XBOX(controller+mouse)":g_usbMode==2?"SWITCH(pro controller)":"STEAM(puck; auto-lizard when Steam closed)");
+  loadBonds();
+  g_rumble=0; g_relayPend=false; g_haptic82On=false;
+  g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // boot: block stale Steam 0x82 until link stable
+  g_hapticStop = HAPTIC_STOP_BURST;
+  static const char* MODE_NAME[]={"STEAM(puck)","XBOX(xinput+mouse)","SWITCH(horipad)","LIZARD(puck kb/mouse)","SWITCH(pro+gyro)","PS5(dualsense)","HIDGYRO(ds4+motion)"};
+  Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit, g_board, MODE_NAME[g_usbMode<=MODE_MAX?g_usbMode:0]);
   // Hardware watchdog: if loop() ever stops feeding it (a wedged radio busy-wait, a HardFault spin, a blocked
   // CDC write) the WDT resets the nRF52 after ~8s — re-enumerating USB and re-initialising RF on its own, so a
   // hang no longer needs a physical replug. RUN keeps it counting in sleep; PAUSE freezes it under a debugger.
@@ -1443,7 +1797,10 @@ void loop() {
   NRF_WDT->RR[0] = WDT_RR_RR_Reload;   // feed the watchdog each loop; if we ever stop, the ~8s WDT auto-resets us
   if (g_dirty) { g_dirty = false; saveBonds(); }
   webusbPoll();
-  swStream();        // SWITCH mode: stream 0x30 input reports once the host enabled mode 0x30
+  swStream();
+  swProStream();
+  ps5Stream();
+  hidGyroStream();
   rfSerialPoll();
   rfPoll();
   rfRespondPoll();
@@ -1477,13 +1834,18 @@ void loop() {
   }
   { static bool wasHapticLinkUp=false;
     bool up=hapticLinkUp();
-    if(up && !wasHapticLinkUp){ g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS; g_hapticStop=4; }   // reconnect: drop Steam's stale startup haptics AND clear any haptic that latched on the controller before/across the switch (the "whine until Steam button" on entering Steam mode)
+    if(up && !wasHapticLinkUp){
+      g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;
+      g_haptic82On = false;
+      hapticCancelPendingOn();
+      g_hapticStop = HAPTIC_STOP_BURST;
+    }
     wasHapticLinkUp=up;
   }
   // Legacy XInput rumble -> relay the haptic (0x82 [01 01 gain]) to the controller while the host commands it,
   // re-queued ~40/s like Steam's glide haptic so it sustains. Not active in the current HID Xbox presentation.
-  if (g_usbMode==1 && g_rumble && millis()-g_rumbleMs > RUMBLE_STUCK_MS) g_rumble=0;   // watchdog: lost stop packet -> release the held rumble instead of buzzing forever
-  if (g_usbMode==1 && g_rumble && !g_relayPend && g_connSlot>=0) {
+  if (g_usbMode==MODE_XBOX && g_rumble && millis()-g_rumbleMs > RUMBLE_STUCK_MS) g_rumble=0;
+  if (g_usbMode==MODE_XBOX && g_rumble && !g_relayPend && g_connSlot>=0) {
     static unsigned long lastRumble=0;
     if (millis()-lastRumble>=25) { lastRumble=millis();
       uint8_t gain = g_rumble<0x30?0x30:g_rumble;   // floor so low rumble is still feelable
@@ -1492,7 +1854,7 @@ void loop() {
   }
   // Steam-mode haptic guard: do not synthesize haptic packets. The reconnect guard above only drops stale
   // host 0x82 traffic until the link is stable; active-session haptics are relayed verbatim.
-  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) { g_haptic82On=false; g_hapticStop=4; }  // host went silent mid-haptic (its stop was lost / never sent) -> actively stop the latched buzz
+  if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) { g_haptic82On=false; g_hapticStop=HAPTIC_STOP_BURST; }  // host went silent mid-haptic (its stop was lost / never sent) -> actively stop the latched buzz
   // QoS: if the current channel is degrading (crcfail+noRx), hop to the next clean candidate (conservative).
   if (g_qos && g_connSlot>=0 && millis()-g_qosCheckMs>=600) {
     uint16_t bad=g_qosBad; g_qosBad=0; g_qosCheckMs=millis();
