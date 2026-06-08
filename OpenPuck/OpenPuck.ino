@@ -95,7 +95,7 @@ static uint8_t g_abSwap = 0;                 // 1 = swap A/B and X/Y (Nintendo f
 static uint8_t g_back[4] = {5,6,7,8};        // back paddles L4,R4,L5,R5 -> button codes (see codeToXB; 5=LB 6=RB 7=L3 8=R3)
 #define POLL_US_DEFAULT 4000u                 // 250 Hz — matches SC2 input report rate (1000000/250 = 4000 us)
 #define USB_STREAM_MS   4u                    // host-side HID stream cadence for translated modes (~250 Hz)
-static uint32_t g_pollUs = POLL_US_DEFAULT;   // RF poll cadence (us). NOT persisted — WebUSB/CDC 'U' tune for the session only, reverts to POLL_US_DEFAULT on reboot.
+static const uint32_t g_pollUs = POLL_US_DEFAULT;   // RF poll cadence (us). FIXED — not configurable. Any rate persisted by an older build is ignored and overwritten with the default on boot (see loadCfg).
                                              // Faster than the controller can refresh wastes airtime; slower adds latency.
 static uint32_t g_rxWin = 1200;              // poll RX-window (us): max wait for the reply. This (not pollUs) caps poll rate
                                              // (~1e6/rxWin). Shorter=more polls/s but may miss the controller's DELAYED replies
@@ -276,6 +276,9 @@ static void loadCfg(){
       g_mDiv=c.mDiv?c.mDiv:64; g_mFric=c.mFric; g_padSmooth=c.padSmooth?c.padSmooth:35;
       g_abSwap=c.abSwap; for(int i=0;i<4;i++) g_back[i]=c.back[i];
       g_persistMode = c.persistMode?true:false;
+      // poll rate is fixed (g_pollUs const = POLL_US_DEFAULT). A stale rate from an older build is never
+      // applied; rewrite cfg so the persisted byte also matches the new default.
+      if(c.pollU100 != (uint8_t)(POLL_US_DEFAULT/100)) consume=true;
       // boot-mode policy: a one-shot bootMode (set by an explicit switch when !persist) wins once and is then
       // cleared; otherwise persist->last mode, else->Steam. (poll rate stays POLL_US_DEFAULT — never restored from cfg.)
       if(c.bootMode!=0xFF){ g_usbMode=modeValid(c.bootMode)?c.bootMode:0; consume=true; }
@@ -492,7 +495,7 @@ static uint8_t  g_lastSeq=0; static uint32_t g_stNew=0; static uint16_t g_newps=
 static uint32_t g_stCrc=0, g_stNoRx=0;   // diagnostics: replies w/ bad CRC, and polls with no reply at all (timing vs RF-quality)
 static uint32_t g_chF1[3]={0,0,0};   // diagnostic: F1 replies per poll channel {sessCh,2,80}
 static uint8_t  g_chIdx=0, g_noRep=0; // (legacy hop counters; controller doesn't hop)
-static uint32_t g_lastPollUs=0;   // (g_pollUs declared in the config block near the top; 'U' or WebUSB to tune)
+static uint32_t g_lastPollUs=0;   // (g_pollUs declared in the config block near the top; fixed, not tunable)
 static unsigned long g_lastSessBeacon=0;          // session keepalive beacon timer
 static uint32_t g_connRx   = 0;
 static uint8_t  g_balen   = 4;            // ESB 5-byte addr
@@ -883,10 +886,12 @@ static void rfLizard(const uint8_t* r, Adafruit_USBD_HID* mdev, Adafruit_USBD_HI
   if(ltouch){ if(plt){ sacc += (ly-ply)/(float)(g_mDiv*24); } ply=ly; } else sacc=0; plt=ltouch;
   int dw=(int)sacc; sacc-=dw; if(dw>15)dw=15; if(dw<-15)dw=-15;   // finger up = wheel up (positive)
   // --- mouse buttons: left=R-pad-click|R-trigger, right=L-trigger, middle=L-pad-click ---
-  uint8_t rtrig=u16off(r,6)>>8, ltrig=u16off(r,4)>>8;
+  // trigU8 (full-range scale + saturate) so a full pull reaches ~0xFF; a raw >>8 tops out ~0x80 and never
+  // crosses the threshold, leaving the trigger clicks dead.
+  uint8_t rtrig=trigU8(u16off(r,6)), ltrig=trigU8(u16off(r,4));
   uint8_t mbtn=0;
-  if((b&TB_RPADC)||rtrig>180) mbtn|=1;
-  if(ltrig>180)               mbtn|=2;
+  if((b&TB_RPADC)||rtrig>180) mbtn|=1;   // right trigger -> left (primary) click
+  if(ltrig>180)               mbtn|=2;   // left trigger  -> right click
   if(b&TB_LPADC)              mbtn|=4;
   static uint8_t pmbtn=0;
   if(dx||dy||dw||mbtn!=pmbtn){ pmbtn=mbtn;
@@ -1540,7 +1545,7 @@ static void rfBeaconOnce(){
 // ===================== WebUSB config channel =====================
 // Browser panel (copycat_config.html) <-> firmware, binary framed.
 //   host->dev:  0x01                  GET  -> reply status blob
-//               0x02 <field> <value>  SET one byte field (1=mDiv 2=mFric 3=padSmooth 4=abSwap 5..8=back[0..3] 9=pollU100
+//               0x02 <field> <value>  SET one byte field (1=mDiv 2=mFric 3=padSmooth 4=abSwap 5..8=back[0..3] 9=(removed, poll rate fixed)
 //                                     10=e7b 11=relayOp 12=relaySub 13=testHaptic 14=fwdNewOnly 15=qos 16=persistMode
 //                                     17..19=chordBtn B/X/Y mode assignments)
 //               0x03 <mode>           switch USB mode (0..6): persist + reboot
@@ -1581,14 +1586,14 @@ static void webusbPoll(){
       if(op==0x01){ webusbSendBlob(); }
       else if(op==0x02){
         uint8_t f=buf[1], v=buf[2];
-        bool persist=true;   // most fields persist; the rate knobs are session-only (locked default on reboot)
+        bool persist=true;   // every settable field persists (poll rate is no longer settable)
         switch(f){
           case 1: g_mDiv = v<4?4:v; break;
           case 2: g_mFric = v>99?99:v; break;
           case 3: g_padSmooth = v<5?5:(v>100?100:v); break;
           case 4: g_abSwap = v?1:0; break;
           case 5: case 6: case 7: case 8: g_back[f-5]=v; break;
-          case 9: g_pollUs = (uint32_t)(v<1?1:v)*100; persist=false; break;   // pollU100 -> us. SESSION-ONLY: reverts to POLL_US_DEFAULT on reboot.
+          // case 9 (pollU100) removed — poll rate is fixed at POLL_US_DEFAULT and no longer configurable.
           case 10: g_e7b = v?1:0; break;                       // E7 protocol-version B-byte (experimental v1 fast)
           case 11: g_relayOp = v; break;                       // haptic-relay opcode (buzz hunt)
           case 12: g_relaySub = v; break;                      // haptic-relay sub-type (buzz hunt)
@@ -1648,7 +1653,6 @@ static void rfSerialPoll(){
       else if (line[0]=='q'){ g_getParam = g_getParam ? 0x00 : 0x2D; Serial.printf("# GET-0x45 param=%02X\n",g_getParam); }
       else if (line[0]=='v'){ g_connVerbose=!g_connVerbose; Serial.printf("# conn verbose %s (F1 seen=%lu)\n",g_connVerbose?"ON":"off",(unsigned long)g_connF1); }
       else if (line[0]=='C'){ g_sessCh=strtoul(line+1,0,10); Serial.printf("# session channel=%u (re-pair/reconnect to apply)\n",g_sessCh); }
-      else if (line[0]=='U'){ g_pollUs=strtoul(line+1,0,10); if(g_pollUs<50)g_pollUs=50; Serial.printf("# poll interval=%lu us (~%lu/s) SESSION-ONLY (default %u us on reboot)\n",(unsigned long)g_pollUs,(unsigned long)(1000000/g_pollUs),(unsigned)POLL_US_DEFAULT); }
       else if (line[0]=='E'){ g_mDiv=strtoul(line+1,0,10); if(g_mDiv<4)g_mDiv=4; saveCfg(); Serial.printf("# xbox-mouse sensitivity divisor=%d (lower=faster)\n",g_mDiv); }
       else if (line[0]=='F'){ g_mFric=strtoul(line+1,0,10); if(g_mFric>99)g_mFric=99; saveCfg(); Serial.printf("# xbox-mouse friction=%d%% (higher=more glide/momentum)\n",g_mFric); }
       else if (line[0]=='D'){ g_padSmooth=strtoul(line+1,0,10); if(g_padSmooth<5)g_padSmooth=5; if(g_padSmooth>100)g_padSmooth=100; saveCfg(); Serial.printf("# steam pad smoothing alpha=%d%% (100=off, lower=smoother/laggier)\n",g_padSmooth); }
