@@ -52,6 +52,8 @@ A webusb based configuration UI is available [here](https://safijari.github.io/o
 - Allow bluetooth controllers to pair with and connect to the puck
 
 # Contributions
+The firmware is split into small, single-responsibility modules under `OpenPuck/` (one file per emulated controller, plus the RF, config, and host-interface layers). Start with [ARCHITECTURE.md](./ARCHITECTURE.md) for the map of how it all fits together and how to add a new USB personality.
+
 I have tested this software fairly extensively but I have limited resources. I only have one controller so I actually don't know if multiple controllers even work correctly (in fact I'm almost sure they will not). Please submit issues with any issues you find. PRs also welcome of course.
 
 # Acknowledgements
