@@ -36,6 +36,7 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | WebUSB panel → mode 4 | Switch Pro + Gyro | PC only |
 | WebUSB panel → mode 5 | DualSense + Gyro + Trackpad | PC only |
 | WebUSB panel → mode 6 | DS4/HIDGYRO + Gyro + Trackpad | PC only |
+| WebUSB panel → mode 7 | Xbox One | PC only |
 
 # How to use it
 You will need to flash OpenPuck.ino onto a compatible microcontroller. See [build instructions document](./docs/BUILD_AND_DEPLOY.md) for more details.

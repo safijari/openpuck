@@ -68,18 +68,20 @@ Adafruit_USBD_HID hid[NSLOT];
 static const uint8_t MOUSE_HID_DESC[] = { TUD_HID_REPORT_DESC_MOUSE() };
 Adafruit_USBD_HID g_mouse;   // Xbox-mode mouse interface (right trackpad). Steam-mode lizard reuses the puck's own 0x40 mouse report instead.
 // USB presentation modes (g_usbMode). RF poll/relay is identical across all; only USB enumeration + report mapping differs.
-#define MODE_STEAM   0   // Valve puck; auto-lizard when Steam closed
-#define MODE_XBOX    1   // XInput + right-pad mouse
-#define MODE_SW_HORI 2   // HORIPAD (Switch console whitelist)
-#define MODE_LIZARD  3   // Puck HID; always keyboard+mouse (ignores Steam heartbeat)
-#define MODE_SW_PRO  4   // Nintendo Switch Pro Controller (057E:2009) + gyro
-#define MODE_PS5     5   // Sony DualSense (054C:0CE6) + gyro + split trackpad
-#define MODE_HIDGYRO 6   // DS4-layout generic HID gamepad + gyro (Fortnite-friendly)
-#define MODE_MAX     6
+#define MODE_STEAM    0   // Valve puck; auto-lizard when Steam closed
+#define MODE_XBOX     1   // Xbox 360 (XInput + right-pad mouse)
+#define MODE_SW_HORI  2   // HORIPAD (Switch console whitelist)
+#define MODE_LIZARD   3   // Puck HID; always keyboard+mouse (ignores Steam heartbeat)
+#define MODE_SW_PRO   4   // Nintendo Switch Pro Controller (057E:2009) + gyro
+#define MODE_PS5      5   // Sony DualSense (054C:0CE6) + gyro + split trackpad
+#define MODE_HIDGYRO  6   // DS4-layout generic HID gamepad + gyro (Fortnite-friendly)
+#define MODE_XBOX_ONE 7   // Xbox One identity (XInput + right-pad mouse)
+#define MODE_MAX      7
 static uint8_t g_usbMode = 0;   // loaded from flash at boot
 static bool    g_xbox = false;   // true for all non-puck presentations (not STEAM/LIZARD)
 static uint8_t g_chordBtn[3] = { MODE_LIZARD, MODE_XBOX, MODE_SW_HORI };   // back4+B/X/Y -> these modes (A always STEAM)
 static inline bool modeIsPuck(uint8_t m){ return m==MODE_STEAM || m==MODE_LIZARD; }
+static inline bool modeIsXbox(uint8_t m){ return m==MODE_XBOX || m==MODE_XBOX_ONE; }
 static inline bool modeValid(uint8_t m){ return m<=MODE_MAX; }
 // Mode persistence policy: by DEFAULT every fresh power-on/reconnect lands in STEAM mode (0). An explicit
 // mode switch still works for the session via a ONE-SHOT bootMode (honored once, then cleared, so the next
@@ -1477,7 +1479,7 @@ static uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t* payload, uint8_t 
               ((uint8_t*)rep)[2] &= ~(uint8_t)(TB_A|TB_B|TB_X|TB_Y);
             if(g_usbMode==MODE_SW_HORI || g_usbMode==MODE_SW_PRO || g_usbMode==MODE_PS5 || g_usbMode==MODE_HIDGYRO){
               // streamed from loop(); nothing to send here
-            } else if(g_usbMode==MODE_XBOX){            // XBOX: standard gamepad + right-pad mouse (2nd interface)
+            } else if(modeIsXbox(g_usbMode)){           // XBOX: standard gamepad + right-pad mouse (2nd interface)
               rfXboxGamepad(rep); rfXboxMouse(rep);
             } else if(g_connSlot>=0 && g_connSlot<NSLOT){  // STEAM / LIZARD (puck interface)
               if(lizardActive()){
@@ -1665,7 +1667,7 @@ static void rfBeaconOnce(){
 //               0x02 <field> <value>  SET one byte field (1=mDiv 2=mFric 3=(removed, ex-padSmooth) 4=abSwap 5..8=back[0..3] 9=(removed, poll rate fixed)
 //                                     10=e7b 11=relayOp 12=relaySub 13=testHaptic 14=fwdNewOnly 15=qos 16=persistMode
 //                                     17..19=chordBtn B/X/Y mode assignments)
-//               0x03 <mode>           switch USB mode (0..6): persist + reboot
+//               0x03 <mode>           switch USB mode (0..7): persist + reboot
 //   dev->host:  0xA5 <len> <payload>  payload = [ver=1][mode][mDiv][mFric][rsvd=0][abSwap]
 //                                                [back0..3][connSlot(0xFF=none)][linkUp][f1ps_lo][f1ps_hi][pollU100][newps_lo][newps_hi][e7b][relayOp][relaySub]
 #define WB_PAYLEN 26
@@ -1752,7 +1754,7 @@ static void rfSerialPoll(){
       else if (line[0]=='x'){ uint8_t m=strtoul(line+1,0,10); if(modeValid(m)){
         if(USBDevice.suspended()){ Serial.println("# mode change blocked: host suspended"); }
         else { Serial.printf("# switch mode %u (reboot)\n",m); delay(20); saveMode(m); delay(40); NVIC_SystemReset(); }
-      } }   // switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro
+      } }   // switch USB mode: 0=steam 1=xbox360 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro 7=xboxone
       else if (line[0]=='c'){ g_rfCh=atoi(line+1); Serial.printf("# ch=%u\n",g_rfCh); if(g_rfListen) rfListenStart(); }
       else if (line[0]=='p'){ g_rfPrefix=strtol(line+1,0,16); Serial.printf("# prefix=%02X\n",g_rfPrefix); if(g_rfListen) rfListenStart(); }
       else if (line[0]=='i'){ g_crcinit=strtoul(line+1,0,16); Serial.printf("# crcinit=%06lX\n",(unsigned long)g_crcinit); }
@@ -1828,14 +1830,20 @@ void setup() {
   // Distinct USB serial PER MODE (must be set AFTER clearConfiguration, which nulls it). Hosts cache USB
   // identity by VID:PID:serial; reusing one serial under a changing VID:PID can make a host refuse the new
   // identity. Steam keeps the exact unit serial (its pairing identity); the others get a 1-char suffix.
-  static const char MODE_SUFFIX[] = {'X','N','L','P','S','G'};   // modes 1..6
+  static const char MODE_SUFFIX[] = {'X','N','L','P','S','G','O'};   // modes 1..7
   if (modeIsPuck(g_usbMode)) { USBDevice.setSerialDescriptor(g_unit); }
   else { snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c", g_unit, MODE_SUFFIX[g_usbMode-1]); USBDevice.setSerialDescriptor(g_usbSerial); }
-  if (g_usbMode == MODE_XBOX) {        // XBOX presentation: XInput vendor interface + HID boot mouse
-    USBDevice.setID(0x045E, 0x028E);   // device-level 045E:028E match -> Windows xusb / SDL / Linux xpad all bind it
-    USBDevice.setDeviceVersion(0x0114);
+  if (modeIsXbox(g_usbMode)) {         // XBOX presentation: XInput vendor interface + HID boot mouse
+    if (g_usbMode == MODE_XBOX_ONE) {
+      USBDevice.setID(0x045E, 0x02D1);   // Xbox One (original) identity
+      USBDevice.setDeviceVersion(0x0500);
+      USBDevice.setProductDescriptor("Xbox One Controller");
+    } else {
+      USBDevice.setID(0x045E, 0x028E);   // Xbox 360 wired identity
+      USBDevice.setDeviceVersion(0x0114);
+      USBDevice.setProductDescriptor("Controller");
+    }
     USBDevice.setManufacturerDescriptor("Microsoft");
-    USBDevice.setProductDescriptor("Controller");
     g_xinput.setStringDescriptor("Controller"); g_xinput.begin();   // XInput vendor interface (FF/5D/01) -> MI_00
     g_mouse.setStringDescriptor("OpenPuck Mouse");
     g_mouse.setBootProtocol(HID_ITF_PROTOCOL_MOUSE);
@@ -1909,7 +1917,7 @@ void setup() {
   g_rumble=0; g_relayPend=false; g_haptic82On=false;
   g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // boot: block stale Steam 0x82 until link stable
   g_hapticStop = HAPTIC_STOP_BURST;
-  static const char* MODE_NAME[]={"STEAM(puck)","XBOX(xinput+mouse)","SWITCH(horipad)","LIZARD(puck kb/mouse)","SWITCH(pro+gyro)","PS5(dualsense)","HIDGYRO(ds4+motion)"};
+  static const char* MODE_NAME[]={"STEAM(puck)","XBOX360(xinput+mouse)","SWITCH(horipad)","LIZARD(puck kb/mouse)","SWITCH(pro+gyro)","PS5(dualsense)","HIDGYRO(ds4+motion)","XBOXONE(xinput+mouse)"};
   Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit, g_board, MODE_NAME[g_usbMode<=MODE_MAX?g_usbMode:0]);
   // Hardware watchdog: if loop() ever stops feeding it (a wedged radio busy-wait, a HardFault spin, a blocked
   // CDC write) the WDT resets the nRF52 after ~8s — re-enumerating USB and re-initialising RF on its own, so a
@@ -1972,8 +1980,8 @@ void loop() {
   }
   // Legacy XInput rumble -> relay the haptic (0x82 [01 01 gain]) to the controller while the host commands it,
   // re-queued ~40/s like Steam's glide haptic so it sustains. Not active in the current HID Xbox presentation.
-  if (g_usbMode==MODE_XBOX && g_rumble && millis()-g_rumbleMs > RUMBLE_STUCK_MS) g_rumble=0;
-  if (g_usbMode==MODE_XBOX && g_rumble && !g_relayPend && g_connSlot>=0) {
+  if (modeIsXbox(g_usbMode) && g_rumble && millis()-g_rumbleMs > RUMBLE_STUCK_MS) g_rumble=0;
+  if (modeIsXbox(g_usbMode) && g_rumble && !g_relayPend && g_connSlot>=0) {
     static unsigned long lastRumble=0;
     if (millis()-lastRumble>=25) { lastRumble=millis();
       uint8_t gain = g_rumble<0x30?0x30:g_rumble;   // floor so low rumble is still feelable
