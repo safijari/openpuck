@@ -74,7 +74,7 @@ just points at the `OpenPuck` directory). Modules are layered low → high:
 | `gamepad_util.{h,cpp}` | Cross-mode helpers for building host reports: stick rescaling, Steam-trackpad → touch mapping, PlayStation-layout button packers. |
 | `haptics.{h,cpp}` | Host→controller haptic relay queue + the watchdogs that stop a latched buzz; the OUTPUT-report capture ring. |
 | **`controllers.{h,cpp}`** | The `IController` abstraction + the `mode → singleton` registry. |
-| `puck_hid.{h,cpp}` | **Steam/Lizard** personality: the puck HID slot interfaces, the feature command channel (bond read/write, attributes), the auto-lizard decision, and the USB connection presentation. |
+| `puck_hid.{h,cpp}` | **Steam/Lizard** personality: the puck HID slot interfaces, the feature command channel (bond read/write, attributes), the seamless auto-lizard decision, and the USB connection presentation. |
 | `mode_lizard.{h,cpp}` | The lizard keyboard+mouse mapping (rides on the puck interface; not a standalone controller). |
 | `mode_xinput.{h,cpp}` | **Xbox** personality: a custom TinyUSB XInput class driver + right-pad mouse + rumble relay. |
 | `mode_switch_hori.{h,cpp}` | **Switch HORIPAD** personality (console-friendly, no handshake). |

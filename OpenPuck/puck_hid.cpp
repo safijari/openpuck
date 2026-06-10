@@ -45,20 +45,26 @@ static Adafruit_USBD_HID hid[NSLOT];
 
 // ===================== seamless LIZARD decision =====================
 // Steam, while running, re-sends settings report 0x87 (lizard-off) every ~3s as a heartbeat (captured on HW),
-// and ANY OUTPUT report likewise stamps g_steamAliveMs. When the heartbeat stops we fall back to lizard.
+// and ANY OUTPUT report likewise stamps g_steamAliveMs. When the heartbeat stops we fall back to lizard, so the
+// controller drives desktop keyboard+mouse whenever Steam isn't running. MODE_LIZARD forces lizard always.
 static unsigned long g_steamAliveMs = 0;   // millis of last Steam OUTPUT/settings write; 0 at boot => lizard until Steam appears
-#define LIZARD_WD_MS 7000u                  // fall back to lizard this long after the heartbeat stops (>2x the 3s cadence)
+// Fall back to lizard this long after Steam's ~3s settings heartbeat stops. This CANNOT go below ~3s: the only
+// "Steam closed" signal is the absence of that beat, so a shorter window would flip to lizard in the gaps
+// while Steam is still running (lizard mid-game). 4s is just above the cadence -> near-minimal switch delay
+// while Steam quits. The heartbeat rides USB (reliable, unlike the RF link), so a dropped beat is a non-issue;
+// no need for the old 7s (>2x) padding.
+#define LIZARD_WD_MS 4000u
 static bool g_autoLizard = true;            // master switch; false => Steam mode always forwards 0x45
+// Single source of truth, shared by the USB input path AND the haptic relay gate: if we ever relay a 0x82 to
+// the controller while presenting lizard (Steam isn't reading 0x45 back), Steam loops the same haptic -> buzz.
+static inline bool steamDrivingGamepad(){ return g_steamAliveMs && (millis()-g_steamAliveMs < LIZARD_WD_MS); }
+static inline bool lizardActive(){ return modeIsPuck(g_usbMode) && (g_usbMode==MODE_LIZARD || (g_autoLizard && !steamDrivingGamepad())); }
 // Right after the host resumes from suspend, MUTE input forwarding briefly. Otherwise the controller's input
 // in that instant (a trackpad click/trigger, or residual button state from the wake gesture) gets forwarded
 // as a real click/keypress into the just-woken desktop -- which was activating the highlighted Start tile
 // (Edge) and closing the Start menu on every wake. Set when task() sees the suspended->active transition.
 static unsigned long g_resumeMs = 0;
 #define POST_RESUME_MUTE_MS 1500u
-// Single source of truth, shared by the USB input path AND the haptic relay gate: if we ever relay a 0x82 to
-// the controller while presenting lizard (Steam isn't reading 0x45 back), Steam loops the same haptic -> buzz.
-static inline bool steamDrivingGamepad(){ return g_steamAliveMs && (millis()-g_steamAliveMs < LIZARD_WD_MS); }
-static inline bool lizardActive(){ return modeIsPuck(g_usbMode) && (g_usbMode==MODE_LIZARD || (g_autoLizard && !steamDrivingGamepad())); }
 
 // ===================== puck feature command channel =====================
 // `slot` is the interface index (interface N == bond slot N).
