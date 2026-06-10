@@ -49,6 +49,12 @@ static Adafruit_USBD_HID hid[NSLOT];
 static unsigned long g_steamAliveMs = 0;   // millis of last Steam OUTPUT/settings write; 0 at boot => lizard until Steam appears
 #define LIZARD_WD_MS 7000u                  // fall back to lizard this long after the heartbeat stops (>2x the 3s cadence)
 static bool g_autoLizard = true;            // master switch; false => Steam mode always forwards 0x45
+// Right after the host resumes from suspend, MUTE input forwarding briefly. Otherwise the controller's input
+// in that instant (a trackpad click/trigger, or residual button state from the wake gesture) gets forwarded
+// as a real click/keypress into the just-woken desktop -- which was activating the highlighted Start tile
+// (Edge) and closing the Start menu on every wake. Set when task() sees the suspended->active transition.
+static unsigned long g_resumeMs = 0;
+#define POST_RESUME_MUTE_MS 1500u
 // Single source of truth, shared by the USB input path AND the haptic relay gate: if we ever relay a 0x82 to
 // the controller while presenting lizard (Steam isn't reading 0x45 back), Steam loops the same haptic -> buzz.
 static inline bool steamDrivingGamepad(){ return g_steamAliveMs && (millis()-g_steamAliveMs < LIZARD_WD_MS); }
@@ -178,6 +184,9 @@ void SteamPuckController::onReport45(const uint8_t* rep, bool fresh, uint8_t bod
   // movement and nearly impossible to keep asleep. Waking is an explicit gesture only (Steam-button short press
   // / controller connect), handled in rf_link.cpp via the device-level USB resume signal.
   if (USBDevice.suspended()) return;
+  // Just woke? Hold off forwarding for a beat so the wake gesture's residual controller input doesn't click /
+  // type into the freshly-woken desktop (it was launching Edge from the Start menu on every wake).
+  if (g_resumeMs && millis()-g_resumeMs < POST_RESUME_MUTE_MS) return;
   if (g_connSlot < 0 || g_connSlot >= NSLOT) return;
   if (lizardActive()){
     rfLizard(rep, &hid[g_connSlot], &hid[g_connSlot], 0x40, 0x41);
@@ -191,15 +200,14 @@ void SteamPuckController::onReport45(const uint8_t* rep, bool fresh, uint8_t bod
   }
 }
 
-// ---- wake nudge: real HID input delivered right after the bus resumes. A bare USB resume signal is NOT
-// enough to wake some hosts (Windows in particular) -- they only wake when actual keyboard/mouse input
-// follows. So on a deliberate wake gesture we play a HARMLESS nudge on the puck's own kb/mouse reports:
-// a mouse JIGGLE (move a few px and back, NO button) + a lone Left-Ctrl tap. Earlier this sent a left CLICK
-// and SPACE, which woke the host but also clicked/activated whatever was focused (it kept launching the
-// browser). Move + modifier wake just as well with no actionable side effect. Queued by wakeEvent() (called
-// from rf_link on a Steam-button short press / controller connect while suspended); stepped ~15ms per phase.
-// Reports can't cross a suspended bus, so it's delivered once the bus has resumed.
-static uint8_t       g_nudgeStep = 0;      // 0=idle; 1=jiggle+, 2=jiggle-, 3=Ctrl down, 4=Ctrl up
+// ---- wake nudge: a bare USB resume signal is NOT enough to wake some hosts (Windows in particular) -- they
+// only wake when actual mouse/keyboard input follows. So on a deliberate wake gesture we play a HARMLESS mouse
+// JIGGLE (move a few px right, then back -- NET ZERO cursor, NO button): real mouse activity wakes the host,
+// but it clicks nothing and doesn't close/activate anything (an open Start menu stays open). Earlier versions
+// also sent a click / space / Ctrl; those either activated the focused item or weren't needed. Queued by
+// wakeEvent() (rf_link, on a Steam short press / controller connect while suspended); reports can't cross a
+// suspended bus, so it's delivered once the bus has resumed.
+static uint8_t       g_nudgeStep = 0;      // 0=idle; 1=jiggle+, 2=jiggle-
 static unsigned long g_nudgeMs = 0;
 #define NUDGE_JIGGLE_PX 10
 void SteamPuckController::wakeEvent(){
@@ -213,14 +221,9 @@ static void wakeNudgeTask(){
   static unsigned long stepMs=0;
   if(millis()-stepMs < 15) return;                                    // pace the edges
   stepMs=millis();
-  switch(g_nudgeStep){
-    case 1: case 2: {   // mouse jiggle: move +N then -N (net zero cursor), no buttons -> wakes, clicks nothing
-      hid_mouse_report_t m; m.buttons=0; m.x=(g_nudgeStep==1)?NUDGE_JIGGLE_PX:-NUDGE_JIGGLE_PX; m.y=0; m.wheel=0; m.pan=0;
-      hid[g_connSlot].sendReport(0x40,&m,sizeof m); break; }
-    case 3: { uint8_t k[8]={KEYBOARD_MODIFIER_LEFTCTRL,0,0,0,0,0,0,0}; hid[g_connSlot].sendReport(0x41,k,8); break; }  // lone modifier: inert
-    case 4: { uint8_t k[8]={0,0,0,0,0,0,0,0};                         hid[g_connSlot].sendReport(0x41,k,8); break; }  // release
-  }
-  g_nudgeStep = (g_nudgeStep>=4) ? 0 : (uint8_t)(g_nudgeStep+1);
+  hid_mouse_report_t m; m.buttons=0; m.x=(g_nudgeStep==1)?NUDGE_JIGGLE_PX:-NUDGE_JIGGLE_PX; m.y=0; m.wheel=0; m.pan=0;
+  hid[g_connSlot].sendReport(0x40,&m,sizeof m);                       // jiggle right, then back
+  g_nudgeStep = (g_nudgeStep>=2) ? 0 : (uint8_t)(g_nudgeStep+1);
 }
 
 // USB connection presentation (like the real dongle): report 0x79 = connection state (01=disc, 02=conn),
@@ -228,6 +231,9 @@ static void wakeNudgeTask(){
 // connected. Without it Steam shows disconnected even though 0x45 input is streaming.
 void SteamPuckController::task(){
   wakeNudgeTask();
+  { static bool wasSusp=false; bool susp=USBDevice.suspended();   // stamp the suspended->active edge for the post-resume mute
+    if(wasSusp && !susp) g_resumeMs=millis();
+    wasSusp=susp; }
   if (USBDevice.suspended()) return;   // no periodic 0x79/0x7B while the host sleeps -- those sends can wake it too
   static bool usbConn=false; static unsigned long last79=0, last7B=0;
   bool conn = (g_connSlot>=0 && millis()-g_connReplyMs < 300);

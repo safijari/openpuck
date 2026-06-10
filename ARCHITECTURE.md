@@ -215,12 +215,18 @@ graze and nearly impossible to keep asleep. The only wake triggers are a **Steam
 
 1. `USBDevice.remoteWakeup()` — the device-level USB resume signal; and
 2. `g_active->wakeEvent()` — queues a **wake nudge**, because a bare resume signal is **not** enough to wake
-   some hosts (Windows especially): they only wake when real keyboard/mouse input *follows* the resume. Once
-   the bus is back up, the puck personality plays a HARMLESS nudge on its own reports (`wakeNudgeTask` in
-   `puck_hid.cpp`): a **mouse jiggle** (move a few px and back, no button) + a lone **Left-Ctrl tap**. It can't
-   be sent *during* suspend (reports can't cross a suspended bus), so it's delivered right after resume.
-   (It originally sent a left *click* + *space*, which woke the host but also clicked/activated whatever was
-   focused — it kept launching the browser. Move + modifier wake just as well with no actionable side effect.)
+   some hosts (Windows especially): they only wake when real mouse/keyboard input *follows* the resume. Once
+   the bus is back up, the puck personality plays a **mouse jiggle** on its own report (`wakeNudgeTask` in
+   `puck_hid.cpp`): move a few px right, then back — net-zero cursor, no button. Real activity wakes the host
+   but clicks/activates nothing (an open Start menu stays open). It can't be sent *during* suspend, so it's
+   delivered right after resume. (Earlier versions sent a click / space / Ctrl too; the click + space were
+   activating the focused Start tile and launching the browser, so they were dropped.)
+
+Separately, `onReport45()` **mutes input forwarding for ~1.5 s after resume** (`POST_RESUME_MUTE_MS`): right
+after wake the controller's own input — a trackpad click/trigger, or residual button state from the wake
+gesture — would otherwise be forwarded as a real click/keypress into the just-woken desktop, which was what
+activated the highlighted Start tile (Edge) on every wake. The jiggle is exempt (it's sent directly, not via
+the forwarding path).
 
 The board LED is a wake debugger (`status_led.cpp`): dark in all steady states (including while armed), and a
 500 ms flash at the moment a `remoteWakeup()` is actually sent. Flash + host stays asleep = the resume was sent
