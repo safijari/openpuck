@@ -156,9 +156,10 @@ void SteamPuckController::begin(){
   USBDevice.setID(0x28DE, 0x1304);
   // Distinct bcdDevice so Windows keys a FRESH usbflags entry (cache is VID:PID:bcdDevice) and actually runs
   // MS OS 2.0 / WinUSB binding for the WebUSB vendor interface -- instead of reusing a stale "no WinUSB" entry
-  // tied to the real Steam Controller (28DE:1304), which has no WebUSB interface. Without this, the device
-  // enumerates and Steam binds it fine, but Chrome can't open WebUSB on Windows.
-  USBDevice.setDeviceVersion(0x0210);
+  // tied to the real Steam Controller (28DE:1304), which has no WebUSB interface. The normal (wake-mouse) and
+  // one-shot debug (CDC) boots present DIFFERENT interface sets, so they use DIFFERENT bcdDevice values --
+  // otherwise Windows would serve one's cached descriptor for the other when you reboot between them.
+  USBDevice.setDeviceVersion(g_debugCdcThisBoot ? 0x0212 : 0x0211);
   USBDevice.setManufacturerDescriptor("Valve Software");
   USBDevice.setProductDescriptor("Steam Controller Puck");
   for (int i = 0; i < NSLOT; i++) {

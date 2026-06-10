@@ -232,12 +232,26 @@ The catch is that a host only *honors* a resume from an allow-listed input devic
 a bare gamepad/vendor/composite presentation gets armed but ignored (notably Windows under Modern Standby).
 That's why Xbox mode (which exposes a boot mouse) woke Windows while the gamepad/puck modes didn't.
 
+Why a function (not just the device) must be wake-capable: device-level remote-wakeup is necessary but not
+sufficient on Windows — a *function driver* must hold a pending wait-wake request (`IRP_MN_WAIT_WAKE`) for the
+system to actually wake, and only the mouse/keyboard class drivers (`mouhid`/`kbdhid`) arm one by default
+(that's the "Allow this device to wake the computer" checkbox). The puck's generic-HID / CDC / WebUSB functions
+don't, so its armed device-level wake was getting ignored. A boot-mouse function fixes that.
+
 The fix: `wake_hid.cpp` registers a do-nothing **boot mouse** interface (the same shape Xbox mode already uses
-to wake Windows) so each mode is classified as a wake-capable input device. It's added in `setup()` for every
-**clean** mode. It is **not** added in puck mode,
-which is already at the nRF52840's 7-data-IN-endpoint limit (CDC + 4 puck HID + WebUSB) — adding it there would
-require freeing an endpoint (dropping CDC or WebUSB, or a bond slot). Puck mode already wakes on Linux/Steam
-Deck; making it wake Windows is the one case this doesn't cover without that tradeoff.
+to wake Windows) so each mode exposes a `mouhid`-bound, wait-wake-armed function. It's added in `setup()` for
+every **clean** mode and for **puck mode on a normal boot**.
+
+**Puck mode and the endpoint budget.** The nRF52840 has only 7 data IN endpoints. The puck composite used all
+7 (CDC = 2, 4 puck HID, WebUSB = 1), leaving no room for a wake interface. So puck mode now **drops the CDC
+serial console by default** (6 IN: 4 HID + WebUSB + wake mouse) — gaining Windows wake at the cost of the
+serial debug console. When you genuinely need the console, arm the **one-shot debug CDC** (WebUSB panel field
+20, or the CDC `D` command): the *next* boot keeps CDC and skips the wake mouse, and the boot after that reverts
+automatically (`g_debugCdcThisBoot`, stored in the reused `Cfg.rsvd0` byte, consumed in `loadCfg` exactly like
+`bootMode`). The two variants use different `bcdDevice` (0x0211 normal / 0x0212 debug) so Windows re-reads when
+you switch. (Trade-off to verify on hardware: the code historically warned that clearing the puck's CDC
+composite hurt simultaneous Steam + Chrome-WebUSB on Windows; the `bcdDevice` bump + MS OS 2.0 descriptors
+should keep WebUSB binding, but confirm Steam pairing + the browser panel still work.)
 
 Note hosts differ in what they honor: Windows keys on the input device class (this fix targets it); Linux/Steam
 Deck gates wake per-device in `/sys/.../power/wakeup` regardless of class, so a mode that still won't wake the

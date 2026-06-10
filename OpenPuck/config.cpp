@@ -9,6 +9,9 @@ uint8_t g_chordBtn[3] = { MODE_LIZARD, MODE_XBOX, MODE_SW_HORI };   // back4+B/X
 bool    g_persistMode = false;
 uint8_t g_bootMode = 0xFF;
 
+bool          g_debugCdcThisBoot = false;
+static uint8_t g_debugCdc = 0;   // persisted one-shot arm, stored in Cfg.rsvd0 (1 = keep CDC for the next boot)
+
 int     g_mDiv = 64, g_mFric = 94;
 uint8_t g_abSwap = 0;
 uint8_t g_back[4] = {5,6,7,8};   // L4->LB R4->RB L5->L3 R5->R3 (see codeToXB)
@@ -19,10 +22,10 @@ const uint32_t g_pollUs = POLL_US_DEFAULT;
 
 #define CFG_FILE "/cfg.bin"
 #define CFG_MAGIC 0xC7   // bumped (chordBtn[3]): old cfg ignored -> clean defaults on first boot
-struct Cfg { uint8_t magic, mode, mDiv, mFric, rsvd0, abSwap, back[4], pollU100, persistMode, bootMode, chordBtn[3]; };  // rsvd0 = ex-padSmooth (kept for layout)
+struct Cfg { uint8_t magic, mode, mDiv, mFric, rsvd0, abSwap, back[4], pollU100, persistMode, bootMode, chordBtn[3]; };  // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 void saveCfg(){
-  Cfg c={CFG_MAGIC,g_usbMode,(uint8_t)g_mDiv,(uint8_t)g_mFric,0,g_abSwap,
+  Cfg c={CFG_MAGIC,g_usbMode,(uint8_t)g_mDiv,(uint8_t)g_mFric,g_debugCdc,g_abSwap,
          {g_back[0],g_back[1],g_back[2],g_back[3]},(uint8_t)(g_pollUs/100),(uint8_t)(g_persistMode?1:0),g_bootMode,
          {g_chordBtn[0],g_chordBtn[1],g_chordBtn[2]}};
   InternalFS.remove(CFG_FILE); File f(InternalFS);
@@ -36,6 +39,9 @@ void loadCfg(){
       g_mDiv=c.mDiv?c.mDiv:64; g_mFric=c.mFric;
       g_abSwap=c.abSwap; for(int i=0;i<4;i++) g_back[i]=c.back[i];
       g_persistMode = c.persistMode?true:false;
+      // one-shot debug-CDC (Cfg.rsvd0): honor it for THIS boot, then consume so the next boot reverts to normal.
+      g_debugCdcThisBoot = c.rsvd0 ? true : false;
+      if(c.rsvd0){ g_debugCdc = 0; consume = true; }
       // poll rate is fixed (g_pollUs const = POLL_US_DEFAULT). A stale rate from an older build is never
       // applied; rewrite cfg so the persisted byte also matches the new default.
       if(c.pollU100 != (uint8_t)(POLL_US_DEFAULT/100)) consume=true;
@@ -56,3 +62,5 @@ void saveMode(uint8_t m){
   else             { g_bootMode=m; }
   saveCfg();
 }
+
+void armDebugCdcNextBoot(){ g_debugCdc = 1; saveCfg(); }   // next boot keeps CDC; loadCfg() consumes it after

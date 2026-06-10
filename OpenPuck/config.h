@@ -32,6 +32,13 @@ extern uint8_t g_chordBtn[3];   // back4+B/X/Y -> these modes (A always STEAM)
 extern bool    g_persistMode;   // false (default) = always boot Steam; true = boot into last mode
 extern uint8_t g_bootMode;      // one-shot: boot into this mode once then clear (!persistMode + explicit switch)
 
+// One-shot debug CDC. Puck mode normally DROPS the CDC serial console to free the USB endpoint its wake-mouse
+// interface needs (so puck can wake a sleeping Windows host). Arming this keeps CDC for the NEXT boot only --
+// dropping the wake mouse that boot -- so someone can attach the serial debugger; the boot after reverts to
+// normal automatically. Mirrors the g_bootMode one-shot. Armed from the WebUSB panel or CDC 'D' command.
+extern bool    g_debugCdcThisBoot;   // decision for THIS boot: true => keep CDC, skip the wake interface
+void armDebugCdcNextBoot();          // persist the one-shot (caller reboots)
+
 // persisted, runtime-tunable config:
 extern int     g_mDiv, g_mFric; // xbox/lizard mouse sensitivity divisor / friction%
 extern uint8_t g_abSwap;        // 1 = swap A/B and X/Y (Nintendo face-button layout)

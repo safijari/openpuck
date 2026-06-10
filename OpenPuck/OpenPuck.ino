@@ -47,16 +47,18 @@ void setup() {
   g_active = controllerFor(g_usbMode);
 
   // ---- USB descriptor rebuild ----
-  // Puck (Steam/Lizard): KEEP the boot CDC composite (do NOT clearConfiguration) and append 4 HID + WebUSB --
-  // this is the layout that worked with Steam running + Chrome WebUSB at the same time. Clearing puck to "save
-  // space" broke that coexistence. Clean controller modes still clear the CDC composite and rebuild bare.
+  // Puck mode NORMALLY drops the CDC serial console (clearConfiguration) to free a USB endpoint for the
+  // wake-mouse interface that lets it wake a sleeping Windows host. The one-shot debug arm (g_debugCdcThisBoot,
+  // set via the WebUSB panel / CDC 'D', auto-reverting after one boot) instead KEEPS the boot CDC composite
+  // for that boot and skips the wake mouse (no endpoint room for both). Clean modes always rebuild bare.
   const bool puckMode = g_active->isPuck();
+  const bool keepCdc  = puckMode && g_debugCdcThisBoot;
   USBDevice.detach(); delay(30);
-  if (puckMode) {
-    USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);   // headroom over the default 256 B cap
+  if (keepCdc) {
+    USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);   // keep boot CDC composite (debug boot)
   } else {
     USBDevice.clearConfiguration();
-    USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);
+    USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);   // headroom over the default 256 B cap
   }
 
   // Distinct USB serial PER MODE (must be set AFTER clearConfiguration, which nulls it). Hosts cache USB
@@ -69,8 +71,9 @@ void setup() {
   g_active->begin();   // register this mode's USB interface(s) + set VID/PID/strings
 
   // Boot-mouse wake interface so the host honors USBDevice.remoteWakeup() in this mode (see wake_hid.h).
-  // Skipped in puck mode: its CDC + 4 HID + WebUSB composite already uses all 7 data IN endpoints.
-  if (!puckMode) wakeHidBegin();
+  // Added for every clean mode, and for puck mode on a normal (CDC-dropped) boot. Skipped only on the one-shot
+  // debug boot, where CDC takes the endpoint instead.
+  if (!keepCdc) wakeHidBegin();
 
   // WebUSB config panel -- every mode. Puck: historical CDC+HID+vendor stack (Steam + Chrome can share it).
   // Clean modes: bare gamepad + WebUSB (begin() sets bcdUSB 0x0210 + BOS).
@@ -85,6 +88,7 @@ void setup() {
   hapticInit();   // clear relay/active flags + arm the reconnect block & initial stop burst
   static const char* MODE_NAME[]={"STEAM(puck)","XBOX(xinput+mouse)","SWITCH(horipad)","LIZARD(puck kb/mouse)","SWITCH(pro+gyro)","PS5(dualsense)","HIDGYRO(ds4+motion)"};
   Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit, g_board, MODE_NAME[g_usbMode<=MODE_MAX?g_usbMode:0]);
+  if (puckMode) Serial.printf("# puck USB: %s\n", keepCdc ? "DEBUG boot (CDC console on, wake mouse off; reverts next boot)" : "normal (CDC off, wake mouse on)");
   Serial.printf("# session addr %02X%02X%02X%02X/%02X ch%u (discovery on ibex/ch2)\n",
                 g_sessBase[0],g_sessBase[1],g_sessBase[2],g_sessBase[3],g_sessPrefix,g_sessCh);
   // Hardware watchdog: if loop() ever stops feeding it (a wedged radio busy-wait, a HardFault spin, a blocked

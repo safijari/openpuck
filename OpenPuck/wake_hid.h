@@ -10,9 +10,10 @@
 // USBDevice.remoteWakeup() resume signal driven from rf_link.cpp; this interface only changes how the host
 // classifies us. (A boot keyboard was tried and was worse -- it didn't enumerate on Windows.)
 //
-// NOT used in puck (Steam) mode: that composite (CDC + 4 puck HID + WebUSB) already consumes all 7 of the
-// nRF52840's data IN endpoints, leaving no room for another interface. (Puck mode already wakes on Linux/Deck;
-// giving it a wake interface on Windows would require freeing an endpoint -- see ARCHITECTURE.md.)
+// Added for every clean mode AND for puck mode on a normal boot: puck mode drops its CDC serial console by
+// default (freeing the endpoint this interface needs) so it too can wake Windows. The exception is the one-shot
+// debug boot, where CDC is kept and this interface is skipped (no endpoint room for both) -- see config.h
+// (g_debugCdcThisBoot) and ARCHITECTURE.md.
 #pragma once
 
 void wakeHidBegin();   // register the boot-keyboard wake interface (call from setup() for clean modes)

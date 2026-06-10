@@ -63,6 +63,7 @@ void webusbPoll(){
           case 15: g_qos = v?1:0; g_hopIdx=0; g_qosBad=0; g_qosCheckMs=millis(); break;  // QoS adaptive channel hopping
           case 16: g_persistMode = v?true:false; break;   // persist last mode across reboots (else always boot Steam)
           case 17: case 18: case 19: if(modeValid(v)) g_chordBtn[f-17]=v; break;   // back4+B/X/Y mode assignments
+          case 20: armDebugCdcNextBoot(); usb_web.flush(); delay(40); NVIC_SystemReset(); break;  // reboot once WITH the CDC serial console (puck mode), then auto-revert
         }
         if(persist) saveCfg();
         webusbSendBlob();

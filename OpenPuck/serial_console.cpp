@@ -75,6 +75,7 @@ void serialConsolePoll(){
       else if (line[0]=='A'){ g_balen=strtoul(line+1,0,16); g_pcnf1=0; Serial.printf("# balen=%u\n",g_balen); }
       else if (line[0]=='a'){ uint32_t v=strtoul(line+1,0,16); g_rfBase[0]=v>>24;g_rfBase[1]=v>>16;g_rfBase[2]=v>>8;g_rfBase[3]=v; Serial.printf("# base=%08lX\n",(unsigned long)v); if(g_rfListen) rfListenStart(); }
       else if (line[0]=='b'){ for(int i=0;i<NSLOT;i++) if(g_slot[i].used){Serial.printf("slot%d ",i); for(int j=0;j<24;j++)Serial.printf("%02X",g_slot[i].rec[j]); Serial.println();} }
+      else if (line[0]=='D'){ armDebugCdcNextBoot(); Serial.println("# debug-CDC armed: reset to KEEP the serial console one more boot (auto-reverts after; the wake mouse is dropped that boot)"); }
       else if (line[0]=='X'){ g_rfCap=!g_rfCap; g_rfHost=g_rfAuto=g_rfBeacon=g_rfListen=g_rfRaw=g_rfSweep=g_rfRespond=false; g_rfCh=2; g_capV=0; if(g_rfCap) rfCapStart(g_rfCh); Serial.printf("# CAPTURE(listen) %s ch%u on \"ibex\", cycling 1M/2M x BALEN3/4 (use cN to set ch)\n", g_rfCap?"ON":"off",g_rfCh); }
       else if (line[0]=='S'){ g_rfAuto=!g_rfAuto; g_rfHost=g_rfAuto; g_rfBeacon=g_rfListen=g_rfRaw=g_rfSweep=false; g_rfCh=2; g_cfgIdx=0; if(g_rfAuto) applyCfg(0); Serial.printf("# AUTOSWEEP %s\n", g_rfAuto?"ON":"off"); }
       li=0;
