@@ -51,7 +51,7 @@ void armDebugCdcNextBoot();          // persist the one-shot (caller reboots)
 // persisted, runtime-tunable config:
 extern int     g_mDiv, g_mFric; // xbox/lizard mouse sensitivity divisor / friction%
 extern uint8_t g_abSwap;        // 1 = swap A/B and X/Y (Nintendo face-button layout)
-extern uint8_t g_back[4];       // back paddles L4,R4,L5,R5 -> button codes (5=LB 6=RB 7=L3 8=R3)
+extern uint8_t g_back[4];       // back paddles L4,R4,L5,R5 -> button codes (0..11 buttons, 12..15 D-pad U/D/L/R)
 
 #define POLL_US_DEFAULT 4000u   // 250 Hz -- matches SC2 input report rate (1000000/250 = 4000 us)
 #define USB_STREAM_MS   4u      // host-side HID stream cadence for translated modes (~250 Hz)

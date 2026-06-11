@@ -133,7 +133,7 @@
 <script>
 const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)"];
 const CHORD_FIELD = [17, 18, 19];
-const BTN_CODES = [[0,"— none —"],[1,"A"],[2,"B"],[3,"X"],[4,"Y"],[5,"LB"],[6,"RB"],[7,"L3"],[8,"R3"],[9,"Back"],[10,"Start"],[11,"Guide"]];
+const BTN_CODES = [[0,"— none —"],[1,"A"],[2,"B"],[3,"X"],[4,"Y"],[5,"LB"],[6,"RB"],[7,"L3"],[8,"R3"],[9,"Back"],[10,"Start"],[11,"Guide"],[12,"D-pad Up"],[13,"D-pad Down"],[14,"D-pad Left"],[15,"D-pad Right"]];
 let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false;
 const $ = s=>document.querySelector(s);
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }

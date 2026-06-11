@@ -14,7 +14,7 @@ static uint8_t g_debugCdc = 0;   // persisted one-shot arm, stored in Cfg.rsvd0 
 
 int     g_mDiv = 64, g_mFric = 94;
 uint8_t g_abSwap = 0;
-uint8_t g_back[4] = {5,6,7,8};   // L4->LB R4->RB L5->L3 R5->R3 (see codeToXB)
+uint8_t g_back[4] = {5,6,7,8};   // L4->LB R4->RB L5->L3 R5->R3 (0..11 buttons, 12..15 D-pad U/D/L/R)
 
 // poll rate is fixed. Faster than the controller can refresh wastes airtime; slower adds latency. Any rate
 // persisted by an older build is ignored and overwritten with the default on boot (see loadCfg).

@@ -28,6 +28,13 @@ static uint16_t codeToSwitch(uint8_t c, uint16_t fA,uint16_t fB,uint16_t fX,uint
     case 5:return 0x10; case 6:return 0x20; case 7:return 0x400; case 8:return 0x800;
     case 9:return 0x100; case 10:return 0x200; case 11:return 0x1000; default:return 0; }
 }
+// Back-paddle code 12..15 map to D-pad Up/Down/Left/Right; fold them into the hat direction flags.
+static inline void backCodeToHatDirs(uint8_t c, bool& u, bool& d, bool& l, bool& r){
+  if(c==12) u=true;
+  else if(c==13) d=true;
+  else if(c==14) l=true;
+  else if(c==15) r=true;
+}
 // HORIPAD/Switch button bits: Y=1 B=2 A=4 X=8 L=10 R=20 ZL=40 ZR=80 Minus=100 Plus=200 LClick=400 RClick=800 Home=1000 Capture=2000
 static void switchBuildHoripad(uint8_t out[8]){
   uint32_t b=g_in.buttons; uint16_t btn=0;
@@ -46,6 +53,10 @@ static void switchBuildHoripad(uint8_t out[8]){
   if(b&TB_L4)btn|=codeToSwitch(g_back[0],fA,fB,fX,fY); if(b&TB_R4)btn|=codeToSwitch(g_back[1],fA,fB,fX,fY);
   if(b&TB_L5)btn|=codeToSwitch(g_back[2],fA,fB,fX,fY); if(b&TB_R5)btn|=codeToSwitch(g_back[3],fA,fB,fX,fY);
   bool u=b&TB_DUP,d=b&TB_DDN,l=b&TB_DLF,r=b&TB_DRT;           // hat: 0=N..7=NW, 8=neutral
+  if(b&TB_L4) backCodeToHatDirs(g_back[0],u,d,l,r);
+  if(b&TB_R4) backCodeToHatDirs(g_back[1],u,d,l,r);
+  if(b&TB_L5) backCodeToHatDirs(g_back[2],u,d,l,r);
+  if(b&TB_R5) backCodeToHatDirs(g_back[3],u,d,l,r);
   uint8_t hat=8;
   if(u&&r)hat=1; else if(r&&d)hat=3; else if(d&&l)hat=5; else if(l&&u)hat=7;
   else if(u)hat=0; else if(r)hat=2; else if(d)hat=4; else if(l)hat=6;
