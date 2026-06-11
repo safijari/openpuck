@@ -82,6 +82,14 @@
         <div class="stat"><div class="k">Slot</div><div class="v" id="stSlot">—</div></div>
         <div class="stat"><div class="k">Delivered</div><div class="v" id="stRate">—</div></div>
         <div class="stat"><div class="k">New reports</div><div class="v" id="stNew">—</div></div>
+        <div class="stat logonly"><div class="k">Polls/s</div><div class="v" id="stPolls">—</div></div>
+        <div class="stat logonly"><div class="k">Loop period</div><div class="v" id="stLoop">—</div></div>
+        <div class="stat logonly"><div class="k">Slowest stage</div><div class="v" id="stWorst">—</div></div>
+        <div class="stat logonly"><div class="k">Poll period act/want</div><div class="v" id="stPollPer">—</div></div>
+      </div>
+      <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
+      <div class="row" style="margin:10px 0 0"><button id="hapClear">Clear stuck buzz</button>
+        <span class="note" style="flex:1">If the controller's haptics get stuck/buzzing, this re-inits them (same as pressing Steam).</span>
       </div>
     </div>
 
@@ -106,6 +114,18 @@
       <p class="note">Back-paddle → button, applied in Xbox &amp; Switch modes.</p>
     </div>
 
+    <div class="card logonly">
+      <h2>Capture — host → controller commands</h2>
+      <p class="note" style="margin-top:0">The firmware logs everything from boot into a big RAM ring: Steam's writes (<code>ifN</code>), the frames we transmit to the controller (<code>TX→ctlr</code>), and RF <code>LINK UP/DOWN</code> edges. For the reconnect buzz: trigger it (it appears moments after the puck boots / the controller reconnects), then connect here and click <b>Dump from boot</b> — the trigger is still in the ring. (Only present in a logging build, <code>-DOPK_LOG=1</code>.)</p>
+      <div class="row" style="margin:0;flex-wrap:wrap">
+        <button id="capStart" class="primary">Dump from boot</button>
+        <button id="capStop" disabled>Stop</button>
+        <button id="capDl">Download .txt</button>
+      </div>
+      <p class="note">Dump streams the whole ring (oldest→newest) and then keeps live-updating until you press Stop. <code>cmd</code> is the command/report byte, then the raw bytes.</p>
+      <pre id="capOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin-top:10px;max-height:260px;overflow:auto;white-space:pre-wrap"></pre>
+    </div>
+
     <div id="log"></div>
   </div>
 </div>
@@ -114,7 +134,7 @@
 const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)"];
 const CHORD_FIELD = [17, 18, 19];
 const BTN_CODES = [[0,"— none —"],[1,"A"],[2,"B"],[3,"X"],[4,"Y"],[5,"LB"],[6,"RB"],[7,"L3"],[8,"R3"],[9,"Back"],[10,"Start"],[11,"Guide"],[12,"D-pad Up"],[13,"D-pad Down"],[14,"D-pad Left"],[15,"D-pad Right"]];
-let dev=null, epIn=0, epOut=0, ifNum=0, polling=false;
+let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false;
 const $ = s=>document.querySelector(s);
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
 
@@ -185,6 +205,14 @@ function applyBlob(p){
   const back=[p[6],p[7],p[8],p[9]], slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
   const chord=(p.length>25)?[p[23],p[24],p[25]]:[3,1,2];   // v2 blob: chordBtn after qos/persist
+  const polls=(p.length>27?(p[26]|(p[27]<<8)):0);          // poll TX rate
+  const loopUs=(p.length>29?(p[28]|(p[29]<<8)):0);         // loop diag
+  const worstIdx=(p.length>30?p[30]:0), worstUs=(p.length>32?(p[31]|(p[32]<<8)):0);
+  const WORST=["webusb","ctrl.task","serial","rfdiag","rflink","haptic","led"];
+  const pollUs=(p.length>34?(p[33]|(p[34]<<8)):0);         // MEASURED poll period
+  const pollIntended=(p.length>14?p[14]*100:0);            // intended poll interval (g_pollUs)
+  const logEnabled=(p.length>35?p[35]:0);                  // is this a logging build (-DOPK_LOG=1)?
+  for(const el of document.querySelectorAll(".logonly")) el.style.display = logEnabled ? "" : "none";
   // mode buttons
   for(const b of document.querySelectorAll(".modebtn")) b.classList.toggle("active", +b.dataset.mode===mode);
   $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
@@ -193,6 +221,10 @@ function applyBlob(p){
   $("#stSlot").textContent = slot===0xFF? "—" : slot;
   $("#stRate").textContent = up? f1+" /s" : "—";
   $("#stNew").textContent = up? newps+" /s" : "—";
+  $("#stPolls").textContent = up? polls+" /s" : "—";
+  $("#stLoop").textContent = loopUs? loopUs+" µs" : "—";
+  $("#stWorst").textContent = loopUs? (WORST[worstIdx]||worstIdx)+" "+worstUs+"µs" : "—";
+  $("#stPollPer").textContent = up? (pollUs+" / "+pollIntended+" µs") : "—";
   // sliders (only if not being dragged)
   setSlider("mDiv",mDiv); setSlider("mFric",mFric);
   $("#abSwap").textContent = abSwap? "on":"off"; $("#abSwap").classList.toggle("active",!!abSwap);
@@ -205,12 +237,78 @@ function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ e
 
 let inflight=false;
 async function refresh(){
-  if(!dev||inflight) return; inflight=true;
+  if(!dev||inflight||capturing) return; inflight=true;   // don't let the status poll steal capture frames
   await send([0x01]); const p=await readBlob(); if(p) applyBlob(p);
   inflight=false;
 }
 async function setField(field,value){
   await send([0x02, field, value&0xff]); const p=await readBlob(); if(p) applyBlob(p);
+}
+function fmtCapEntry(e,maxMs){
+  const hex=e.bytes.map(x=>x.toString(16).padStart(2,"0")).join(" ");
+  const t = `-${String(maxMs-e.ms).padStart(6," ")}ms  `;   // age vs the newest entry (consistent across drain batches)
+  if(e.slot===0xFD){ const k=e.bytes[0]; return `${t}════════ ${k===2?"RECONNECT (block+reinit armed)":k===1?"RF LINK UP":"RF LINK DOWN"} ════════`; }
+  const who = (e.slot===0xFE) ? "TX→ctlr " : `if${e.slot}     `;                        // 0xFE = frame WE sent the controller
+  return `${t}${who} cmd=${e.rid.toString(16).padStart(2,"0")}  n=${e.nb}:  ${hex}`;
+}
+function downloadCap(){
+  const t=window._lastCap||$("#capOut").textContent||"";
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([t],{type:"text/plain"}));
+  a.download="puck-capture.txt"; a.click();
+}
+// ---- live Start/Stop capture: poll the firmware's drain (op 0x06) on a timer and accumulate in the browser ----
+let liveTimer=null, draining=false, capLines=[];   // capLines = array of {ms,slot,rid,nb,bytes}
+function renderCap(){
+  if(!capLines.length){ $("#capOut").textContent="(nothing captured yet)"; window._lastCap=""; return; }
+  const maxMs=capLines[capLines.length-1].ms;       // entries are chronological -> newest is last
+  const t=capLines.map(e=>fmtCapEntry(e,maxMs)).join("\n");
+  $("#capOut").textContent=t; window._lastCap=t;
+}
+async function drainTick(){
+  if(!dev||draining) return; draining=true;
+  let acc=new Uint8Array(0);
+  try{
+    await send([0x06]);
+    let done=false, guard=0;
+    while(!done && guard++<400){
+      const r=await dev.transferIn(epIn,64);
+      if(r.status!=="ok") break;
+      const d=new Uint8Array(r.data.buffer);
+      const m=new Uint8Array(acc.length+d.length); m.set(acc); m.set(d,acc.length); acc=m;
+      let i=0;
+      while(i<acc.length){
+        if(acc[i]!==0xA6){ i++; continue; }
+        if(i+2>acc.length) break;
+        const L=acc[i+1]; if(i+2+L>acc.length) break;
+        const f=acc.slice(i+2,i+2+L); i+=2+L;
+        if(f[0]===0){ done=true; break; }
+        if(f[0]===1 && L>=8){
+          const ms=((f[1])|(f[2]<<8)|(f[3]<<16)|(f[4]<<24))>>>0;
+          capLines.push({ms, slot:f[5], rid:f[6], nb:f[7], bytes:[...f.slice(8,8+f[7])]});
+        }
+      }
+      acc=acc.slice(i);
+    }
+  }catch(e){ log("drain err: "+e.message); }
+  draining=false;
+  if(liveTimer){ const el=$("#capOut"); const atBottom=el.scrollTop+el.clientHeight>=el.scrollHeight-4; renderCap(); if(atBottom) el.scrollTop=el.scrollHeight; }
+}
+async function startCapture(){
+  if(!dev||capturing) return;
+  capturing=true; capLines=[];                       // capturing=true pauses the status poll so it can't steal frames
+  $("#capOut").textContent="(dumping ring from boot, then live — press Stop when done)";
+  $("#capStart").disabled=true; $("#capStop").disabled=false;
+  await send([0x05,1]);                               // rewind drain to OLDEST -> dumps the whole ring from boot
+  liveTimer=setInterval(drainTick,100);
+}
+async function stopCapture(){
+  if(liveTimer){ clearInterval(liveTimer); liveTimer=null; }
+  await drainTick();                                  // final flush
+  try{ await send([0x05,0]); }catch(e){}
+  capturing=false;
+  $("#capStart").disabled=false; $("#capStop").disabled=true;
+  renderCap(); log(`capture stopped — ${capLines.length} entries`);
 }
 async function startPolling(){
   polling=true; await refresh();
@@ -219,6 +317,10 @@ async function startPolling(){
 
 // UI wiring
 $("#connectBtn").onclick=connect;
+$("#capDl").onclick=downloadCap;
+$("#capStart").onclick=startCapture;
+$("#capStop").onclick=stopCapture;
+$("#hapClear").onclick=async()=>{ if(dev){ await send([0x07]); log("haptic re-init sent (clear stuck buzz)"); } };
 $("#abSwap").onclick=()=>{ const on=$("#abSwap").classList.contains("active"); setField(4, on?0:1); };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
 for(const id of ["mDiv","mFric"]){

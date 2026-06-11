@@ -88,6 +88,26 @@ When Steam writes feature report `0x01`, OpenPuck forwards it over RF to the con
 
 This is how settings writes, haptics, and lizard-disable requests reach the controller.
 
+The relay carries the command's **declared length** (the `[len]` byte of the feature payload), up to 60 bytes —
+the most one RF frame fits (`[E3][len][05][rid]` + payload ≤ MAXLEN 64). Multi-register `0x87` settings blocks
+(e.g. LED brightness) and calibration writes exceed 18 bytes, so any shorter cap silently corrupts them and the
+settings never land on the controller. Relays are staged in a small ring (not a single buffer): the USB SET
+callbacks run in ISR context and Steam sends settings/calibration as back-to-back bursts, so a single pending
+slot both drops reports and can be torn mid-flush. One queued relay is emitted per poll cycle.
+
+### 3.4 Connection presentation (input reports `0x79` / `0x7B`)
+
+- `0x79` (1 byte): connection state, `0x02` = connected, `0x01` = disconnected. **Edge-triggered**, like the
+  real puck. OpenPuck additionally re-sends it every 750 ms after a connect edge *until Steam reacts* (its
+  first OUTPUT/settings write after the edge), covering a missed edge. It must not be re-sent unconditionally:
+  each `0x79=02` can re-trigger Steam's connect handling (connect chime) and loop the haptic before Steam
+  starts consuming `0x45`.
+- `0x7B` (12 bytes): periodic status, sent every 2 s while connected. Byte 8 is the controller→puck signal
+  strength as **signed dBm** (live-captured example `0xDD` = −35 dBm). OpenPuck fills it with the smoothed
+  radio RSSI sampled on each CRC-good controller reply (`RSSISAMPLE`, started by an `ADDRESS→RSSISTART`
+  short during the poll RX window). The other bytes are replayed from the live capture
+  (`F7 01 89 00 00 00 03 00 __ 00 3A 02`); their semantics are unconfirmed.
+
 ## 4. Radio physical layer
 
 OpenPuck uses Nordic raw radio mode configured to match the puck firmware:
@@ -297,7 +317,9 @@ does a `detach -> rebuild -> attach` so the host re-reads the descriptor cleanly
   that arrives before the heartbeat.
 - **Haptics are gated on this decision**: haptic reports are **never** relayed to the controller while
   the puck is presenting lizard. Relaying haptics while Steam isn't reading `0x45` back made Steam loop
-  the same command, leaving the controller buzzing; suppressing them keeps the lizard state clean.
+  the same command, leaving the controller buzzing; suppressing them keeps the lizard state clean. The
+  same gate applies during the post-resume input mute (`POST_RESUME_MUTE_MS`): Steam can't read `0x45`
+  back in that window either, so a wake-time haptic would loop identically.
 - **Which OUTPUT reports are relayed**: the haptic/actuator reports `0x80`–`0x86` are forwarded to the
   **connected slot only** (the slot gate is what stops a haptic aimed at another of the four exposed
   slots from buzzing the single controller). The 63-byte settings/config reports `0x87`/`0x88`/`0x89`
