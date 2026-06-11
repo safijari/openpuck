@@ -19,6 +19,7 @@
 // flapping link. The g_hapLog ring captures recent OUTPUT reports for the 'H' dump.
 #pragma once
 #include <stdint.h>
+#include "config.h"   // OPK_LOG
 
 // after this much host silence, consider the current 0x82 haptic stream inactive
 #define HAPTIC_QUIET_MS    300u
@@ -42,12 +43,21 @@ extern volatile uint8_t g_testHaptic;// 't<n>' injects n test haptics for the bu
 extern volatile uint8_t g_hapticStop;// pending haptic-STOP frames to relay (kill a latched whine)
 extern unsigned long    g_hapticBlockUntil;
 
+// ---- diagnostic capture (compiled in only when OPK_LOG): a ring of recent host->controller commands +
+//      link/TX markers, dumped over WebUSB. No-ops in a production build so call sites vanish. ----
+#if OPK_LOG
 void hapLogAdd(uint8_t slot, uint8_t rid, const uint8_t* b, uint16_t n);
 void hapticDumpLog();   // 'H' console dump of the recent OUTPUT-report history
 // WebUSB capture drain: resetDrain(true) rewinds to the OLDEST entry (dump the whole ring from boot);
 // resetDrain(false) starts at "now" (live only). pull yields each entry once, oldest->newest, skipping empties.
 void    hapLogResetDrain(bool fromBoot);
 bool    hapLogPull(uint32_t* logMs, uint8_t* slot, uint8_t* rid, uint8_t* n, uint8_t bytes16[16]);
+#else
+static inline void hapLogAdd(uint8_t, uint8_t, const uint8_t*, uint16_t){}
+static inline void hapticDumpLog(){}
+static inline void hapLogResetDrain(bool){}
+static inline bool hapLogPull(uint32_t*, uint8_t*, uint8_t*, uint8_t*, uint8_t*){ return false; }
+#endif
 
 bool hapticLinkUp();
 bool haptic82Blocked();

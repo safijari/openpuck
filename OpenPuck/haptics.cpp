@@ -15,7 +15,8 @@ unsigned long    g_hapticBlockUntil = 0;   // drop Steam haptics briefly during 
 
 static unsigned long g_haptic82Ms = 0;     // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
 static bool          g_haptic82On = false; // a non-zero 0x82 haptic is currently active (awaiting host stop)
-static unsigned long g_reinitAt = 0;       // when to fire the post-reconnect haptic re-init (0 = none scheduled)
+static unsigned long g_reinitAt = 0;       // when to fire the next post-reconnect haptic re-init (0 = none scheduled)
+static uint8_t       g_reinitLeft = 0;     // how many re-init shots remain in this connect window
 
 // ---- relay ring: multi-producer (USB ISR + loop-context console/xinput), single consumer (poll flush) ----
 // Producers serialize through a brief PRIMASK critical section (copy is <=62 bytes); the consumer only ever
@@ -43,6 +44,7 @@ bool relayEnqueue(uint8_t rid, const uint8_t* payload, uint8_t plen){
   __set_PRIMASK(pm); return true;
 }
 
+#if OPK_LOG
 // diagnostic capture: a ring of the last OUTPUT reports Steam sends (rid/slot/bytes/ms), dumped with 'H'.
 // Reproduce the whine, press Steam to stop it, then 'H' to see the ON stream + the exact OFF frame Steam sends.
 struct HapLog { uint32_t ms; uint8_t slot, rid, n, b[16]; };   // 16 payload bytes: capture full 0x87 settings frames
@@ -90,6 +92,7 @@ bool hapLogPull(uint32_t* logMs, uint8_t* slot, uint8_t* rid, uint8_t* n, uint8_
   }
   return false;
 }
+#endif // OPK_LOG
 
 bool hapticLinkUp(){
   return g_connSlot>=0 && (millis()-g_connReplyMs) < 300;
@@ -159,13 +162,23 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1){
 // controller falls into across a reconnect. Brightness (0x87 reg 2d) is deliberately OMITTED so we don't
 // stomp the LED. Enqueued onto the normal relay (drains in the poll cadence).
 void hapticReinit(){
-  static const uint8_t H1[]={0x30,0x00,0x00,0x07,0x07,0x00,0x08,0x07,0x00,0x31,0x02,0x00,0x52,0x03,0x00};
-  static const uint8_t H2[]={0x18,0x00,0x00,0x2e,0x00,0x00,0x34,0xff,0xff,0x35,0xff,0xff,0x34,0xff,0xff};
-  static const uint8_t H3[]={0x35,0xff,0xff,0x2e,0x00,0x00};
-  relayEnqueue(0x81, nullptr, 0);          // reset action (FUN_0001f554) -- Steam sends this first
-  relayEnqueue(0x87, H1, sizeof H1);
-  relayEnqueue(0x87, H2, sizeof H2);
-  relayEnqueue(0x87, H3, sizeof H3);
+  // The FULL sequence Steam sends when it (re)takes control / on a Steam-button press -- captured on hardware
+  // and proven to clear a stuck haptic. Replayed verbatim and in order (no trimming this time: the brightness
+  // write 0x87[2d] and the two 7-byte 0x81 frames are part of what Steam sends, and dropping them may be why
+  // the trimmed version didn't always clear the connect buzz).
+  static const uint8_t H30[]={0x30,0x00,0x00,0x07,0x07,0x00,0x08,0x07,0x00,0x31,0x02,0x00,0x52,0x03,0x00};
+  static const uint8_t H18[]={0x18,0x00,0x00,0x2e,0x00,0x00,0x34,0xff,0xff,0x35,0xff,0xff,0x34,0xff,0xff};
+  static const uint8_t H35[]={0x35,0xff,0xff,0x2e,0x00,0x00};
+  static const uint8_t H2D[]={0x2d,0x64,0x00};                       // brightness (Steam sets it here too)
+  static const uint8_t T81A[]={0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+  static const uint8_t T81B[]={0x01,0x00,0x00,0x00,0x00,0x00,0x00};
+  relayEnqueue(0x81, nullptr, 0);            // reset action (FUN_0001f554) -- Steam sends this first
+  relayEnqueue(0x87, H30, sizeof H30);
+  relayEnqueue(0x87, H18, sizeof H18);
+  relayEnqueue(0x87, H35, sizeof H35);
+  relayEnqueue(0x87, H2D, sizeof H2D);
+  relayEnqueue(0x81, T81A, sizeof T81A);
+  relayEnqueue(0x81, T81B, sizeof T81B);
 }
 void hapticInit(){
   g_rqHead = g_rqTail = 0; g_haptic82On=false;
@@ -184,7 +197,9 @@ void hapticOnReconnect(){
   g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // no haptics relayed for the next 3s
   g_haptic82On = false;
   hapticCancelPendingOn();                                     // drop any haptic ON queued before the link came up
-  g_reinitAt = millis() + HAPTIC_RECONNECT_BLOCK_MS + 200u;    // re-init just after the block, on the settled link
+  g_reinitAt = millis() + HAPTIC_RECONNECT_BLOCK_MS + 200u;    // first re-init just after the block, on the settled link
+  g_reinitLeft = 2;                                           // ...then a 2nd ~2s later: the connect buzz can latch
+                                                              // anytime in the first few seconds, after a single shot
   uint8_t mk=2; hapLogAdd(0xFD, 0xEE, &mk, 1);                 // capture marker: RECONNECT detected (block+reinit armed)
 }
 void hapticTask(){
@@ -195,7 +210,10 @@ void hapticTask(){
   if(up && !wasHapticLinkUp){ uint8_t mk=1; hapLogAdd(0xFD,0xEE,&mk,1); hapticOnReconnect(); }
   if(!up && wasHapticLinkUp){ uint8_t mk=0; hapLogAdd(0xFD,0xEE,&mk,1); }
   wasHapticLinkUp=up;
-  if(g_reinitAt && up && (int32_t)(millis()-g_reinitAt) >= 0){ g_reinitAt=0; hapticReinit(); }   // clear reconnect-stuck haptics
+  if(g_reinitAt && up && (int32_t)(millis()-g_reinitAt) >= 0){   // clear reconnect-stuck haptics (a couple of shots)
+    hapticReinit();
+    g_reinitAt = (g_reinitLeft && --g_reinitLeft) ? (millis()+2000u) : 0;
+  }
   // Steam-mode: host went quiet -> mark the 0x82 stream inactive. Do NOT synthesize a stop: trackpad haptics
   // are one-shot pulses, so firing a 0x82-zero ~HAPTIC_QUIET_MS after a swipe ends is the extra end-of-movement
   // click the real puck doesn't make. Steam forwards its own stop for any sustained haptic.

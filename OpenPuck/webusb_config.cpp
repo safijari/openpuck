@@ -13,7 +13,8 @@ Adafruit_USBD_WebUSB usb_web;
 //                [f1ps_lo][f1ps_hi][pollU100][newps_lo][newps_hi][e7b][relayOp][relaySub][fwdNewOnly]
 //                [qos][persistMode][chordBtn B][chordBtn X][chordBtn Y][pollsps_lo][pollsps_hi]
 //                [loopPeriod_lo][loopPeriod_hi][loopWorstIdx][loopWorstUs_lo][loopWorstUs_hi]
-#define WB_PAYLEN 33
+//                [pollPeriod_lo][pollPeriod_hi][logEnabled]
+#define WB_PAYLEN 36
 static void webusbSendBlob(){
   if(!usb_web.connected()) return;
   bool up = (g_connSlot>=0 && (millis()-g_connReplyMs) < 300);
@@ -33,8 +34,11 @@ static void webusbSendBlob(){
   p[28]=(uint8_t)g_pollsps; p[29]=(uint8_t)(g_pollsps>>8);   // poll TX rate (vs delivered/new -> starvation vs reply-loss)
   p[30]=(uint8_t)g_loopPeriodUs; p[31]=(uint8_t)(g_loopPeriodUs>>8);   // loop diag: avg iteration time + slowest section
   p[32]=g_loopWorst; p[33]=(uint8_t)g_loopWorstUs; p[34]=(uint8_t)(g_loopWorstUs>>8);
+  p[35]=(uint8_t)g_pollPeriodUs; p[36]=(uint8_t)(g_pollPeriodUs>>8);   // measured actual poll period (vs intended 4000)
+  p[37]=OPK_LOG;                                                       // logging build? panel shows/hides its log UI
   usb_web.write(p,sizeof p); usb_web.flush();
 }
+#if OPK_LOG
 // Stream the capture ring (haptics / relayed host commands) to the panel as 0xA6 frames, so the browser can
 // pull it with no CDC. Frame formats:
 //   entry: [0xA6][L][T=1][age u32 LE][slot][rid][n][bytes n]   (L = 8 + n)
@@ -57,6 +61,7 @@ static void webusbDrainCapture(){
   while(budget-- && hapLogPull(&ms,&slot,&rid,&nb,b)) webusbCapFrame(ms,slot,rid,nb,b);
   webusbCapEnd();
 }
+#endif // OPK_LOG
 void webusbPoll(){
   static uint8_t buf[16]; static uint8_t n=0;
   while(usb_web.available()){
@@ -71,9 +76,11 @@ void webusbPoll(){
       }
       if(n<need) break;                      // wait for more bytes
       if(op==0x01){ webusbSendBlob(); }
+#if OPK_LOG
       else if(op==0x05){ hapLogResetDrain(buf[1]!=0); }   // rewind drain: buf[1]=1 from boot (whole ring), 0 from now
       else if(op==0x06){ webusbDrainCapture(); }          // drain entries since the rewind (panel polls this)
-      else if(op==0x07){ hapticReinit(); }                // clear a stuck/latched haptic buzz on the controller
+#endif
+      else if(op==0x07){ hapticReinit(); }                // clear a stuck/latched haptic buzz on the controller (functional)
       else if(op==0x02){
         uint8_t f=buf[1], v=buf[2];
         bool persist=true;   // every settable field persists (poll rate is no longer settable)

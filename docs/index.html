@@ -82,11 +82,15 @@
         <div class="stat"><div class="k">Slot</div><div class="v" id="stSlot">—</div></div>
         <div class="stat"><div class="k">Delivered</div><div class="v" id="stRate">—</div></div>
         <div class="stat"><div class="k">New reports</div><div class="v" id="stNew">—</div></div>
-        <div class="stat"><div class="k">Polls/s</div><div class="v" id="stPolls">—</div></div>
-        <div class="stat"><div class="k">Loop period</div><div class="v" id="stLoop">—</div></div>
-        <div class="stat"><div class="k">Slowest stage</div><div class="v" id="stWorst">—</div></div>
+        <div class="stat logonly"><div class="k">Polls/s</div><div class="v" id="stPolls">—</div></div>
+        <div class="stat logonly"><div class="k">Loop period</div><div class="v" id="stLoop">—</div></div>
+        <div class="stat logonly"><div class="k">Slowest stage</div><div class="v" id="stWorst">—</div></div>
+        <div class="stat logonly"><div class="k">Poll period act/want</div><div class="v" id="stPollPer">—</div></div>
       </div>
-      <p class="note">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration — that's what's holding the rate down.</p>
+      <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
+      <div class="row" style="margin:10px 0 0"><button id="hapClear">Clear stuck buzz</button>
+        <span class="note" style="flex:1">If the controller's haptics get stuck/buzzing, this re-inits them (same as pressing Steam).</span>
+      </div>
     </div>
 
     <div class="card" id="mouseCard">
@@ -110,14 +114,13 @@
       <p class="note">Back-paddle → button, applied in Xbox &amp; Switch modes.</p>
     </div>
 
-    <div class="card">
+    <div class="card logonly">
       <h2>Capture — host → controller commands</h2>
-      <p class="note" style="margin-top:0">The firmware logs everything from boot into a big RAM ring: Steam's writes (<code>ifN</code>), the frames we transmit to the controller (<code>TX→ctlr</code>), and RF <code>LINK UP/DOWN</code> edges. For the reconnect buzz: trigger it (it appears moments after the puck boots / the controller reconnects), then connect here and click <b>Dump from boot</b> — the trigger is still in the ring.</p>
+      <p class="note" style="margin-top:0">The firmware logs everything from boot into a big RAM ring: Steam's writes (<code>ifN</code>), the frames we transmit to the controller (<code>TX→ctlr</code>), and RF <code>LINK UP/DOWN</code> edges. For the reconnect buzz: trigger it (it appears moments after the puck boots / the controller reconnects), then connect here and click <b>Dump from boot</b> — the trigger is still in the ring. (Only present in a logging build, <code>-DOPK_LOG=1</code>.)</p>
       <div class="row" style="margin:0;flex-wrap:wrap">
         <button id="capStart" class="primary">Dump from boot</button>
         <button id="capStop" disabled>Stop</button>
         <button id="capDl">Download .txt</button>
-        <button id="hapClear">Clear stuck buzz</button>
       </div>
       <p class="note">Dump streams the whole ring (oldest→newest) and then keeps live-updating until you press Stop. <code>cmd</code> is the command/report byte, then the raw bytes.</p>
       <pre id="capOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin-top:10px;max-height:260px;overflow:auto;white-space:pre-wrap"></pre>
@@ -206,6 +209,10 @@ function applyBlob(p){
   const loopUs=(p.length>29?(p[28]|(p[29]<<8)):0);         // loop diag
   const worstIdx=(p.length>30?p[30]:0), worstUs=(p.length>32?(p[31]|(p[32]<<8)):0);
   const WORST=["webusb","ctrl.task","serial","rfdiag","rflink","haptic","led"];
+  const pollUs=(p.length>34?(p[33]|(p[34]<<8)):0);         // MEASURED poll period
+  const pollIntended=(p.length>14?p[14]*100:0);            // intended poll interval (g_pollUs)
+  const logEnabled=(p.length>35?p[35]:0);                  // is this a logging build (-DOPK_LOG=1)?
+  for(const el of document.querySelectorAll(".logonly")) el.style.display = logEnabled ? "" : "none";
   // mode buttons
   for(const b of document.querySelectorAll(".modebtn")) b.classList.toggle("active", +b.dataset.mode===mode);
   $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
@@ -217,6 +224,7 @@ function applyBlob(p){
   $("#stPolls").textContent = up? polls+" /s" : "—";
   $("#stLoop").textContent = loopUs? loopUs+" µs" : "—";
   $("#stWorst").textContent = loopUs? (WORST[worstIdx]||worstIdx)+" "+worstUs+"µs" : "—";
+  $("#stPollPer").textContent = up? (pollUs+" / "+pollIntended+" µs") : "—";
   // sliders (only if not being dragged)
   setSlider("mDiv",mDiv); setSlider("mFric",mFric);
   $("#abSwap").textContent = abSwap? "on":"off"; $("#abSwap").classList.toggle("active",!!abSwap);

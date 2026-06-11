@@ -7,6 +7,15 @@
 #pragma once
 #include <stdint.h>
 
+// ---- Compile-time logging / diagnostics ----
+// 0 (default) = PRODUCTION build: no host->controller capture ring (reclaims ~80KB RAM), no per-event
+// logging, no main-loop section timing, no WebUSB capture channel. The functional bits (haptic reconnect
+// block, the buzz-clear re-init, rate stats) stay. Build the diagnostic firmware with -DOPK_LOG=1.
+// The WebUSB panel reads this back in the status blob and hides its logging UI when it's 0.
+#ifndef OPK_LOG
+#define OPK_LOG 0
+#endif
+
 // ---- USB presentation modes (g_usbMode). RF poll/relay is identical across all; only USB enumeration +
 //      report mapping differ. ----
 #define MODE_STEAM   0   // Valve puck; auto-lizard when Steam closed

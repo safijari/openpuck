@@ -41,6 +41,7 @@ extern unsigned long g_qosCheckMs, g_qosLastHopMs;
 extern uint16_t g_f1ps;         // last completed second's F1 rate
 extern uint16_t g_newps;        // genuine new-report rate (report 0x45 seq byte changes)
 extern uint16_t g_pollsps;      // last second's poll TX count (GET+relay) -- vs F1 tells starvation from reply-loss
+extern uint16_t g_pollPeriodUs; // MEASURED avg us between GET-poll fires (compare to the intended g_pollUs=4000)
 
 // Smoothed controller->puck signal strength, sampled by the radio (RSSISAMPLE) on each CRC-good controller
 // reply during the poll. Stored as the dBm MAGNITUDE (35 = -35dBm); 0 = no sample yet. puck_hid reports it

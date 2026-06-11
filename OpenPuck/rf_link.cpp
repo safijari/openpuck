@@ -37,6 +37,8 @@ unsigned long g_qosCheckMs = 0, g_qosLastHopMs = 0;
 uint16_t g_f1ps = 0;
 uint16_t g_newps = 0;
 uint16_t g_pollsps = 0;   // polls/s (GET+relay TXs) last second -- distinguishes loop-starvation from reply-loss
+uint16_t g_pollPeriodUs = 0;   // MEASURED avg us between GET-poll fires (vs intended g_pollUs) -- ground truth
+static uint32_t g_pollDtSum = 0; static uint16_t g_pollDtCnt = 0;
 volatile uint8_t g_linkRssi = 0;   // smoothed |dBm| of the controller's replies (0 = none yet)
 
 // ---- internal counters / timers ----
@@ -238,7 +240,18 @@ static void rfConnStep(){
     if(++g_connStep>=4){ g_connSt=1; g_connStep=0; Serial.println("# CONN: awake announced -> polling GET report 0x45"); }
   } else {                               // poll loop: E3 + GET report 0x45 every poll; re-assert awake periodically
     if((uint32_t)(micros()-g_lastPollUs) < g_pollUs) return;   // CONTROLLED CADENCE: poll ~every g_pollUs
-    g_lastPollUs=micros();                                     // (over-polling starves replies)
+    // FIXED-RATE schedule: advance the deadline by exactly one interval. The old `g_lastPollUs = micros()`
+    // reset the reference to AFTER the gate passed, so each cycle's ~1ms of poll work + loop jitter was added
+    // to the next interval and never reclaimed -- the period drifted to ~5000us (200/s) instead of 4000us
+    // (250/s). Advancing by g_pollUs keeps the long-run average at exactly the target; the resync guard
+    // prevents a catch-up burst if we ever fall more than a full interval behind (a real stall).
+    { uint32_t now=micros();
+      static uint32_t lastFire=0;
+      if(lastFire){ g_pollDtSum += (uint32_t)(now-lastFire); g_pollDtCnt++; }   // MEASURED actual period
+      lastFire=now;
+      g_lastPollUs += g_pollUs;
+      if((uint32_t)(now - g_lastPollUs) >= g_pollUs) g_lastPollUs = now;        // fell >1 interval behind -> resync
+    }
     if((g_connPoll & 0x1F)==0){ uint8_t pa[3]={0xE7,0x00,g_e7b}; rfConnTx(ch,0x01,pa,3); }   // re-assert awake/version
     rfConnQueueHapticRelay();
     // Relay (if any) gets its OWN cycled PID, then the GET poll gets the NEXT one -- so they're always distinct
@@ -288,5 +301,6 @@ void rfLinkTask(){
       rfHopTo(g_hopCand[g_hopIdx]); g_qosLastHopMs=millis();
     }
   }
-  if (g_connOn && millis()-g_stMs>=1000){ g_f1ps=g_stF1; g_newps=g_stNew; g_pollsps=(uint16_t)g_stPoll; if(Serial.availableForWrite()>70) Serial.printf("# stat polls=%lu/s F1=%lu/s new=%lu/s F3=%lu/s(v%d) e7b=%u crcfail=%lu noRx=%lu slot=%d\n",(unsigned long)g_stPoll,(unsigned long)g_stF1,(unsigned long)g_stNew,(unsigned long)g_stF3,(int8_t)g_connF3v,g_e7b,(unsigned long)g_stCrc,(unsigned long)g_stNoRx,g_connSlot); g_stPoll=0; g_stF1=0; g_stNew=0; g_stF3=0; g_stCrc=0; g_stNoRx=0; g_chF1[0]=g_chF1[1]=g_chF1[2]=0; g_stMs=millis(); }
+  if (g_connOn && millis()-g_stMs>=1000){ g_f1ps=g_stF1; g_newps=g_stNew; g_pollsps=(uint16_t)g_stPoll;
+    g_pollPeriodUs = g_pollDtCnt ? (uint16_t)(g_pollDtSum/g_pollDtCnt) : 0; g_pollDtSum=0; g_pollDtCnt=0; if(Serial.availableForWrite()>70) Serial.printf("# stat polls=%lu/s F1=%lu/s new=%lu/s F3=%lu/s(v%d) e7b=%u crcfail=%lu noRx=%lu slot=%d\n",(unsigned long)g_stPoll,(unsigned long)g_stF1,(unsigned long)g_stNew,(unsigned long)g_stF3,(int8_t)g_connF3v,g_e7b,(unsigned long)g_stCrc,(unsigned long)g_stNoRx,g_connSlot); g_stPoll=0; g_stF1=0; g_stNew=0; g_stF3=0; g_stCrc=0; g_stNoRx=0; g_chF1[0]=g_chF1[1]=g_chF1[2]=0; g_stMs=millis(); }
 }

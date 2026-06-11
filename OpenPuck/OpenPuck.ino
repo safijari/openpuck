@@ -107,15 +107,17 @@ uint16_t g_loopPeriodUs = 0;   // avg loop iteration time last second (1e6/itera
 uint8_t  g_loopWorst    = 0;   // index of the slowest section: 0=webusb 1=ctrl.task 2=serial 3=rfdiag 4=rflink 5=haptic 6=led
 uint16_t g_loopWorstUs  = 0;   // that section's avg us per iteration
 void loop() {
-  static uint32_t acc[7] = {0}; static uint32_t loops = 0; static unsigned long secMs = 0;
   NRF_WDT->RR[0] = WDT_RR_RR_Reload;   // feed the watchdog each loop; if we ever stop, the ~8s WDT auto-resets us
   if (g_dirty) { g_dirty = false; saveBonds(); }
+#if OPK_LOG
+  // Diagnostic build: time each loop section so the panel can show the slowest one + the loop period.
+  static uint32_t acc[7] = {0}; static uint32_t loops = 0; static unsigned long secMs = 0;
   uint32_t t;
   t=micros(); webusbPoll();                   acc[0]+=(uint32_t)(micros()-t);
-  t=micros(); if (g_active) g_active->task(); acc[1]+=(uint32_t)(micros()-t);   // puck: USB conn presentation; xbox: rumble relay
+  t=micros(); if (g_active) g_active->task(); acc[1]+=(uint32_t)(micros()-t);
   t=micros(); serialConsolePoll();            acc[2]+=(uint32_t)(micros()-t);
-  t=micros(); rfDiagTask();                   acc[3]+=(uint32_t)(micros()-t);   // RF RE/calibration (no-op in normal use)
-  t=micros(); rfLinkTask();                   acc[4]+=(uint32_t)(micros()-t);   // beacons + connected poll + QoS + stats
+  t=micros(); rfDiagTask();                   acc[3]+=(uint32_t)(micros()-t);
+  t=micros(); rfLinkTask();                   acc[4]+=(uint32_t)(micros()-t);
   t=micros(); hapticTask();                   acc[5]+=(uint32_t)(micros()-t);
   t=micros(); ledTask();                      acc[6]+=(uint32_t)(micros()-t);
   loops++;
@@ -126,4 +128,13 @@ void loop() {
     g_loopWorst = wi; g_loopWorstUs = loops ? (uint16_t)(wv/loops) : 0;
     loops=0; secMs=millis();
   }
+#else
+  webusbPoll();
+  if (g_active) g_active->task();
+  serialConsolePoll();
+  rfDiagTask();
+  rfLinkTask();
+  hapticTask();
+  ledTask();
+#endif
 }
