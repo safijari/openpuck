@@ -17,6 +17,8 @@ static unsigned long g_haptic82Ms = 0;     // millis of last 0x82 haptic OUTPUT 
 static bool          g_haptic82On = false; // a non-zero 0x82 haptic is currently active (awaiting host stop)
 static unsigned long g_reinitAt = 0;       // when to fire the next post-reconnect haptic re-init (0 = none scheduled)
 static uint8_t       g_reinitLeft = 0;     // how many re-init shots remain in this connect window
+static bool          g_hapClearArmed=false;// haptic activity happened -> arm a clear once it goes idle (catches a
+                                           // latch that engaged during/after use, even seconds after connect)
 
 // ---- relay ring: multi-producer (USB ISR + loop-context console/xinput), single consumer (poll flush) ----
 // Producers serialize through a brief PRIMASK critical section (copy is <=62 bytes); the consumer only ever
@@ -41,6 +43,9 @@ bool relayEnqueue(uint8_t rid, const uint8_t* payload, uint8_t plen){
   g_rq[h].rid = rid; g_rq[h].len = plen;
   if (plen) memcpy(g_rq[h].data, payload, plen);
   g_rqHead = nx;
+  // Any haptic relay (Steam OR Xbox rumble OR test) arms the idle-clear and refreshes its timer -- so the
+  // during-use buzz gets cleared in EVERY USB mode, not just Steam. The re-init's own 0x81/0x87 don't match.
+  if (rid==0x82){ g_haptic82Ms = millis(); g_hapClearArmed = true; }
   __set_PRIMASK(pm); return true;
 }
 
@@ -119,6 +124,7 @@ static void hapticCancelPendingOn(){   // void queued 0x82-ON entries (stale Ste
 void haptic82HostReport(const uint8_t* p, uint16_t n){
   if(n<3) return;
   g_haptic82Ms = millis();
+  g_hapClearArmed = true;   // any haptic activity arms a clear when it next goes idle (kills a latch from this use)
   // Track on/off only. Do NOT synthesize a stop burst when Steam's own stop arrives: that stop is already
   // forwarded verbatim, so adding 0x82-zero frames on top just makes the controller see the stop several times
   // over. Each 0x82 is a discrete pad click, so the extra frames are exactly the spurious end-of-movement
@@ -169,16 +175,16 @@ void hapticReinit(){
   static const uint8_t H30[]={0x30,0x00,0x00,0x07,0x07,0x00,0x08,0x07,0x00,0x31,0x02,0x00,0x52,0x03,0x00};
   static const uint8_t H18[]={0x18,0x00,0x00,0x2e,0x00,0x00,0x34,0xff,0xff,0x35,0xff,0xff,0x34,0xff,0xff};
   static const uint8_t H35[]={0x35,0xff,0xff,0x2e,0x00,0x00};
-  static const uint8_t H2D[]={0x2d,0x64,0x00};                       // brightness (Steam sets it here too)
   static const uint8_t T81A[]={0x00,0x00,0x00,0x00,0x00,0x00,0x00};
   static const uint8_t T81B[]={0x01,0x00,0x00,0x00,0x00,0x00,0x00};
   relayEnqueue(0x81, nullptr, 0);            // reset action (FUN_0001f554) -- Steam sends this first
   relayEnqueue(0x87, H30, sizeof H30);
-  relayEnqueue(0x87, H18, sizeof H18);
+  relayEnqueue(0x87, H18, sizeof H18);       // haptic config (enabled/amplifier/gain): the part that clears a latch
   relayEnqueue(0x87, H35, sizeof H35);
-  relayEnqueue(0x87, H2D, sizeof H2D);
   relayEnqueue(0x81, T81A, sizeof T81A);
   relayEnqueue(0x81, T81B, sizeof T81B);
+  // NOTE: the brightness write (0x87 2d) that Steam includes is deliberately OMITTED -- it's an LED setting,
+  // not haptic, and this re-init now fires often (after every haptic-idle), so we must not flicker the LED.
 }
 void hapticInit(){
   g_rqHead = g_rqTail = 0; g_haptic82On=false;
@@ -222,4 +228,9 @@ void hapticTask(){
   // are one-shot pulses, so firing a 0x82-zero ~HAPTIC_QUIET_MS after a swipe ends is the extra end-of-movement
   // click the real puck doesn't make. Steam forwards its own stop for any sustained haptic.
   if (!g_xbox && g_haptic82On && millis()-g_haptic82Ms > HAPTIC_QUIET_MS) g_haptic82On=false;
+  // Haptic activity has gone idle for a while -> fire one re-init to clear any latch it left behind (the buzz
+  // that engages during/after use and won't self-clear, incl. after a mode switch). Fires only after a quiet
+  // gap, so it never interrupts active haptics; the brightness-less re-init is silent (settings, no play, no
+  // LED). Runs in ALL modes (the controller-side latch is mode-independent).
+  if (g_hapClearArmed && (millis()-g_haptic82Ms) > HAPTIC_CLEAR_IDLE_MS){ g_hapClearArmed=false; hapticReinit(); }
 }

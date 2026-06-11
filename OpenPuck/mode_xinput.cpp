@@ -96,11 +96,12 @@ static const uint8_t MOUSE_HID_DESC[] = { TUD_HID_REPORT_DESC_MOUSE() };
 static Adafruit_USBD_HID g_mouse;   // Xbox-mode mouse interface (right trackpad)
 
 // ===================== report 0x45 -> XInput + mouse =====================
-// button code (g_back[], g_abSwap targets) -> legacy XInput bit. 0=none 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=Start 11=Guide
+// button code (g_back[], g_abSwap targets) -> legacy XInput bit. 0=none 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=Start 11=Guide 12=Dup 13=Ddown 14=Dleft 15=Dright
 static uint16_t codeToXB(uint8_t c){
   switch(c){ case 1:return XB_A; case 2:return XB_B; case 3:return XB_X; case 4:return XB_Y;
     case 5:return XB_LB; case 6:return XB_RB; case 7:return XB_L3; case 8:return XB_R3;
-    case 9:return XB_BACK; case 10:return XB_START; case 11:return XB_GUIDE; default:return 0; }
+    case 9:return XB_BACK; case 10:return XB_START; case 11:return XB_GUIDE;
+    case 12:return XB_DUP; case 13:return XB_DDOWN; case 14:return XB_DLEFT; case 15:return XB_DRIGHT; default:return 0; }
 }
 static void rfXboxGamepad(const uint8_t* r){
   uint32_t b=btnsOf(r);

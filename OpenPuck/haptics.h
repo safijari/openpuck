@@ -35,6 +35,10 @@
 // comes up -- covers ~0.2s..3s so the brief controller-side connect buzz gets reset before it can sustain.
 #define HAPTIC_REINIT_SHOTS  8u
 #define HAPTIC_REINIT_GAP_MS 350u
+// After haptic activity, if it's been idle this long, fire one clear-re-init -- kills a latch that engaged
+// during use (a buzz that starts seconds after connect and won't self-clear). Long enough not to fire between
+// rapid in-game haptics; short enough to clear a stuck buzz soon after the user pauses.
+#define HAPTIC_CLEAR_IDLE_MS 1200u
 
 // ---- relay queue (written by puck_hid.cpp, mode_xinput.cpp, serial_console.cpp; drained by rf_link.cpp) ----
 // Enqueue one host->controller report: rid = report/command id, payload = the bytes AFTER [cmd][len] (what

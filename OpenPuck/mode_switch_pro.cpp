@@ -42,7 +42,8 @@ static const uint8_t SWPRO_HID_DESC[]={
 static uint32_t codeToJc(uint8_t c, uint32_t fA,uint32_t fB,uint32_t fX,uint32_t fY){
   switch(c){ case 1:return fA; case 2:return fB; case 3:return fX; case 4:return fY;
     case 5:return JC_BTN_L; case 6:return JC_BTN_R; case 7:return JC_BTN_LSTICK; case 8:return JC_BTN_RSTICK;
-    case 9:return JC_BTN_MINUS; case 10:return JC_BTN_PLUS; case 11:return JC_BTN_HOME; default:return 0; }
+    case 9:return JC_BTN_MINUS; case 10:return JC_BTN_PLUS; case 11:return JC_BTN_HOME;
+    case 12:return JC_BTN_UP; case 13:return JC_BTN_DOWN; case 14:return JC_BTN_LEFT; case 15:return JC_BTN_RIGHT; default:return 0; }
 }
 static unsigned long g_swProLastMs=0;
 static Adafruit_USBD_HID g_swPro;
