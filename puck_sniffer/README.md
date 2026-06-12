@@ -28,26 +28,51 @@ WebUSB needs a secure context, so **not** a `file://` path. Either:
 
 Click **Connect sniffer**, pick *OpenPuck Sniffer*.
 
-## 3. Capture
-The link is Nordic **Gazell**: the on-air address is a **System Address random per session** (not derived from
-the bond), and the active `E3`-poll / `F1`-reply exchange rides a small channel set `{primary, 2, 80}` derived
-from that address. The puck's ~5 Hz `E1`/`E2` **keepalive** trickles in even when the controller isn't being
-actively polled — so seeing only `E2` and **`C→P: 0`** means the controller isn't in an active session *yet*.
+## 3. Capture — the exact sequence (do it in this order)
 
-Recipe (mirrors `~/nrf-sniffer/capture_puck_session.py`):
-1. Status shows **ACQUIRE** → it catches the puck's `E1` on ch2 and locks the session address.
-2. It then **hunts the channel set** for the controller's `0xF_` replies. **Make the session active**: with the
-   controller connected, **do heavy trackpad / move sticks** so the puck polls fast. Watch **`C→P`** climb —
-   that means it parked on the live channel. (Bonded reconnect uses a *fresh* address → if it won't lock,
-   **power-cycle the controller** during ACQUIRE so the new `E1` is heard.)
-3. With `C→P` climbing, **● Start Cap**, trigger the action in Steam (turn off / LED / let battery move),
-   **■ End Cap**, **Download**. Send me the file.
+Why order matters: the link is Nordic **Gazell** — the on-air address is random per session, and **a *connected*
+slot never beacons on ch2; only a *reconnecting* one does.** So you can't lock onto an already-connected
+controller — you must catch its **reconnect**. The bond's **ibex_uuid is stable** across reconnects (only the
+address changes), so we anchor the lock on that uuid and force a reconnect.
 
-Direction: `P→C` (opcode `0xE_`, puck→controller — LED/shutoff commands ride here) vs `C→P` (`0xF_`,
-controller→puck — battery/telemetry rides here). The `filter` box matches payload hex (e.g. `9f`).
+### Setup (once)
+1. **Unplug the copycat** (the OpenPuck dev board) if it's plugged in — it beacons its own `E1`s and pollutes
+   ch2. Leave only: the **real Valve puck**, the **controller**, and the **sniffer board**.
+2. Controller connected to the **real puck** (Steam sees it). With `pairtui` (see `../pairtui/`), note the
+   connected slot's **ibex_uuid** (e.g. `EF7171B4`) — it's the bond id, stable across sessions.
 
-> Bond info (which controller/slot, its serial + uuids) is read over USB, not the air — `scmd`/`pairtui.py`
-> in `~/nrf-sniffer`. Useful for labelling a capture; it does **not** give the on-air address (random per session).
+### Arm the sniffer
+3. Flash the sniffer, open the app (`docs/sniffer.html` over localhost/https — not `file://`), **Connect** →
+   *OpenPuck Sniffer*. Confirm **rx** is climbing.
+4. In **lock ibex**, type the uuid (`EF7171B4`), click **Lock**. Status → **ACQUIRE** (waiting on ch2 for *only*
+   that slot's `E1`; ignores other slots and the copycat).
+5. Click **● Start Cap**.
+
+### Trigger (the step that's easy to miss)
+6. **Power-cycle the controller** — hold its power button until it turns **off**, wait ~2 s, turn it back **on**.
+   On reconnect it re-runs ch2 discovery and broadcasts slot 3's `E1` (matching the uuid) with a **fresh** session
+   address → the sniffer matches the uuid, locks that session, and hunts its channels.
+7. Watch the app: link → **CAPTURE (session locked)** and **`C→P` climbs**. Wiggle sticks / trackpad to keep
+   traffic flowing.
+
+### Capture the action
+8. With `C→P` climbing, do the thing in Steam (change brightness / LED, or turn off).
+9. **■ End Cap → Download.**
+
+**Always: Lock the uuid → Start Cap → *then* power-cycle.** The most common failure is the controller silently
+auto-reconnecting *before* the lock is armed, so its `E1` is never caught.
+
+Direction: `P→C` (opcode `0xE_`, puck→controller — LED/shutoff/brightness commands ride here) vs `C→P` (`0xF_`,
+controller→puck — input + battery/telemetry). The `filter` box matches payload hex (e.g. `9f`).
+
+### If `C→P` won't climb after the power-cycle
+- **Survey ch2** and look at the `op e1` rows during the reconnect: one payload should contain your uuid in
+  little-endian (`EF7171B4` → `… b4 71 71 ef …`). If you only ever see a *different* uuid, the copycat or another
+  bonded slot is the only thing reconnecting — make sure the real controller is re-pairing to the **real** puck.
+- Re-check you did **Lock → Start Cap → power-cycle** in that order.
+
+> Bond info (which controller/slot, its serial + uuids) is read over USB, not the air — see `../pairtui/`. Useful
+> for the uuid lock and labelling a capture; it does **not** give the on-air address (random per session).
 
 ## How it works
 After RX the radio buffer is `[LENGTH][S1][payload…]`; `payload[0]` is the opcode. The puck advertises its
