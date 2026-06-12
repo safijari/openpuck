@@ -15,14 +15,14 @@ Adafruit_USBD_WebUSB usb_web;
 //                [qos][persistMode][chordBtn B][chordBtn X][chordBtn Y][pollsps_lo][pollsps_hi]
 //                [loopPeriod_lo][loopPeriod_hi][loopWorstIdx][loopWorstUs_lo][loopWorstUs_hi]
 //                [pollPeriod_lo][pollPeriod_hi][logEnabled][battery%][rssi|dBm|]
-//                [gitDirty][gitHash 12B ASCII, NUL-padded]
-#define WB_PAYLEN 51
+//                [gitDirty][gitHash 12B ASCII, NUL-padded][buzzFlood]
+#define WB_PAYLEN 52
 static void webusbSendBlob(){
   if(!usb_web.connected()) return;
   bool up = (g_connSlot>=0 && (millis()-g_connReplyMs) < 300);
   uint8_t p[2+WB_PAYLEN];
   p[0]=0xA5; p[1]=WB_PAYLEN;
-  p[2]=4;                          // protocol version (4 = +git build provenance at [40..52]; 3 = battery/rssi)
+  p[2]=5;                          // protocol version (5 = +buzzFlood at [53]; 4 = git provenance; 3 = battery/rssi)
   p[3]=g_usbMode; p[4]=(uint8_t)g_mDiv; p[5]=(uint8_t)g_mFric; p[6]=0 /*rsvd: ex-padSmooth*/; p[7]=g_abSwap;
   p[8]=g_back[0]; p[9]=g_back[1]; p[10]=g_back[2]; p[11]=g_back[3];
   p[12]=(g_connSlot>=0)?(uint8_t)g_connSlot:0xFF;
@@ -46,6 +46,7 @@ static void webusbSendBlob(){
   p[40]=OPK_GIT_DIRTY ? 1 : 0;
   memset(&p[41],0,12);                                                 // 12B ASCII git hash, NUL-padded
   { const char* h=OPK_GIT_HASH; for(uint8_t i=0;i<12 && h[i];i++) p[41+i]=(uint8_t)h[i]; }
+  p[53]=g_buzzFlood?1:0;                                               // connect-time buzz-clear flood enabled?
   usb_web.write(p,sizeof p); usb_web.flush();
 }
 #if OPK_LOG
@@ -90,7 +91,7 @@ void webusbPoll(){
       else if(op==0x05){ hapLogResetDrain(buf[1]!=0); }   // rewind drain: buf[1]=1 from boot (whole ring), 0 from now
       else if(op==0x06){ webusbDrainCapture(); }          // drain entries since the rewind (panel polls this)
 #endif
-      else if(op==0x07){ hapticReinit(); }   // manual one-shot haptic-engine init (same single sequence the puck sends at connect)
+      else if(op==0x07){ hapticArmBuzzFlood(); hapticReinit(); }   // (re)arm the 30s 10Hz buzz-clear flood; fire one now for instant feedback
       else if(op==0x08){ hapticSendShutdown(); }                   // TEST: trigger the controller power-off attempt (same path host-suspend uses)
       else if(op==0x0A){                                           // FULL factory wipe: erase cfg.bin + bonds.bin, reboot to clean defaults.
         // Guarded by a 3-byte magic ("ERS") so a stray/corrupt byte can never trigger it; the panel double-
@@ -120,6 +121,7 @@ void webusbPoll(){
           case 16: g_persistMode = v?true:false; break;   // persist last mode across reboots (else always boot Steam)
           case 17: case 18: case 19: if(modeValid(v)) g_chordBtn[f-17]=v; break;   // back4+B/X/Y mode assignments
           case 20: armDebugCdcNextBoot(); usb_web.flush(); delay(40); NVIC_SystemReset(); break;  // reboot once WITH the CDC serial console (puck mode), then auto-revert
+          case 21: g_buzzFlood = v?true:false; break;          // connect-time haptic buzz-clear flood (persisted; default off)
         }
         if(persist) saveCfg();
         webusbSendBlob();

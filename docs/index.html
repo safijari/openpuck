@@ -92,7 +92,10 @@
       </div>
       <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
       <div class="row" style="margin:10px 0 0"><button id="hapClear">Clear stuck buzz</button>
-        <span class="note" style="flex:1">Sends the haptic-engine init once (the same sequence the real puck sends at connect). The copycat already runs this automatically once when the controller connects; click it if a buzz ever shows up later.</span>
+        <span class="note" style="flex:1">Manually (re)arm the buzz-clear flood now: replays the haptic re-init at 10&nbsp;Hz for 30&nbsp;s (same as pressing Steam). Use it if a buzz shows up right now.</span>
+      </div>
+      <div class="row" style="margin:10px 0 0"><label>Connect-time flood</label><button id="buzzFlood">off</button>
+        <span class="note" style="flex:1">The copycat now sends the real puck's full haptic config once on connect, which should keep the buzz from ever latching. If a board <em>still</em> buzzes in the first minute, turn this <strong>on</strong> to also flood the buzz-clear re-init at 10&nbsp;Hz for 30&nbsp;s after every connect. Off by default; persists across reboots.</span>
       </div>
       <div class="row" style="margin:10px 0 0"><button id="ctlrOff">Turn off controller (test)</button>
         <span class="note" style="flex:1">Fires the controller power-off (0x9F "off!", x3) — the same path host-suspend uses. Watch the capture / link status to see if the controller actually disconnects.</span>
@@ -253,6 +256,8 @@ function applyBlob(p){
   setSlider("mDiv",mDiv); setSlider("mFric",mFric);
   $("#abSwap").textContent = abSwap? "on":"off"; $("#abSwap").classList.toggle("active",!!abSwap);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
+  const buzzFlood=(p.length>51?p[51]:0);   // connect-time buzz-clear flood toggle (protocol v5+)
+  $("#buzzFlood").textContent = buzzFlood? "on":"off"; $("#buzzFlood").classList.toggle("active",!!buzzFlood);
   for(const sel of document.querySelectorAll("select.back")){ if(document.activeElement!==sel) sel.value=back[+sel.dataset.i]; }
   for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
 }
@@ -345,7 +350,7 @@ $("#capDl").onclick=downloadCap;
 $("#capStart").onclick=startCapture;
 $("#capStop").onclick=stopCapture;
 let buzzFloodTimer=null;
-$("#hapClear").onclick=async()=>{ if(dev){ await send([0x07]); $("#hapClear").classList.add("active"); clearTimeout(buzzFloodTimer); buzzFloodTimer=setTimeout(()=>$("#hapClear").classList.remove("active"),800); log("haptic init sent (one-shot, same as the puck's connect init)"); } };
+$("#hapClear").onclick=async()=>{ if(dev){ await send([0x07]); $("#hapClear").classList.add("active"); clearTimeout(buzzFloodTimer); buzzFloodTimer=setTimeout(()=>$("#hapClear").classList.remove("active"),30000); log("buzz-clear flood armed — 10Hz re-init for 30s (click again to restart)"); } };
 $("#ctlrOff").onclick=async()=>{ if(dev){ await send([0x08]); log("controller power-off attempt sent — watch link status / capture"); } };
 $("#ledSet").onclick=async()=>{ if(dev){ const h=$("#ledColor").value; const r=parseInt(h.substr(1,2),16),g=parseInt(h.substr(3,2),16),b=parseInt(h.substr(5,2),16); await send([0x09,r,g,b]); log(`LED color set ${h} (r${r} g${g} b${b})`); } };
 $("#factoryErase").onclick=async()=>{
@@ -361,6 +366,7 @@ $("#factoryErase").onclick=async()=>{
 };
 $("#abSwap").onclick=()=>{ const on=$("#abSwap").classList.contains("active"); setField(4, on?0:1); };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
+$("#buzzFlood").onclick=()=>{ const on=$("#buzzFlood").classList.contains("active"); setField(21, on?0:1); };
 for(const id of ["mDiv","mFric"]){
   const field={mDiv:1,mFric:2}[id];
   $("#"+id).addEventListener("input", ()=>{ $("#"+id+"V").textContent=fmtSlider(id,$("#"+id).value); });

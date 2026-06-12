@@ -51,6 +51,7 @@ extern uint8_t g_chordBtn[3];   // back4+B/X/Y -> these modes (A always STEAM)
 // last selected mode across reboots.
 extern bool    g_persistMode;   // false (default) = always boot Steam; true = boot into last mode
 extern uint8_t g_bootMode;      // one-shot: boot into this mode once then clear (!persistMode + explicit switch)
+extern bool    g_buzzFlood;     // false (default) = connect-time haptic config only; true = also 10Hz/30s buzz-clear flood
 
 // One-shot debug CDC. Puck mode normally DROPS the CDC serial console to free the USB endpoint its wake-mouse
 // interface needs (so puck can wake a sleeping Windows host). Arming this keeps CDC for the NEXT boot only --

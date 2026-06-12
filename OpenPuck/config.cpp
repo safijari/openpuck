@@ -9,6 +9,8 @@ bool    g_xbox = false;
 uint8_t g_chordBtn[3] = { MODE_LIZARD, MODE_XBOX, MODE_SW_HORI };   // back4+B/X/Y -> these modes (A always STEAM)
 bool    g_persistMode = false;
 uint8_t g_bootMode = 0xFF;
+bool    g_buzzFlood = false;   // OFF by default: connect-time haptic config (hapticConnectInit) should prevent the
+                               // buzz on its own. ON = also flood the buzz-clear re-init at 10Hz/30s on connect.
 
 bool          g_debugCdcThisBoot = false;
 static uint8_t g_debugCdc = 0;   // persisted one-shot arm, stored in Cfg.rsvd0 (1 = keep CDC for the next boot)
@@ -22,13 +24,13 @@ uint8_t g_back[4] = {5,6,7,8};   // L4->LB R4->RB L5->L3 R5->R3 (0..11 buttons, 
 const uint32_t g_pollUs = POLL_US_DEFAULT;
 
 #define CFG_FILE "/cfg.bin"
-#define CFG_MAGIC 0xC7   // bumped (chordBtn[3]): old cfg ignored -> clean defaults on first boot
-struct Cfg { uint8_t magic, mode, mDiv, mFric, rsvd0, abSwap, back[4], pollU100, persistMode, bootMode, chordBtn[3]; };  // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
+#define CFG_MAGIC 0xC8   // bumped (buzzFlood): old cfg ignored -> clean defaults on first boot
+struct Cfg { uint8_t magic, mode, mDiv, mFric, rsvd0, abSwap, back[4], pollU100, persistMode, bootMode, chordBtn[3], buzzFlood; };  // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 void saveCfg(){
   Cfg c={CFG_MAGIC,g_usbMode,(uint8_t)g_mDiv,(uint8_t)g_mFric,g_debugCdc,g_abSwap,
          {g_back[0],g_back[1],g_back[2],g_back[3]},(uint8_t)(g_pollUs/100),(uint8_t)(g_persistMode?1:0),g_bootMode,
-         {g_chordBtn[0],g_chordBtn[1],g_chordBtn[2]}};
+         {g_chordBtn[0],g_chordBtn[1],g_chordBtn[2]},(uint8_t)(g_buzzFlood?1:0)};
   InternalFS.remove(CFG_FILE); File f(InternalFS);
   if(f.open(CFG_FILE,FILE_O_WRITE)){ f.write((uint8_t*)&c,sizeof c); f.close(); }
 }
@@ -52,6 +54,7 @@ void loadCfg(){
       else                 g_usbMode = g_persistMode ? (modeValid(c.mode)?c.mode:0) : 0;
       static const uint8_t CHORD_DEF[3]={MODE_LIZARD,MODE_XBOX,MODE_SW_HORI};
       for(int i=0;i<3;i++) g_chordBtn[i]=modeValid(c.chordBtn[i])?c.chordBtn[i]:CHORD_DEF[i];
+      g_buzzFlood = c.buzzFlood?true:false;   // connect-time buzz-clear flood (default off)
     }
     f.close();
   }
