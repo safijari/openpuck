@@ -91,14 +91,11 @@
         <div class="stat"><div class="k">Build (git)</div><div class="v" id="stBuild">—</div></div>
       </div>
       <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
-      <!-- Buzz-clear controls hidden: the connect-time haptic config (hapticConnectInit) prevents the stuck buzz
-           on its own, so the manual flood + the connect-time flood toggle aren't needed. Elements kept (display:none)
-           so the firmware op 0x07 / SET field 21 and their JS handlers still work if re-shown for debugging. -->
-      <div class="row" style="margin:10px 0 0;display:none"><button id="hapClear">Clear stuck buzz</button>
+      <div class="row" style="margin:10px 0 0"><button id="hapClear">Clear stuck buzz</button>
         <span class="note" style="flex:1">Manually (re)arm the buzz-clear flood now: replays the haptic re-init at 10&nbsp;Hz for 30&nbsp;s (same as pressing Steam). Use it if a buzz shows up right now.</span>
       </div>
-      <div class="row" style="margin:10px 0 0;display:none"><label>Connect-time flood</label><button id="buzzFlood">off</button>
-        <span class="note" style="flex:1">The copycat now sends the real puck's full haptic config once on connect, which should keep the buzz from ever latching. If a board <em>still</em> buzzes in the first minute, turn this <strong>on</strong> to also flood the buzz-clear re-init at 10&nbsp;Hz for 30&nbsp;s after every connect. Off by default; persists across reboots.</span>
+      <div class="row" style="margin:10px 0 0"><label>Connect-time flood</label><button id="buzzFlood">off</button>
+        <span class="note" style="flex:1">Floods the buzz-clear re-init at 10&nbsp;Hz for 30&nbsp;s after every connect — the proven fix for the connect-time stuck buzz. <strong>On by default</strong>; only turn it off if you're testing. Persists across reboots.</span>
       </div>
       <div class="row" style="margin:10px 0 0"><button id="ctlrOff">Turn off controller (test)</button>
         <span class="note" style="flex:1">Fires the controller power-off (0x9F "off!", x3) — the same path host-suspend uses. Watch the capture / link status to see if the controller actually disconnects.</span>

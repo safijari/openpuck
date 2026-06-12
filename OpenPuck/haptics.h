@@ -97,8 +97,6 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1);
 void hapticInit();   // boot reset: clear relay/active flags, arm the reconnect block
 void hapticTask();   // per-loop upkeep: link-edge markers + steam 0x82 quiet timeout + fires the scheduled re-init
 void hapticReinit(); // replay Steam's haptic-subsystem re-init to the controller -> clears a latched/stuck buzz
-void hapticConnectInit(); // ONE-TIME connect config (0xdc/0xe2 + 0x87 22/23 + the haptic block) -- the real puck's
-                          // full connect init; fired once ~200ms after each (re)connect to keep the buzz from latching
 // Called from rf_link the instant a controller (re)connect is detected (an F-reply after a gap): blocks haptic
 // relays for HAPTIC_RECONNECT_BLOCK_MS and schedules a re-init just after, to keep the freshly-booted
 // controller out of the degraded/latched haptic state. Reliable -- independent of hapticTask's link heuristic.

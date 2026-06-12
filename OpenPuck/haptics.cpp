@@ -29,7 +29,8 @@ unsigned long    g_hapticBlockUntil = 0;   // drop Steam haptics briefly during 
 
 static unsigned long g_haptic82Ms = 0;     // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
 static bool          g_haptic82On = false; // a non-zero 0x82 haptic is currently active (awaiting host stop)
-static unsigned long g_reinitAt = 0;       // when to fire the ONE post-(re)connect haptic CONNECT-INIT (0 = none)
+static unsigned long g_reinitAt = 0;       // when to fire the next post-reconnect haptic re-init (0 = none scheduled)
+static uint8_t       g_reinitLeft = 0;     // how many re-init shots remain in this connect window
 static bool          g_hapClearArmed=false;// haptic activity happened -> arm a clear once it goes idle (catches a
                                            // latch that engaged during/after use, even seconds after connect)
 
@@ -216,44 +217,9 @@ void hapticReinit(){
   relayEnqueue(0x81, T81A, sizeof T81A);
   relayEnqueue(0x81, T81B, sizeof T81B);
 }
-// ONE-TIME connect config, sent ~200ms after every (re)connect -- this is the part the previous build never sent.
-// The real puck, right after the controller connects, sends a config burst BEYOND the haptic-register block:
-// 0xdc/0xe2 setup commands and 0x87 register writes 0x22=0x64 / 0x23=0x50 (verified in steam-controller-sniff-
-// data.json). OpenPuck only ever sent the haptic-register subset, so the controller came up in a state prone to
-// the connect-buzz latch. We replay that extra config here, then the haptic-register block, ONCE per connect --
-// the intended root-cause fix so the buzz never engages (the 10Hz flood becomes an opt-in fallback, g_buzzFlood).
-// Deliberately omitted vs the raw capture: the LED writes (0x87 reg 0x2d brightness, 0xc1 color -- OpenPuck owns
-// the LED), the 0xed "user/wireless_transport" string (alters transport, Steam-session-specific), and the 0x30
-// gyro-mode writes (0x30=0 disables the gyro -- see hapticReinit). The on-air framing of these matches the puck
-// exactly: rid>=0x87 -> E3 [2+len][01][rid][len][data] (relayEnqueue), e.g. 0xdc -> e3 04 01 dc 02 01 02.
-void hapticConnectInit(){
-  static const uint8_t DC[]  = {0x01,0x02};        // 0xdc setup -> e3 04 01 dc 02 01 02
-  static const uint8_t E2[]  = {0x01,0x20};        // 0xe2 setup -> e3 04 01 e2 02 01 20
-  static const uint8_t R22[] = {0x22,0x64,0x00};   // 0x87 reg 0x22 = 0x0064
-  static const uint8_t R23[] = {0x23,0x50,0x00};   // 0x87 reg 0x23 = 0x0050
-  // reg 0x30 = subsystem enable: bit 0x10 = gyro/IMU streaming, bit 0x08 = haptic engine. 0x0018 enables BOTH.
-  // This is THE missing piece: the real puck's connect init leads with 0x30=0x18, but we had been OMITTING 0x30
-  // entirely (after the gyro bug where flooding 0x30=0x00 froze the IMU). Result: the haptic-enable bit 0x08
-  // never got set, so the engine came up un-armed and latch-prone -> the connect buzz. We send 0x18 (NOT 0x00):
-  // arms the haptic engine AND keeps the gyro streaming (verified in the sniff: 0x30=0x00 freezes gyro; 0x18 is
-  // the puck's own enable value). Sent ONCE per connect, never flooded, so it can't re-break the gyro.
-  static const uint8_t H30[] = {0x30,0x18,0x00, 0x07,0x07,0x00, 0x08,0x07,0x00, 0x31,0x02,0x00, 0x52,0x03,0x00};
-  static const uint8_t H18[] = {0x18,0x00,0x00, 0x2e,0x00,0x00, 0x34,0xff,0xff, 0x35,0xff,0xff, 0x2e,0x00,0x00};
-  static const uint8_t H34[] = {0x34,0xff,0xff, 0x35,0xff,0xff};
-  static const uint8_t T81B[]= {0x01,0x00,0x00,0x00,0x00,0x00,0x00};
-  relayEnqueue(0xdc, DC,  sizeof DC);
-  relayEnqueue(0xe2, E2,  sizeof E2);
-  relayEnqueue(0x87, R22, sizeof R22);
-  relayEnqueue(0x87, R23, sizeof R23);
-  relayEnqueue(0x87, H30, sizeof H30);             // 0x30=0x18 enable + 07/08/31/52
-  relayEnqueue(0x87, H18, sizeof H18);             // 18/2e/34/35 haptic config
-  relayEnqueue(0x87, H34, sizeof H34);
-  relayEnqueue(0x81, nullptr, 0);                  // 0x81 reset bracket
-  relayEnqueue(0x81, T81B, sizeof T81B);           // final 0x81 [01 00 ..] (matches the puck's last connect frame)
-}
 void hapticInit(){
   g_rqHead = g_rqTail = 0; g_haptic82On=false;
-  if(g_buzzFlood) hapticArmBuzzFlood();   // opt-in only: flood the buzz-clear for the first HAPTIC_FLOOD_MS
+  if(g_buzzFlood) hapticArmBuzzFlood();   // flood the buzz-clear for the first HAPTIC_FLOOD_MS (g_buzzFlood: default ON)
   g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // boot: block stale Steam 0x82 until link stable
   // NO fabricated stop burst. USB capture proves Steam only ever sends 0x82 [01 01 f7] pulses -- never a
   // zero-gain [01 01 00] "stop". Injecting our invented stop frame (which the real puck never sends) at
@@ -269,11 +235,12 @@ void hapticOnReconnect(){
   g_hapticBlockUntil = millis() + HAPTIC_RECONNECT_BLOCK_MS;   // no haptics relayed for the next 3s
   g_haptic82On = false;
   hapticCancelPendingOn();                                     // drop any haptic ON queued before the link came up
-  // DEFAULT: send the full connect config (hapticConnectInit) ONCE, ~200ms after the link is up -- like the real
-  // puck, so the haptic engine never latches in the first place.
+  // Proactive haptic re-init across the connect window: first shot ~200ms after the link is up, then every
+  // HAPTIC_REINIT_GAP_MS for HAPTIC_REINIT_SHOTS. NOTE: NO 0x30 write anywhere (hapticReinit omits it) -- any
+  // 0x30 write freezes the gyro, so the re-init must stay 0x30-free to keep the IMU streaming.
   g_reinitAt = millis() + 200u;
-  // OPT-IN fallback (g_buzzFlood): also hammer the buzz-clear re-init at 10Hz for 30s, in case the config alone
-  // doesn't fully prevent the buzz on a given board. Off by default.
+  g_reinitLeft = HAPTIC_REINIT_SHOTS;
+  // PRIMARY buzz mitigation (g_buzzFlood, default ON): also hammer the buzz-clear re-init at 10Hz for 30s.
   if(g_buzzFlood) hapticArmBuzzFlood();
   uint8_t mk=2; hapLogAdd(0xFD, 0xEE, &mk, 1);                 // capture marker: RECONNECT detected (block+init armed)
 }
@@ -285,14 +252,14 @@ void hapticTask(){
   if(up && !wasHapticLinkUp){ uint8_t mk=1; hapLogAdd(0xFD,0xEE,&mk,1); hapticOnReconnect(); }
   if(!up && wasHapticLinkUp){ uint8_t mk=0; hapLogAdd(0xFD,0xEE,&mk,1); }
   wasHapticLinkUp=up;
-  if(g_reinitAt && up && (int32_t)(millis()-g_reinitAt) >= 0){   // the ONE connect config, ~200ms after (re)connect
-    hapticConnectInit();
-    g_reinitAt = 0;
+  if(g_reinitAt && up && (int32_t)(millis()-g_reinitAt) >= 0){   // proactive haptic re-init across the connect window
+    hapticReinit();
+    g_reinitAt = (g_reinitLeft && --g_reinitLeft) ? (millis()+HAPTIC_REINIT_GAP_MS) : 0;
   }
-  // OPT-IN buzz-clear FLOOD (g_buzzFlood): while the armed window is open (-> g_buzzFloodUntil) and the link is up,
-  // replay the haptic re-init every HAPTIC_FLOOD_GAP_MS (10Hz) to hammer a stubborn latch. Auto-stops after 30s;
-  // re-armed on connect (only when enabled) and from the WebUSB panel. Off by default -- the connect config above
-  // is meant to prevent the buzz; this is the fallback for boards where it doesn't.
+  // Buzz-clear FLOOD (g_buzzFlood, default ON): while the armed window is open (-> g_buzzFloodUntil) and the link
+  // is up, replay the haptic re-init every HAPTIC_FLOOD_GAP_MS (10Hz) to hammer the stuck-buzz latch. Auto-stops
+  // after 30s; re-armed on every connect and from the WebUSB panel. This is the PRIMARY buzz mitigation -- the
+  // connect config alone did not reliably stop it. Can be disabled from the panel for testing.
   static unsigned long floodMs=0;
   if (g_buzzFlood && (int32_t)(g_buzzFloodUntil - millis()) > 0 && up && millis()-floodMs >= HAPTIC_FLOOD_GAP_MS){ floodMs=millis(); hapticReinit(); }
   // Controller power-off on host SLEEP: send the power-off command (0x9F "off!") the instant the USB bus
