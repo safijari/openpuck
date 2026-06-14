@@ -32,11 +32,11 @@ static void hidGyroBuild(uint8_t out[63]){
   out[2]=swStick(g_in.rx,false); out[3]=swStick(g_in.ry,true);
   out[4]=psHatNibble(b)|psFaceNibble(b);
   out[5]=psShouldersByte(b);
-  static uint8_t ctr=0; out[6]=((ctr++&0x0F)<<4)|((b&TB_LPADC||b&TB_RPADC)?0x02:0)|((b&TB_STEAM)?0x01:0);
+  static uint8_t ctr=0;   out[6]=((ctr++&0x0F)<<4)|((b&TB_TOUCH||b&TB_LPADC||b&TB_RPADC)?0x02:0)|((b&TB_STEAM)?0x01:0);
   out[7]=g_in.lt; out[8]=g_in.rt;
   out[12]=g_in.gx&0xFF; out[13]=g_in.gx>>8;
   out[14]=g_in.gy&0xFF; out[15]=g_in.gy>>8;
-  out[16]=g_in.gz&0xFF; out[17]=g_in.gz>>8;
+   out[16]=(-g_in.gz)&0xFF; out[17]=(-g_in.gz)>>8;
   out[18]=g_in.ax&0xFF; out[19]=g_in.ax>>8;
   out[20]=g_in.ay&0xFF; out[21]=g_in.ay>>8;
   out[22]=g_in.az&0xFF; out[23]=g_in.az>>8;

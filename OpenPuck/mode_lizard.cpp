@@ -32,21 +32,33 @@ void rfLizard(const uint8_t* r, Adafruit_USBD_HID* mdev, Adafruit_USBD_HID* kdev
   }
   // --- keyboard: modifiers + up to 6 keycodes ---
   uint8_t mod=0, kc[6]={0,0,0,0,0,0}, nk=0;
-  if(b&TB_LB) mod|=KEYBOARD_MODIFIER_LEFTCTRL;
   if(b&TB_RB) mod|=KEYBOARD_MODIFIER_LEFTALT;
   #define LZK(cond,code) do{ if((cond)&&nk<6) kc[nk++]=(code); }while(0)
   LZK(b&TB_A,    HID_KEY_ENTER);
   LZK(b&TB_B,    HID_KEY_ESCAPE);
   LZK(b&TB_X,    HID_KEY_PAGE_UP);
   LZK(b&TB_Y,    HID_KEY_PAGE_DOWN);
-  LZK(b&TB_VIEW, HID_KEY_TAB);
-  LZK(b&TB_MENU, HID_KEY_ESCAPE);
+  LZK(b&TB_VIEW, HID_KEY_ESCAPE);
+  LZK(b&TB_MENU, HID_KEY_TAB);
   int sx=s16off(r,8), sy=s16off(r,10);   // left stick (XInput sign: +Y = up); deflect ~37% acts as a d-pad
   LZK((b&TB_DUP)||sy> 12000, HID_KEY_ARROW_UP);
   LZK((b&TB_DDN)||sy<-12000, HID_KEY_ARROW_DOWN);
   LZK((b&TB_DLF)||sx<-12000, HID_KEY_ARROW_LEFT);
   LZK((b&TB_DRT)||sx> 12000, HID_KEY_ARROW_RIGHT);
   #undef LZK
+  if(b&TB_LB) mod|=KEYBOARD_MODIFIER_LEFTCTRL;
+  // --- Steam/QAM chords ---
+  { static bool prevL5=false, prevR5=false;
+    bool mh = (b & (TB_STEAM|TB_MENU)) != 0;
+    bool nL5 = mh && (b & TB_L5), nR5 = mh && (b & TB_R5);
+    if (nL5 && !prevL5){ uint8_t cc=0x02; if(mdev->ready()) mdev->sendReport(0x03,&cc,1); }
+    if (nR5 && !prevR5){ uint8_t cc=0x01; if(mdev->ready()) mdev->sendReport(0x03,&cc,1); }
+    if (!nL5 && prevL5){ uint8_t cc=0x00; if(mdev->ready()) mdev->sendReport(0x03,&cc,1); }
+    if (!nR5 && prevR5){ uint8_t cc=0x00; if(mdev->ready()) mdev->sendReport(0x03,&cc,1); }
+    prevL5=nL5; prevR5=nR5;
+    if(mh && (b & TB_X)){ mod=KEYBOARD_MODIFIER_LEFTGUI|KEYBOARD_MODIFIER_LEFTCTRL; kc[0]=HID_KEY_O; kc[1]=0; kc[2]=0; kc[3]=0; kc[4]=0; kc[5]=0; nk=1; }
+    if(mh && (b & TB_L4)){ mod=KEYBOARD_MODIFIER_LEFTCTRL|KEYBOARD_MODIFIER_LEFTALT; kc[0]=HID_KEY_DELETE; kc[1]=0; kc[2]=0; kc[3]=0; kc[4]=0; kc[5]=0; nk=1; }
+  }
   static uint8_t pmod=0, pkc[6]={0,0,0,0,0,0};
   bool chg=(mod!=pmod); for(int i=0;i<6;i++) if(kc[i]!=pkc[i]) chg=true;
   if(chg){ pmod=mod; for(int i=0;i<6;i++) pkc[i]=kc[i];
