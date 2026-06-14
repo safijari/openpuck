@@ -47,6 +47,17 @@ void rfLizard(const uint8_t* r, Adafruit_USBD_HID* mdev, Adafruit_USBD_HID* kdev
   LZK((b&TB_DLF)||sx<-12000, HID_KEY_ARROW_LEFT);
   LZK((b&TB_DRT)||sx> 12000, HID_KEY_ARROW_RIGHT);
   #undef LZK
+  // --- Steam chords: Steam+L5=vol down, Steam+R5=vol up, Steam+X=Win+Ctrl+O ---
+  { static bool prevL5=false, prevR5=false;
+    bool sh = (b & TB_STEAM) != 0;
+    bool nL5 = sh && (b & TB_L5), nR5 = sh && (b & TB_R5);
+    if (nL5 && !prevL5){ uint8_t cc=0x02; if(mdev->ready()) mdev->sendReport(0x03,&cc,1); }  // VolDown
+    if (nR5 && !prevR5){ uint8_t cc=0x01; if(mdev->ready()) mdev->sendReport(0x03,&cc,1); }  // VolUp
+    if (!nL5 && prevL5){ uint8_t cc=0x00; if(mdev->ready()) mdev->sendReport(0x03,&cc,1); }  // release
+    if (!nR5 && prevR5){ uint8_t cc=0x00; if(mdev->ready()) mdev->sendReport(0x03,&cc,1); }
+    prevL5=nL5; prevR5=nR5;
+    if(sh && (b & TB_X)){ mod=KEYBOARD_MODIFIER_LEFT_GUI|KEYBOARD_MODIFIER_LEFTCTRL; kc[0]=HID_KEY_O; kc[1]=0; kc[2]=0; kc[3]=0; kc[4]=0; kc[5]=0; nk=1; }
+  }
   static uint8_t pmod=0, pkc[6]={0,0,0,0,0,0};
   bool chg=(mod!=pmod); for(int i=0;i<6;i++) if(kc[i]!=pkc[i]) chg=true;
   if(chg){ pmod=mod; for(int i=0;i<6;i++) pkc[i]=kc[i];

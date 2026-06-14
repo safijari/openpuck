@@ -41,7 +41,10 @@
 #define HAPTIC_CLEAR_IDLE_MS 1200u
 // Controller power-off: hapticSendShutdown() relays Steam's confirmed "turn off controller" command (feature-0x01
 // cmd 0x9F, payload "off!" -- captured from the real puck). Sent as a small burst because the RF relay is NO-ACK.
+// When triggered by host suspend, the shutdown is DELAYED so a transient suspend/resume cycle (common on system
+// wake) doesn't kill the controller -- the timer cancels if the bus resumes within the window.
 #define HAPTIC_SHUTDOWN_SHOTS 3u
+#define HAPTIC_SHUTDOWN_DELAY_MS 3000u
 
 // ---- relay queue (written by puck_hid.cpp, mode_xinput.cpp, serial_console.cpp; drained by rf_link.cpp) ----
 // Enqueue one host->controller report: rid = report/command id, payload = the bytes AFTER [cmd][len] (what

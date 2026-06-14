@@ -6,6 +6,8 @@
 #include <Arduino.h>
 #include <string.h>
 
+static unsigned long g_shutdownAt = 0;   // delayed host-suspend shutdown; 0 = none pending
+
 uint8_t          g_relayOp  = 0xE3;   // E3 poll
 // relay sub-TLV TYPE byte. Vestigial now: rfConnFlushRelay derives the on-air type from the report id (see the
 // CONFIRMED split there -- 0x05 for actuators/haptics <0x87, 0x01 for config/settings/LED >=0x87). Still exposed
@@ -254,15 +256,16 @@ void hapticTask(){
     hapticReinit();
     g_reinitAt = (g_reinitLeft && --g_reinitLeft) ? (millis()+HAPTIC_REINIT_GAP_MS) : 0;
   }
-  // Controller power-off on host SLEEP: send the power-off command (0x9F "off!") the instant the USB bus
-  // suspends, like the real puck. BUT only when USB power (VBUS) is still present -- i.e. a genuine host sleep,
-  // NOT a cable unplug. Pulling the dongle ALSO trips the suspend edge (in the brief window it runs on residual
-  // power), and we must NOT kill the controller then; it should only power off on a shutdown command or a real
-  // host sleep. VBUSDETECT is 1 while the cable still delivers 5V, 0 once unplugged. wasSusp starts true so a
+  // Controller power-off on host SLEEP: defer shutdown by HAPTIC_SHUTDOWN_DELAY_MS so a transient
+  // suspend/resume cycle during system wake doesn't kill the controller. If the bus comes back within
+  // the window the timer is cancelled.
+  // VBUSDETECT is 1 while the cable still delivers 5V, 0 once unplugged. wasSusp starts true so a
   // boot-into-suspended state never false-fires.
   static bool wasSusp=true; bool susp=USBDevice.suspended();
   bool vbus = (NRF_POWER->USBREGSTATUS & POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
-  if (susp && !wasSusp && vbus) hapticSendShutdown();
+  if (susp && !wasSusp && vbus && !g_shutdownAt) g_shutdownAt = millis() + HAPTIC_SHUTDOWN_DELAY_MS;
+  if (wasSusp && !susp) g_shutdownAt = 0;      // bus resumed -> cancel pending shutdown
+  if (g_shutdownAt && susp && vbus && (int32_t)(millis() - g_shutdownAt) >= 0){ g_shutdownAt = 0; hapticSendShutdown(); }
   wasSusp=susp;
   // Steam-mode: host went quiet -> mark the 0x82 stream inactive. Do NOT synthesize a stop: trackpad haptics
   // are one-shot pulses, so firing a 0x82-zero ~HAPTIC_QUIET_MS after a swipe ends is the extra end-of-movement
