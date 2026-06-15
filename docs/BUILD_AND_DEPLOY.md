@@ -14,6 +14,7 @@ Software:
 
 - `arduino-cli`
 - Adafruit nRF52 Arduino core
+- `adafruit-nrfutil` (Python package, for DFU packaging - see "Build the firmware")
 - Chrome or Edge for the WebUSB app
 
 ## 2. Install Arduino CLI
@@ -37,6 +38,7 @@ Use [choco](https://chocolatey.org/) and do a `choco install arduino-cli`. If yo
 Run once on any platform:
 
 ```bash
+pip install adafruit-nrfutil         # DFU packaging helper (required by the Adafruit nRF52 build recipe)
 arduino-cli config init
 arduino-cli core update-index
 arduino-cli core install adafruit:nrf52 --additional-urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
@@ -94,6 +96,35 @@ arduino-cli upload `
 ```
 
 Replace `COM5` with the actual board port.
+
+## 5b. Upload via DFU (nRF52840 UF2 bootloader)
+
+If the board has the **Adafruit nRF52 UF2 bootloader** (common on Pro Micro nRF52840 boards), you can upload by dragging the compiled `.uf2` file onto the board's mass-storage volume:
+
+1. **Double-tap the RST button**. The board mounts as a **UF2BOOT** / **NRF52BOOT** drive.
+2. Locate the compiled `.uf2` file:
+
+   ```bash
+   # After a successful `arduino-cli compile`, find the .uf2 in the build directory:
+   ls /tmp/arduino/cores/adafruit_nrf52_adafruit52840/*.uf2
+   # or, on Windows, look in %TEMP%\arduino\...
+   ```
+
+3. **Copy the `.uf2` file** onto the UF2BOOT drive. The board auto-ejects and reboots with the new firmware.
+
+Alternatively, use the **adafruit-nrfutil DFU** Python tool with the board in DFU mode (bootloader LED pulsing):
+
+```bash
+# Enter DFU mode (double-tap RST). On Linux/macOS:
+adafruit-nrfutil --verbose dfu serial --package OpenPuck/OpenPuck.ino.adafruit_nrf52_feather52840.zip -p /dev/ttyACM0 -b 115200
+
+# On Windows (PowerShell):
+adafruit-nrfutil --verbose dfu serial --package OpenPuck/OpenPuck.ino.adafruit_nrf52_feather52840.zip -p COM5 -b 115200
+```
+
+Replace the port (`/dev/ttyACM0` / `COM5`) with the actual board port.
+
+> **Note:** The `.zip` package is generated automatically by `arduino-cli compile` when the Adafruit nRF52 core is used. If it is missing, ensure `adafruit-nrfutil` is installed and recompile.
 
 ## 6. Factory reset (erase persistent storage)
 
