@@ -69,12 +69,12 @@ static void switchBuildHoripad(uint8_t out[8]){
 
 void SwitchHoriController::begin(){
   USBDevice.setID(0x0F0D, 0x0092);
-  USBDevice.setDeviceVersion(0x0201);   // bumped from 0x0200 for the added wake-mouse interface (Windows caches config by VID:PID:bcdDevice)
+  USBDevice.setDeviceVersion(0x0202);   // bumped from 0x0201 for 1ms poll interval (Windows caches config by VID:PID:bcdDevice)
   USBDevice.setManufacturerDescriptor("HORI CO.,LTD.");
   USBDevice.setProductDescriptor("POKKEN CONTROLLER");
   g_switch.enableOutEndpoint(true);
   g_switch.setReportDescriptor(SWITCH_HID_DESC, sizeof SWITCH_HID_DESC);
-  g_switch.setPollInterval(8);
+  g_switch.setPollInterval(1);   // 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
   g_switch.begin();
 }
 void SwitchHoriController::task(){   // stream the 8-byte HORIPAD report at ~250Hz (no handshake needed)

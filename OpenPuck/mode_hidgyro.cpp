@@ -55,12 +55,12 @@ static void hidGyroBuild(uint8_t out[63]){
 
 void HidGyroController::begin(){
   USBDevice.setID(0x054C, 0x05C4);
-  USBDevice.setDeviceVersion(0x0101);   // bumped from 0x0100 for the added wake-mouse interface (Windows caches config by VID:PID:bcdDevice)
+  USBDevice.setDeviceVersion(0x0102);   // bumped from 0x0101 for 1ms poll interval (Windows caches config by VID:PID:bcdDevice)
   USBDevice.setManufacturerDescriptor("Sony Computer Entertainment");
   USBDevice.setProductDescriptor("Wireless Controller");
   g_hidGyro.enableOutEndpoint(true);
   g_hidGyro.setReportDescriptor(GYRO_HID_DESC, sizeof GYRO_HID_DESC);
-  g_hidGyro.setPollInterval(4);
+  g_hidGyro.setPollInterval(1);   // 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
   g_hidGyro.begin();
 }
 void HidGyroController::task(){
