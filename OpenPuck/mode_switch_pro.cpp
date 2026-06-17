@@ -231,13 +231,19 @@ static void saveUserCal(){
   InternalFS.remove(SWCAL_FILE); File f(InternalFS);
   if(f.open(SWCAL_FILE, FILE_O_WRITE)){ f.write(g_userCal,sizeof g_userCal); f.close(); }
 }
+// jcSpiWrite runs in the USB ISR (via jcSet). NEVER do flash I/O here -- a blocking LittleFS erase/write in the
+// interrupt wedges USB + the RF poll and corrupts state (device drops into a bad state needing a replug). Only
+// update the RAM mirror and flag it dirty; task() (main loop) does the actual save, debounced so a calibration
+// write-burst coalesces into one flash write.
+static volatile bool          g_userCalDirty=false;
+static volatile unsigned long g_userCalDirtyMs=0;
 static void jcSpiWrite(uint32_t addr, uint8_t len, const uint8_t* data, uint16_t avail){
   bool changed=false;
   for(uint8_t i=0;i<len && i<avail;i++){
     uint32_t a=addr+i;
     if(a>=0x8000 && a<0x8100){ if(g_userCal[a-0x8000]!=data[i]){ g_userCal[a-0x8000]=data[i]; changed=true; } }
   }
-  if(changed) saveUserCal();   // calibration is a rare user action -> flash write is fine
+  if(changed){ g_userCalDirty=true; g_userCalDirtyMs=millis(); }   // defer the flash write to task()
 }
 static void spiRead(uint32_t addr, uint8_t len, uint8_t* dst){
   for(uint8_t i=0;i<len;i++){
@@ -357,6 +363,8 @@ void SwitchProController::begin(){
 }
 void SwitchProController::task(){
   if(!g_swPro.ready()) return;
+  // Deferred user-cal flash write (queued by the USB ISR; debounced so a calibration write-burst is one save).
+  if(g_userCalDirty && (unsigned long)(millis()-g_userCalDirtyMs) > 250u){ g_userCalDirty=false; saveUserCal(); }
   if(g_jcQh!=g_jcQt){                                   // drain handshake/subcommand replies first (ordered)
     JcRep* r=&g_jcQ[g_jcQh];
     if(g_swPro.sendReport(r->rid, r->data, JC_REPLEN)) g_jcQh=(uint8_t)((g_jcQh+1)%JCQ_N);
