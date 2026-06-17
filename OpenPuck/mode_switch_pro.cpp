@@ -4,8 +4,11 @@
 #include "config.h"
 #include "haptics.h"
 #include <Adafruit_TinyUSB.h>
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
 #include <Arduino.h>
 #include <string.h>
+using namespace Adafruit_LittleFS_Namespace;
 
 SwitchProController g_switchPro;
 
@@ -166,6 +169,31 @@ static const uint8_t BT_PAIR_2[31]={   // type 2: LTK exchange
   0x02, 0xE5,0xC8,0xE4,0x92,0x05,0xFF,0xC9,0x8A,0x7D,0xEA,0x15,0xF6,0x19,0xBA,0x82,0x13,
   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
 static const uint8_t BT_PAIR_3[31]={0x03};   // type 3: save pairing (all zero body)
+// User-calibration SPI mirror (0x8000-0x80FF). A real Pro Controller stores the gyro/accel (and stick) calibration
+// the Switch writes during "Calibrate Motion Controls" here, then reads it back and applies it -- that's how a
+// resting IMU/neutral offset gets cancelled. We previously DISCARDED SPI writes and returned 0xFF (blank), so the
+// Switch's calibration never stuck (it appeared to do nothing and reverted on replug) -- which is why calibrating
+// did not fix the Mario Kart roll/neutral offset. Now we store writes and serve them back, persisted to flash so
+// it survives unplug/replug. 0xFF = blank -> Switch falls back to our factory block at 0x6020 (default until cal'd).
+#define SWCAL_FILE "/swimucal.bin"
+static uint8_t g_userCal[0x100];
+static void loadUserCal(){
+  memset(g_userCal,0xFF,sizeof g_userCal);
+  File f(InternalFS);
+  if(f.open(SWCAL_FILE, FILE_O_READ)){ f.read(g_userCal,sizeof g_userCal); f.close(); }
+}
+static void saveUserCal(){
+  InternalFS.remove(SWCAL_FILE); File f(InternalFS);
+  if(f.open(SWCAL_FILE, FILE_O_WRITE)){ f.write(g_userCal,sizeof g_userCal); f.close(); }
+}
+static void jcSpiWrite(uint32_t addr, uint8_t len, const uint8_t* data, uint16_t avail){
+  bool changed=false;
+  for(uint8_t i=0;i<len && i<avail;i++){
+    uint32_t a=addr+i;
+    if(a>=0x8000 && a<0x8100){ if(g_userCal[a-0x8000]!=data[i]){ g_userCal[a-0x8000]=data[i]; changed=true; } }
+  }
+  if(changed) saveUserCal();   // calibration is a rare user action -> flash write is fine
+}
 static void spiRead(uint32_t addr, uint8_t len, uint8_t* dst){
   for(uint8_t i=0;i<len;i++){
     uint32_t a=addr+i; uint8_t v=0xFF;
@@ -174,7 +202,8 @@ static void spiRead(uint32_t addr, uint8_t len, uint8_t* dst){
     else if(a>=0x6050 && a<0x6050+13) v=SPI_COLOR[a-0x6050];
     else if(a>=0x6080 && a<0x6080+24) v=SPI_PARAMS1[a-0x6080];
     else if(a>=0x6098 && a<0x6098+18) v=SPI_PARAMS2[a-0x6098];
-    dst[i]=v;   // unmapped (incl. user-cal 0x80xx) -> 0xFF = "blank flash" -> host uses factory blocks above
+    else if(a>=0x8000 && a<0x8100)    v=g_userCal[a-0x8000];   // persisted user cal (0xFF blank -> factory fallback)
+    dst[i]=v;
   }
 }
 // Reply FIFO: the host's handshake/subcommand reports arrive in the USB ISR (jcSet); we enqueue the canonical
@@ -223,6 +252,12 @@ static void jcSubcmd(uint8_t sub, const uint8_t* args, uint16_t alen){
       p[14]=args[0]; p[15]=args[1]; p[16]=args[2]; p[17]=args[3]; p[18]=rl;
       spiRead(a, rl, &p[19]);
       break; }
+    case 0x11:                         // SPI flash write -> persist user calibration so Switch motion-cal sticks
+      if(alen>=5){
+        uint32_t a=(uint32_t)args[0]|((uint32_t)args[1]<<8)|((uint32_t)args[2]<<16)|((uint32_t)args[3]<<24);
+        jcSpiWrite(a, args[4], &args[5], (alen>5)?(uint16_t)(alen-5):0);
+      }
+      p[12]=0x80; break;               // write ACK
     case 0x03:                         // set input report mode (0x30 = standard full) -> begin streaming
       if(alen>=1 && args[0]==0x30) g_swProReportMode=0x30;
       p[12]=0x80; break;
@@ -267,6 +302,7 @@ void SwitchProController::begin(){
   USBDevice.setManufacturerDescriptor("Nintendo Co., Ltd.");
   USBDevice.setProductDescriptor("Pro Controller");
   jcBuildStickCal();
+  loadUserCal();   // restore any persisted Switch motion calibration (per-unit IMU bias correction)
   g_swPro.enableOutEndpoint(true);
   g_swPro.setReportCallback(NULL, jcSet);   // answer the Nintendo USB handshake + subcommands (else Steam never binds it)
   g_swPro.setReportDescriptor(SWPRO_HID_DESC, sizeof SWPRO_HID_DESC);
