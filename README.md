@@ -33,7 +33,7 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | back-4 + B | Lizard | Lizard mode, even if Steam is open |
 | back-4 + X | Xbox | Xbox 360 Controller |
 | back-4 + Y | Swith Pro | Switch Controller + Gyro + Haptics |
-| WebUSB panel → mode 4 | Switch Pro + Gyro | PC only |
+| WebUSB panel → mode 4 | Hori Pad | Switch mode with no gyro or haptics |
 | WebUSB panel → mode 5 | DualSense + Gyro + Trackpad | PC only |
 | WebUSB panel → mode 6 | DS4/HIDGYRO + Gyro + Trackpad | PC only |
 
