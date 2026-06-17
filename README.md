@@ -67,3 +67,4 @@ I have tested this software fairly extensively but I have limited resources. I o
 - Valve for putting out the amazing controller
 - Whoever wrote the drivers for SDL / Linux
 - Alan for not scalping and selling me this controller for $120
+- https://github.com/knflrpn/2wiCC for the Switch Pro controller mode help
