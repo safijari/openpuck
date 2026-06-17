@@ -59,8 +59,9 @@
         <button data-mode="4" class="modebtn">Switch Pro + gyro</button>
         <button data-mode="5" class="modebtn">PS5 DualSense</button>
         <button data-mode="6" class="modebtn">HID gyro (DS4)</button>
-        <button data-mode="7" class="modebtn">PS5 (game/clean)</button>
-        <button data-mode="8" class="modebtn">DS4 (game/clean)</button>
+        <!-- modes 7/8 (PS5/DS4 "game/clean") hidden from the panel for now; still reachable via serial console -->
+        <!-- <button data-mode="7" class="modebtn">PS5 (game/clean)</button> -->
+        <!-- <button data-mode="8" class="modebtn">DS4 (game/clean)</button> -->
       </div>
       <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only.</p>
       <div class="row"><label>Persist last mode</label>
@@ -176,7 +177,8 @@ for(const sel of document.querySelectorAll("select.back")){
   for(const [c,n] of BTN_CODES){ if(c===0) continue; const o=document.createElement("option"); o.value=c; o.textContent=n; sel.appendChild(o); }
 }
 for(const sel of document.querySelectorAll("select.chord")){
-  MODE_NAMES.forEach((n,i)=>{ const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
+  MODE_NAMES.forEach((n,i)=>{ if(i===7||i===8) return;   // hide PS5/DS4 "game/clean" modes from the panel for now
+    const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
 }
 // Switch Pro report-rate options (0=66Hz, 1=120Hz default, 2=full ~250Hz)
 { const sel=document.getElementById("swRate");
