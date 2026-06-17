@@ -38,7 +38,7 @@ void serialConsolePoll(){
       else if (line[0]=='x'){ uint8_t m=strtoul(line+1,0,10); if(modeValid(m)){
         if(USBDevice.suspended()){ Serial.println("# mode change blocked: host suspended"); }
         else { Serial.printf("# switch mode %u (reboot)\n",m); delay(20); saveMode(m); delay(40); NVIC_SystemReset(); }
-      } }   // switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro
+      } }   // switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro 7=ps5-game/clean 8=ds4-game/clean
       else if (line[0]=='c'){ g_rfCh=atoi(line+1); Serial.printf("# ch=%u\n",g_rfCh); if(g_rfListen) rfListenStart(); }
       else if (line[0]=='p'){ g_rfPrefix=strtol(line+1,0,16); Serial.printf("# prefix=%02X\n",g_rfPrefix); if(g_rfListen) rfListenStart(); }
       else if (line[0]=='i'){ g_crcinit=strtoul(line+1,0,16); Serial.printf("# crcinit=%06lX\n",(unsigned long)g_crcinit); }

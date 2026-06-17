@@ -97,7 +97,7 @@ static void ps5Build(uint8_t out[63]){
 
 void Ps5Controller::begin(){
   USBDevice.setID(0x054C, 0x0CE6);
-  USBDevice.setDeviceVersion(0x0102);   // bumped from 0x0101 for 1ms poll interval (Windows caches config by VID:PID:bcdDevice)
+  USBDevice.setDeviceVersion(0x0104);   // bumped: clean-PS is now a separate mode (PS5_GAME); normal PS5 keeps wake+WebUSB. Host re-reads config by VID:PID:serial (per-mode suffix) -- bump invalidates any cached 0x0103.
   USBDevice.setManufacturerDescriptor("Sony Interactive Entertainment");
   USBDevice.setProductDescriptor("DualSense Wireless Controller");
   g_ps5.enableOutEndpoint(true);

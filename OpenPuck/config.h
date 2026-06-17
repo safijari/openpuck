@@ -34,9 +34,16 @@
 #define MODE_SW_HORI 2   // HORIPAD (Switch console whitelist)
 #define MODE_LIZARD  3   // Puck HID; always keyboard+mouse (ignores Steam heartbeat)
 #define MODE_SW_PRO  4   // Nintendo Switch Pro Controller (057E:2009) + gyro
-#define MODE_PS5     5   // Sony DualSense (054C:0CE6) + gyro + split trackpad
-#define MODE_HIDGYRO 6   // DS4-layout generic HID gamepad + gyro (Fortnite-friendly)
-#define MODE_MAX     6
+#define MODE_PS5     5   // Sony DualSense (054C:0CE6) + gyro + split trackpad (+ wake mouse + WebUSB panel)
+#define MODE_HIDGYRO 6   // DS4-layout generic HID gamepad + gyro (+ wake mouse + WebUSB panel)
+#define MODE_PS5_GAME 7  // DualSense, CLEAN single-HID (no wake/WebUSB) so PC games classify it as PlayStation (Fortnite)
+#define MODE_DS4_GAME 8  // DS4, CLEAN single-HID (no wake/WebUSB) for game PlayStation classification
+#define MODE_MAX     8
+
+// The two "game" personalities drop the wake-mouse + WebUSB interfaces so the device is a genuine single-HID PS
+// controller (some PC games -- e.g. Fortnite/UE GameInput -- refuse PS classification when extra interfaces are
+// present). Cost: no config panel / host-wake while in these modes; chord back to Steam (back4 + A) for the panel.
+static inline bool modeIsCleanPS(uint8_t m){ return m==MODE_PS5_GAME || m==MODE_DS4_GAME; }
 
 static inline bool modeIsPuck(uint8_t m){ return m==MODE_STEAM || m==MODE_LIZARD; }
 static inline bool modeValid(uint8_t m){ return m<=MODE_MAX; }

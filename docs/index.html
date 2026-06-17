@@ -59,6 +59,8 @@
         <button data-mode="4" class="modebtn">Switch Pro + gyro</button>
         <button data-mode="5" class="modebtn">PS5 DualSense</button>
         <button data-mode="6" class="modebtn">HID gyro (DS4)</button>
+        <button data-mode="7" class="modebtn">PS5 (game/clean)</button>
+        <button data-mode="8" class="modebtn">DS4 (game/clean)</button>
       </div>
       <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only.</p>
       <div class="row"><label>Persist last mode</label>
@@ -148,7 +150,7 @@
 </div>
 
 <script>
-const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)"];
+const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)"];
 const CHORD_FIELD = [17, 18, 19];
 const BTN_CODES = [[0,"— none —"],[1,"A"],[2,"B"],[3,"X"],[4,"Y"],[5,"LB"],[6,"RB"],[7,"L3"],[8,"R3"],[9,"Back"],[10,"Quick Access Menu"],[11,"Guide"],[12,"D-pad Up"],[13,"D-pad Down"],[14,"D-pad Left"],[15,"D-pad Right"],[16,"PS Touch Click"],[17,"PS5 Mute"]];
 let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false;
@@ -225,7 +227,7 @@ function applyBlob(p){
   const mode=p[1], mDiv=p[2], mFric=p[3], qamMap=p[4], abSwap=p[5];   // p[4] = QAM remap code (0 = default)
   const back=[p[6],p[7],p[8],p[9]], slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
-  const chord=(p.length>25)?[p[23],p[24],p[25]]:[3,1,2];   // v2 blob: chordBtn after qos/persist
+  const chord=(p.length>25)?[p[23],p[24],p[25]]:[3,1,4];   // v2 blob: chordBtn after qos/persist (Y defaults to Switch Pro=4)
   const polls=(p.length>27?(p[26]|(p[27]<<8)):0);          // poll TX rate
   const loopUs=(p.length>29?(p[28]|(p[29]<<8)):0);         // loop diag
   const worstIdx=(p.length>30?p[30]:0), worstUs=(p.length>32?(p[31]|(p[32]<<8)):0);
@@ -382,7 +384,10 @@ for(const sel of document.querySelectorAll("select.chord")){
   sel.addEventListener("change", ()=>setField(CHORD_FIELD[+sel.dataset.i], +sel.value));
 }
 for(const b of document.querySelectorAll(".modebtn")){
-  b.onclick=()=>{ if(confirm("Switch to "+MODE_NAMES[+b.dataset.mode]+"? The copycat will reboot.")){ send([0x03, +b.dataset.mode]); log("mode switch requested — device will reboot"); } };
+  b.onclick=()=>{ const m=+b.dataset.mode;
+    const clean=(m===7||m===8);
+    const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: the game/clean PlayStation modes drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold back-paddle 4 + A to return to Steam mode.":"");
+    if(confirm(msg)){ send([0x03, m]); log("mode switch requested — device will reboot"); } };
 }
 if(!("usb" in navigator)) $("#connectBtn").outerHTML='<b style="color:var(--bad)">WebUSB not supported — use Chrome or Edge.</b>';
 </script>

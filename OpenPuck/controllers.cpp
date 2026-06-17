@@ -21,6 +21,8 @@ IController* controllerFor(uint8_t mode){
     case MODE_SW_PRO:  return &g_switchPro;
     case MODE_PS5:     return &g_ps5Ctl;
     case MODE_HIDGYRO: return &g_hidGyroCtl;
+    case MODE_PS5_GAME:return &g_ps5Ctl;     // same DualSense controller; setup() drops wake/WebUSB for clean enum
+    case MODE_DS4_GAME:return &g_hidGyroCtl; // same DS4 controller; setup() drops wake/WebUSB for clean enum
     default:           return &g_steamPuck;
   }
 }

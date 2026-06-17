@@ -59,6 +59,14 @@ void setup() {
   // for that boot and skips the wake mouse (no endpoint room for both). Clean modes always rebuild bare.
   const bool puckMode = g_active->isPuck();
   const bool keepCdc  = puckMode && g_debugCdcThisBoot;
+  // The "game" PlayStation modes enumerate as a CLEAN single HID gamepad so games that classify off the raw HID
+  // device (Fortnite/UE GameInput, Windows.Gaming.Input) recognise them as PlayStation. A real Sony pad is just
+  // the gamepad HID (+ a USB-audio interface); our extra wake-mouse HID and WebUSB vendor interface make those
+  // classifiers refuse the PS glyph path even with the correct VID/PID (SDL/Steam tolerate the extras, which is
+  // why Steam still sees the normal PS modes). In clean-PS modes we skip BOTH the wake mouse and WebUSB -- the
+  // cost is no config panel / host-wake; chord back to Steam (back-paddle 4 + A) to reach the panel. The normal
+  // MODE_PS5 / MODE_HIDGYRO keep wake + panel (use those when you need host-wake; the *_GAME ones for games).
+  const bool psClean  = modeIsCleanPS(g_usbMode);
   USBDevice.detach(); delay(30);
   if (keepCdc) {
     USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);   // keep boot CDC composite (debug boot)
@@ -70,7 +78,7 @@ void setup() {
   // Distinct USB serial PER MODE (must be set AFTER clearConfiguration, which nulls it). Hosts cache USB
   // identity by VID:PID:serial; reusing one serial under a changing VID:PID can make a host refuse the new
   // identity. Steam keeps the exact unit serial (its pairing identity); the others get a 1-char suffix.
-  static const char MODE_SUFFIX[] = {'X','N','L','P','S','G'};   // modes 1..6
+  static const char MODE_SUFFIX[] = {'X','N','L','P','S','G','Q','D'};   // modes 1..8 (Q=PS5 game, D=DS4 game)
   if (puckMode) { USBDevice.setSerialDescriptor(g_unit); }
   else { snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c", g_unit, MODE_SUFFIX[g_usbMode-1]); USBDevice.setSerialDescriptor(g_usbSerial); }
 
@@ -82,11 +90,13 @@ void setup() {
   g_active->begin();   // register this mode's USB interface(s) + set VID/PID/strings
 
   // Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
-  // no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead).
-  if (!puckMode && !keepCdc) wakeHidBegin();
+  // no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS
+  // modes so the device stays a single clean HID gamepad (see psClean above).
+  if (!puckMode && !keepCdc && !psClean) wakeHidBegin();
 
-  // WebUSB config panel -- every mode. Puck: registered above (IF 0) before wake + slots; clean modes after controller.
-  if (!puckMode) usb_web.begin();
+  // WebUSB config panel -- every mode EXCEPT the PlayStation modes. Puck: registered above (IF 0) before wake +
+  // slots; other clean modes after controller. PS modes omit it to present a genuine single-HID PS controller.
+  if (!puckMode && !psClean) usb_web.begin();
   // Enable USB Remote Wakeup (bit 5) so the host lets us signal wake-from-sleep. Bit 7 is always required.
   USBDevice.setConfigurationAttribute(0x80 | 0x20);  // bmAttributes: required(0x80) | remote_wakeup(0x20)
   USBDevice.attach();   // re-connect with the final descriptor (host re-reads it fresh -> deterministic enumeration)
@@ -95,7 +105,7 @@ void setup() {
   if (USBDevice.suspended()){ USBDevice.remoteWakeup(); ledWakePulse(); }   // wake host if bus was sleeping when we (re-)attached
   loadBonds();
   hapticInit();   // clear relay/active flags + arm the reconnect block & initial stop burst
-  static const char* MODE_NAME[]={"STEAM(puck)","XBOX(xinput+mouse)","SWITCH(horipad)","LIZARD(puck kb/mouse)","SWITCH(pro+gyro)","PS5(dualsense)","HIDGYRO(ds4+motion)"};
+  static const char* MODE_NAME[]={"STEAM(puck)","XBOX(xinput+mouse)","SWITCH(horipad)","LIZARD(puck kb/mouse)","SWITCH(pro+gyro)","PS5(dualsense)","HIDGYRO(ds4+motion)","PS5(dualsense,game/clean)","DS4(ds4,game/clean)"};
   Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit, g_board, MODE_NAME[g_usbMode<=MODE_MAX?g_usbMode:0]);
   if (puckMode) Serial.printf("# puck USB: %s\n", keepCdc ? "DEBUG boot (CDC console on, wake mouse off; reverts next boot)" : "normal (CDC off, wake mouse on)");
   Serial.printf("# session addr %02X%02X%02X%02X/%02X ch%u (discovery on ibex/ch2)\n",

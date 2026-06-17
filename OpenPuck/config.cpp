@@ -6,7 +6,7 @@ using namespace Adafruit_LittleFS_Namespace;
 
 uint8_t g_usbMode = 0;
 bool    g_xbox = false;
-uint8_t g_chordBtn[3] = { MODE_LIZARD, MODE_XBOX, MODE_SW_HORI };   // back4+B/X/Y -> these modes (A always STEAM)
+uint8_t g_chordBtn[3] = { MODE_LIZARD, MODE_XBOX, MODE_SW_PRO };   // back4+B/X/Y -> these modes (A always STEAM); Y defaults to Switch Pro
 bool    g_persistMode = false;
 uint8_t g_bootMode = 0xFF;
 
@@ -52,7 +52,7 @@ void loadCfg(){
       // cleared; otherwise persist->last mode, else->Steam. (poll rate stays POLL_US_DEFAULT -- never restored from cfg.)
       if(c.bootMode!=0xFF){ g_usbMode=modeValid(c.bootMode)?c.bootMode:0; consume=true; }
       else                 g_usbMode = g_persistMode ? (modeValid(c.mode)?c.mode:0) : 0;
-      static const uint8_t CHORD_DEF[3]={MODE_LIZARD,MODE_XBOX,MODE_SW_HORI};
+      static const uint8_t CHORD_DEF[3]={MODE_LIZARD,MODE_XBOX,MODE_SW_PRO};
       for(int i=0;i<3;i++) g_chordBtn[i]=modeValid(c.chordBtn[i])?c.chordBtn[i]:CHORD_DEF[i];
       g_qamMap = c.qamMap;
       g_rumbleScale = c.rumbleScale;   // 0 is a valid setting (rumble off)
