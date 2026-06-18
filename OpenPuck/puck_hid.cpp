@@ -261,16 +261,37 @@ void SteamPuckController::onReport45(const uint8_t* rep, bool fresh, uint8_t bod
   }
 }
 
+// ---- pending aux report: 0x43 (battery) always arrives in the same RF frame as 0x45 (input). onReport45 sends
+// first; by the time onAuxReport runs, the HID endpoint is still busy with the 0x45 IN transfer (ready()==false)
+// and the aux report would be silently dropped. Queue it here and retry from task() on the next 4 ms cycle,
+// when the host has had time to poll and the endpoint is free again. One slot is enough: task() drains it every
+// 4 ms and aux reports arrive at most once every ~2 s, so a second report can never arrive before the first
+// is drained.
+static uint8_t g_pendingAuxRid = 0;        // 0 = nothing pending
+static uint8_t g_pendingAuxData[16];
+static uint8_t g_pendingAuxLen = 0;
+
 // Forward the controller's NON-input status reports (0x43 power/battery, 0x44) to Steam verbatim -- the real
 // puck does this and it's how Steam reads battery. OpenPuck used to drop everything but 0x45, so Steam never got
 // the power report (-> default/unknown battery). Same host-asleep / post-resume gating as 0x45; no lizard path
 // (status reports aren't input, so they forward regardless of the lizard decision).
+//
+// 0x43 arrives in the same RF frame as 0x45; onReport45 sends 0x45 first, so by the time we arrive here the HID
+// endpoint is still busy (ready()==false). Queue the report and let task() deliver it on the next cycle instead
+// of dropping it silently (which caused Steam to always show 100% battery).
 void SteamPuckController::onAuxReport(uint8_t rid, const uint8_t* data, uint8_t n){
   if (USBDevice.suspended()) return;
   if (g_resumeMs && millis()-g_resumeMs < POST_RESUME_MUTE_MS) return;
   if (g_connSlot < 0 || g_connSlot >= NSLOT) return;
-  if (g_slot[g_connSlot].used && hid[g_connSlot].ready())
+  if (!g_slot[g_connSlot].used) return;
+  if (hid[g_connSlot].ready()){
     hid[g_connSlot].sendReport(rid, data, n);
+  } else {
+    uint8_t len = n < sizeof(g_pendingAuxData) ? n : (uint8_t)sizeof(g_pendingAuxData);
+    g_pendingAuxRid  = rid;
+    g_pendingAuxLen  = len;
+    memcpy(g_pendingAuxData, data, len);
+  }
 }
 
 // ---- wake nudge: a bare USB resume signal is NOT enough to wake some hosts (Windows in particular) -- they
@@ -320,6 +341,11 @@ void SteamPuckController::task(){
     if (conn!=usbConn || (conn && !steamAcked && millis()-last79>=750)){
       if (conn && !usbConn) connEdgeMs = millis();
       uint8_t st=conn?0x02:0x01; hid[g_connSlot].sendReport(0x79,&st,1); usbConn=conn; last79=millis();
+    } else if (g_pendingAuxRid && g_slot[g_connSlot].used) {
+      // Drain queued aux report (0x43 battery, 0x44, …) -- deferred from onAuxReport because the endpoint
+      // was busy with a 0x45 send at the time. Deliver before the periodic 0x7B so battery reaches Steam.
+      hid[g_connSlot].sendReport(g_pendingAuxRid, g_pendingAuxData, g_pendingAuxLen);
+      g_pendingAuxRid = 0;
     } else if (conn && millis()-last7B>=2000){
       // 0x7B status, live-captured template. Byte 8 is the controller->puck signal strength as signed dBm
       // (capture showed 0xDD = -35; replaying it verbatim is why Steam pinned -35dBm forever) -- patch in the
