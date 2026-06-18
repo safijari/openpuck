@@ -22,9 +22,10 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 		pry = ry;
 	}
 	prt = rtouch;
+
+	// Y inverted; *10 = desktop-cursor sensitivity (g_mDiv 64 -> eff 640). Lower g_mDiv via WebUI slider = faster.
 	float mxf = vx / (float)(g_mDiv * 10) + rmx,
-	      myf = -(vy / (float)(g_mDiv * 10)) +
-		    rmy; // Y inverted; *10 = desktop-cursor sensitivity (g_mDiv 64 -> eff 640). Lower g_mDiv via WebUI slider = faster.
+	      myf = -(vy / (float)(g_mDiv * 10)) + rmy;
 	int dx = (int)mxf, dy = (int)myf;
 	rmx = mxf - dx;
 	rmy = myf - dy; // sub-pixel carry
@@ -105,10 +106,9 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 	    (g_usbMode == MODE_LIZARD) ? HID_KEY_ESCAPE : HID_KEY_TAB);
 	LZK(b & TB_MENU,
 	    (g_usbMode == MODE_LIZARD) ? HID_KEY_TAB : HID_KEY_ESCAPE);
-	int sx = s16off(r, 8),
-	    sy = s16off(
-		    r,
-		    10); // left stick (XInput sign: +Y = up); deflect ~37% acts as a d-pad
+
+	// left stick (XInput sign: +Y = up); deflect ~37% acts as a d-pad
+	int sx = s16off(r, 8), sy = s16off(r, 10);
 	LZK((b & TB_DUP) || sy > 12000, HID_KEY_ARROW_UP);
 	LZK((b & TB_DDN) || sy < -12000, HID_KEY_ARROW_DOWN);
 	LZK((b & TB_DLF) || sx < -12000, HID_KEY_ARROW_LEFT);

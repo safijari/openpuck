@@ -101,15 +101,17 @@ static void hidGyroBuild(uint8_t out[63])
 void HidGyroController::begin()
 {
 	USBDevice.setID(0x054C, 0x05C4);
-	USBDevice.setDeviceVersion(
-		0x0104); // bumped: clean-DS4 is now a separate mode (DS4_GAME); normal HIDGYRO keeps wake+WebUSB. Host re-reads config by VID:PID:serial (per-mode suffix) -- bump invalidates any cached 0x0103.
+
+	// bumped: clean-DS4 is now a separate mode (DS4_GAME); normal HIDGYRO keeps wake+WebUSB. Host re-reads config by VID:PID:serial (per-mode suffix) -- bump invalidates any cached 0x0103.
+	USBDevice.setDeviceVersion(0x0104);
 	USBDevice.setManufacturerDescriptor("Sony Computer Entertainment");
 	USBDevice.setProductDescriptor("Wireless Controller");
 	g_hidGyro.enableOutEndpoint(true);
 	g_hidGyro.setReportCallback(NULL, hidGyroSet);
 	g_hidGyro.setReportDescriptor(GYRO_HID_DESC, sizeof GYRO_HID_DESC);
-	g_hidGyro.setPollInterval(
-		1); // 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
+
+	// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
+	g_hidGyro.setPollInterval(1);
 	g_hidGyro.begin();
 }
 void HidGyroController::task()

@@ -10,8 +10,8 @@ static Adafruit_USBD_HID g_wakeHid;
 
 void wakeHidBegin()
 {
-	g_wakeHid.setBootProtocol(
-		HID_ITF_PROTOCOL_MOUSE); // boot mouse = a wake device class honored by Windows + Linux
+	// boot mouse = a wake device class honored by Windows + Linux
+	g_wakeHid.setBootProtocol(HID_ITF_PROTOCOL_MOUSE);
 	g_wakeHid.setStringDescriptor("OpenPuck Wake");
 	g_wakeHid.setReportDescriptor(WAKE_HID_DESC, sizeof WAKE_HID_DESC);
 	g_wakeHid.setPollInterval(10);

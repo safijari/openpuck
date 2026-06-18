@@ -46,11 +46,13 @@ uint32_t g_rfRxCount = 0;
 // ENDIAN=Big (MSB-first), NO whitening, addr "ibex", CRC16 0x11021/0xFFFF; frame = FUN_00027e9a (static length).
 uint32_t g_crcinit = 0xFFFF;
 uint8_t g_whiteiv = 37;
-uint8_t g_mode =
-	RADIO_MODE_MODE_Ble_2Mbit; // <-- was the bug (1Mbit). Real puck = 2Mbit.
-uint32_t g_pcnf0 =
-	0x00030008UL; // S0LEN0, LFLEN8, S1LEN3 (ESB DPL) - CRC-VALIDATED
+// <-- was the bug (1Mbit). Real puck = 2Mbit.
+uint8_t g_mode = RADIO_MODE_MODE_Ble_2Mbit;
+
+// S0LEN0, LFLEN8, S1LEN3 (ESB DPL) - CRC-VALIDATED
+uint32_t g_pcnf0 = 0x00030008UL;
 uint8_t g_statlen = 0x20;
+
 // ENDIAN=Big, BALEN4, MAXLEN=96 (was 64 -> truncated the controller's
 // 66-byte 0x43-battery-augmented F1 -> CRC-fail -> battery never arrived)
 uint32_t g_pcnf1 = 0x01040060;
@@ -95,17 +97,17 @@ void rfConfig(uint8_t ch)
 #if defined(RADIO_MODECNF0_RU_Fast)
 	NRF_RADIO->MODECNF0 = (RADIO_MODECNF0_RU_Fast << RADIO_MODECNF0_RU_Pos);
 #endif
-	NRF_RADIO->PCNF0 =
-		g_pcnf0; // static length (tunable '0'); g_pcnf1=0 -> build from g_statlen/g_balen
+	// static length (tunable '0'); g_pcnf1=0 -> build from g_statlen/g_balen
+	NRF_RADIO->PCNF0 = g_pcnf0;
+
+	// ENDIAN=Big (puck transmits MSB-first)
+	// WHITEEN=0
 	NRF_RADIO->PCNF1 =
-		g_pcnf1 ?
-			g_pcnf1 :
-			((1u
-			  << RADIO_PCNF1_ENDIAN_Pos) // ENDIAN=Big (puck transmits MSB-first)
-			 | ((uint32_t)g_balen << RADIO_PCNF1_BALEN_Pos) |
-			 ((uint32_t)g_statlen << RADIO_PCNF1_STATLEN_Pos) |
-			 ((uint32_t)g_statlen
-			  << RADIO_PCNF1_MAXLEN_Pos)); // WHITEEN=0
+		g_pcnf1 ? g_pcnf1 :
+			  ((1u << RADIO_PCNF1_ENDIAN_Pos) |
+			   ((uint32_t)g_balen << RADIO_PCNF1_BALEN_Pos) |
+			   ((uint32_t)g_statlen << RADIO_PCNF1_STATLEN_Pos) |
+			   ((uint32_t)g_statlen << RADIO_PCNF1_MAXLEN_Pos));
 	NRF_RADIO->CRCCNF = g_crccnf; // CRC16, address included
 	NRF_RADIO->CRCPOLY = g_crcpoly;
 	NRF_RADIO->CRCINIT = g_crcinit;

@@ -19,7 +19,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-format-18
 
-      - name: Check formatting
+      - name: Check formatting and style
         # Fails the job (and blocks the PR) the moment any file differs from
-        # the Linux kernel .clang-format style. Run `make format` to fix.
-        run: make format-check
+        # the Linux kernel .clang-format style, or a long trailing // comment
+        # is found. Run `make format` to fix formatting; move long trailing
+        # comments above their statement to satisfy the lint.
+        run: make check

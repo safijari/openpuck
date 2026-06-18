@@ -59,6 +59,7 @@ static uint8_t g_forceCh =
 	0; // !=0 -> user pinned a channel (skip auto-acquire retune)
 static bool g_pinSession =
 	false; // user pinned a FULL session (cmd 05): never auto-retune addr/ch
+
 // cmd 06: stay on ibex/ch2 and stream EVERY E1 beacon, never auto-lock
 // (so you can see how many pucks/slots are advertising + their bases)
 static bool g_survey = false;
@@ -149,9 +150,9 @@ static void rxPump()
 		NRF_RADIO->EVENTS_END = 0;
 		bool crcok = NRF_RADIO->CRCSTATUS & 1;
 		uint8_t rssi = (uint8_t)(NRF_RADIO->RSSISAMPLE & 0x7F);
-		uint8_t match =
-			(uint8_t)(NRF_RADIO->RXMATCH &
-				  0x7); // which logical address (pipe) the frame hit
+
+		// which logical address (pipe) the frame hit
+		uint8_t match = (uint8_t)(NRF_RADIO->RXMATCH & 0x7);
 		g_lastMatch = match;
 		uint8_t len = rfrx[0];
 		uint16_t n = (uint16_t)(2 + len);
@@ -161,11 +162,11 @@ static void rxPump()
 			 (uint8_t)n);
 		g_lastRx = millis();
 		if (g_state == 1)
-			g_sweepDry =
-				0; // any frame on the session resets the dry-sweep count
+			// any frame on the session resets the dry-sweep count
+			g_sweepDry = 0;
 		if (crcok && len >= 1 && (rfrx[2] & 0xF0) == 0xF0)
-			g_lastFrx =
-				millis(); // controller reply = ACTIVE session here -> stop hunting, park
+			// controller reply = ACTIVE session here -> stop hunting, park
+			g_lastFrx = millis();
 		// Parse the session params advertised in an E1 host-frame (payload[0]=0xE1) by the ASSUMED offsets, and
 		// always record them for the status report -- so the panel shows what auto-acquire would lock onto even
 		// when we choose not to (lets us eyeball whether the real puck's offsets match ours).
@@ -177,7 +178,8 @@ static void rxPump()
 			g_advBase[3] = rfrx[18];
 			g_advPfx = rfrx[19];
 			if (g_pinSession || g_survey)
-				continue; // pinned / survey -> never auto-retune (just record adv)
+				// pinned / survey -> never auto-retune (just record adv)
+				continue;
 			// Target a specific bonded slot by its ibex_uuid (E1 bytes rfrx[7..10]): the puck beacons one E1 per slot,
 			// so skip any E1 that isn't the CONNECTED controller's -- otherwise we lock an idle slot's keepalive.
 			if (g_haveTarget &&
@@ -248,8 +250,9 @@ static void drainToHost()
 {
 	if (!usb_web.connected())
 		return;
-	uint16_t budget =
-		64; // bound per-call so RX stays responsive; the ring covers bursts
+
+	// bound per-call so RX stays responsive; the ring covers bursts
+	uint16_t budget = 64;
 	while (budget-- && g_tail != g_head) {
 		if (g_streaming)
 			emitPacket(g_ring[g_tail]);
@@ -283,8 +286,8 @@ static void handleCmd()
 			g_pinSession = false;
 			tuneDiscovery();
 		} // survey: list all E1 beacons on ch2, no lock
-		else if (c ==
-			 0x07) { // target ibex_uuid: lock only the matching slot's E1
+		// target ibex_uuid: lock only the matching slot's E1
+		else if (c == 0x07) {
 			int u0 = usb_web.read(), u1 = usb_web.read(),
 			    u2 = usb_web.read(), u3 = usb_web.read();
 			if (u0 >= 0 && u1 >= 0 && u2 >= 0 && u3 >= 0) {
@@ -331,9 +334,9 @@ void setup()
 	// Standard Adafruit WebUSB setup (keep the default CDC composite; just add the WebUSB vendor interface). No
 	// landing page -> no Chrome "open <url>" notification. No detach/clearConfiguration: that's OpenPuck-specific
 	// endpoint juggling and can leave the WebUSB stream un-enabled.
-	USBDevice.setID(
-		0x28DE,
-		0x534E); // 'SN' -- distinct PID so the host doesn't confuse it with a puck
+
+	// 'SN' -- distinct PID so the host doesn't confuse it with a puck
+	USBDevice.setID(0x28DE, 0x534E);
 	USBDevice.setManufacturerDescriptor("Valve Software");
 	USBDevice.setProductDescriptor("OpenPuck Sniffer");
 	usb_web.begin();
@@ -341,7 +344,8 @@ void setup()
 	for (int i = 0; i < 200 && !USBDevice.mounted(); i++)
 		delay(10);
 
-	rfGenSessionAddr(); // harmless (we never TX); leaves the radio tunables at their validated defaults
+	// harmless (we never TX); leaves the radio tunables at their validated defaults
+	rfGenSessionAddr();
 	tuneDiscovery();
 	g_lastRx = millis();
 }
@@ -350,7 +354,9 @@ void loop()
 {
 	rxPump();
 	handleCmd();
-	rxPump(); // pump again around the (fast, buffered) USB work to catch tight poll->reply pairs
+
+	// pump again around the (fast, buffered) USB work to catch tight poll->reply pairs
+	rxPump();
 	drainToHost();
 	// Session HUNT (Gazell). A pinned session (cmd 04/05) is never disturbed. Otherwise: while we're NOT seeing the
 	// controller's 0xF* replies (the ACTIVE session), the keepalive trickles in on the primary but the real E3/F1

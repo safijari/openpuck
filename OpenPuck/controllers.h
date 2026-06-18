@@ -42,9 +42,11 @@ class IController {
 	virtual void task()
 	{
 	}
+
+	// a wake gesture fired while suspended; queue any post-resume input the host needs to actually wake
 	virtual void wakeEvent()
 	{
-	} // a wake gesture fired while suspended; queue any post-resume input the host needs to actually wake
+	}
 	virtual bool isPuck() const
 	{
 		return false;

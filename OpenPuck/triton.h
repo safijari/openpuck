@@ -30,17 +30,20 @@
 #define TB_LB 0x80000u
 #define TB_RPADT 0x200000u
 #define TB_RPADC 0x400000u
-#define TB_TOUCH \
-	0x100000u // virtual: PS Touch Click (back-paddle/QAM target, not a real Triton button)
-#define TB_MUTE \
-	0x1000000u // virtual: PS5 Mute button (back-paddle/QAM target, not a real Triton button)
+
+// virtual: PS Touch Click (back-paddle/QAM target, not a real Triton button)
+#define TB_TOUCH 0x100000u
+
+// virtual: PS5 Mute button (back-paddle/QAM target, not a real Triton button)
+#define TB_MUTE 0x1000000u
 #define TB_LPADT 0x2000000u
 #define TB_LPADC 0x4000000u
 
 // all four back paddles held -> mode-switch chord guard
 #define CHORD_BACK4 (TB_R4 | TB_L4 | TB_R5 | TB_L5)
-#define SW_TRIG_ON \
-	40 // analog-trigger fraction (of 0xFF) at which digital ZL/ZR (Switch) etc. trip
+
+// analog-trigger fraction (of 0xFF) at which digital ZL/ZR (Switch) etc. trip
+#define SW_TRIG_ON 40
 
 // ---- report 0x45 field decoders (offsets relative to rep[2], the buttons low byte) ----
 static inline int s16off(const uint8_t *r, int off)
@@ -73,7 +76,8 @@ void imuFrom45(const uint8_t *r, int16_t *ax, int16_t *ay, int16_t *az,
 // This single struct replaces the per-mode duplicates the firmware used to carry (the IMU/stick/button state
 // was copied verbatim into g_swPro*, g_ps5*, and g_gyro*). One source, many consumers.
 struct PuckInput {
-	uint32_t buttons; // raw Triton buttons (TB_*); per-mode builders apply their own chord masking
+	// raw Triton buttons (TB_*); per-mode builders apply their own chord masking
+	uint32_t buttons;
 	int16_t lx, ly, rx, ry; // sticks (int16, center 0)
 	uint8_t lt, rt; // triggers scaled 0..255 (trigU8)
 	int16_t lpx, lpy, rpx, rpy; // left / right trackpad coords (int16)

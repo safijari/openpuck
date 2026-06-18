@@ -20,7 +20,9 @@
 using namespace Adafruit_LittleFS_Namespace;
 
 #include "config.h"
-#include "build_info.h" // OPK_GIT_HASH (used to tag the one-time factory-reset build)
+
+// OPK_GIT_HASH (used to tag the one-time factory-reset build)
+#include "build_info.h"
 #include "identity.h"
 #include "bonds.h"
 #include "radio.h"
@@ -37,14 +39,16 @@ using namespace Adafruit_LittleFS_Namespace;
 #error "build with -DCFG_TUD_HID=4 (extra_flags): up to 4 HID interfaces per mode"
 #endif
 
-static uint8_t g_usbCfgDesc
-	[512]; // puck composite (4 HID + WebUSB) exceeds the default 256 B config buffer
+// puck composite (4 HID + WebUSB) exceeds the default 256 B config buffer
+static uint8_t g_usbCfgDesc[512];
 
 void setup()
 {
 	genSerial();
 	ledInit();
-	rfGenSessionAddr(); // per-device unique RF session address (advertised in the host frame; isolates pucks)
+
+	// per-device unique RF session address (advertised in the host frame; isolates pucks)
+	rfGenSessionAddr();
 	InternalFS.begin();
 #if OPK_FACTORY_RESET
 	// Recovery build (-DOPK_FACTORY_RESET=1): wipe ALL persistent storage ONCE on the first boot after flashing,
@@ -52,8 +56,9 @@ void setup()
 	factoryResetOnce(OPK_GIT_HASH);
 #endif
 	loadCfg();
-	g_xbox = !modeIsPuck(
-		g_usbMode); // load persisted config + decide USB presentation BEFORE registering interfaces
+
+	// load persisted config + decide USB presentation BEFORE registering interfaces
+	g_xbox = !modeIsPuck(g_usbMode);
 	g_active = controllerFor(g_usbMode);
 
 	// ---- USB descriptor rebuild ----
@@ -74,14 +79,15 @@ void setup()
 	USBDevice.detach();
 	delay(30);
 	if (keepCdc) {
-		USBDevice.setConfigurationBuffer(
-			g_usbCfgDesc,
-			sizeof g_usbCfgDesc); // keep boot CDC composite (debug boot)
+		// keep boot CDC composite (debug boot)
+		USBDevice.setConfigurationBuffer(g_usbCfgDesc,
+						 sizeof g_usbCfgDesc);
 	} else {
 		USBDevice.clearConfiguration();
-		USBDevice.setConfigurationBuffer(
-			g_usbCfgDesc,
-			sizeof g_usbCfgDesc); // headroom over the default 256 B cap
+
+		// headroom over the default 256 B cap
+		USBDevice.setConfigurationBuffer(g_usbCfgDesc,
+						 sizeof g_usbCfgDesc);
 	}
 
 	// Distinct USB serial PER MODE (must be set AFTER clearConfiguration, which nulls it). Hosts cache USB
@@ -105,7 +111,8 @@ void setup()
 	if (puckMode && !keepCdc)
 		wakeHidBegin();
 
-	g_active->begin(); // register this mode's USB interface(s) + set VID/PID/strings
+	// register this mode's USB interface(s) + set VID/PID/strings
+	g_active->begin();
 
 	// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
 	// no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS
@@ -118,10 +125,11 @@ void setup()
 	if (!puckMode && !psClean)
 		usb_web.begin();
 	// Enable USB Remote Wakeup (bit 5) so the host lets us signal wake-from-sleep. Bit 7 is always required.
-	USBDevice.setConfigurationAttribute(
-		0x80 |
-		0x20); // bmAttributes: required(0x80) | remote_wakeup(0x20)
-	USBDevice.attach(); // re-connect with the final descriptor (host re-reads it fresh -> deterministic enumeration)
+	// bmAttributes: required(0x80) | remote_wakeup(0x20)
+	USBDevice.setConfigurationAttribute(0x80 | 0x20);
+
+	// re-connect with the final descriptor (host re-reads it fresh -> deterministic enumeration)
+	USBDevice.attach();
 	Serial.begin(115200);
 	for (int i = 0; i < 300 && !USBDevice.mounted(); i++)
 		delay(10); // wait up to 3s for USB mount, but NEVER hang
@@ -130,7 +138,9 @@ void setup()
 		ledWakePulse();
 	} // wake host if bus was sleeping when we (re-)attached
 	loadBonds();
-	hapticInit(); // clear relay/active flags + arm the reconnect block & initial stop burst
+
+	// clear relay/active flags + arm the reconnect block & initial stop burst
+	hapticInit();
 	static const char *MODE_NAME[] = {
 		"STEAM(puck)",	       "XBOX(xinput+mouse)",
 		"SWITCH(horipad)",     "LIZARD(puck kb/mouse)",
@@ -164,15 +174,17 @@ void setup()
 // loop-timing diagnostics: the poll rate is capped by the loop ITERATION time (the pacing wants 4000us but a
 // slow loop fires the poll only as often as it comes around). Per-section us is accumulated and, each second,
 // the average loop period + the slowest section are published for the WebUSB panel to pinpoint the culprit.
-uint16_t g_loopPeriodUs =
-	0; // avg loop iteration time last second (1e6/iterations)
-uint8_t g_loopWorst =
-	0; // index of the slowest section: 0=webusb 1=ctrl.task 2=serial 3=rfdiag 4=rflink 5=haptic 6=led
+
+// avg loop iteration time last second (1e6/iterations)
+uint16_t g_loopPeriodUs = 0;
+
+// index of the slowest section: 0=webusb 1=ctrl.task 2=serial 3=rfdiag 4=rflink 5=haptic 6=led
+uint8_t g_loopWorst = 0;
 uint16_t g_loopWorstUs = 0; // that section's avg us per iteration
 void loop()
 {
-	NRF_WDT->RR[0] =
-		WDT_RR_RR_Reload; // feed the watchdog each loop; if we ever stop, the ~8s WDT auto-resets us
+	// feed the watchdog each loop; if we ever stop, the ~8s WDT auto-resets us
+	NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 	if (g_dirty) {
 		g_dirty = false;
 		saveBonds();

@@ -17,8 +17,8 @@ Adafruit_USBD_WebUSB usb_web;
 //                [loopPeriod_lo][loopPeriod_hi][loopWorstIdx][loopWorstUs_lo][loopWorstUs_hi]
 //                [pollPeriod_lo][pollPeriod_hi][logEnabled][battery%][rssi|dBm|]
 //                [gitDirty][gitHash 12B ASCII, NUL-padded][rumbleScale][swPro120][swGyroScale10][raw accel ax ay az 3x s16 LE]
-#define WB_PAYLEN \
-	60 // keep the blob under 64 bytes total (readBlob reads one 64-byte packet)
+// keep the blob under 64 bytes total (readBlob reads one 64-byte packet)
+#define WB_PAYLEN 60
 static void webusbSendBlob()
 {
 	if (!usb_web.connected())
@@ -27,7 +27,9 @@ static void webusbSendBlob()
 	uint8_t p[2 + WB_PAYLEN];
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
-	p[2] = 7; // protocol version (7 = +raw accel; 6 = +swPro120/gyroScale; 5 = +rumbleScale)
+
+	// protocol version (7 = +raw accel; 6 = +swPro120/gyroScale; 5 = +rumbleScale)
+	p[2] = 7;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -54,8 +56,9 @@ static void webusbSendBlob()
 	p[26] = g_chordBtn[1];
 	p[27] = g_chordBtn[2];
 	p[28] = (uint8_t)g_pollsps;
-	p[29] = (uint8_t)(g_pollsps >>
-			  8); // poll TX rate (vs delivered/new -> starvation vs reply-loss)
+
+	// poll TX rate (vs delivered/new -> starvation vs reply-loss)
+	p[29] = (uint8_t)(g_pollsps >> 8);
 	p[30] = (uint8_t)g_loopPeriodUs;
 	p[31] = (uint8_t)(g_loopPeriodUs >>
 			  8); // loop diag: avg iteration time + slowest section
@@ -79,8 +82,12 @@ static void webusbSendBlob()
 			p[41 + i] = (uint8_t)h[i];
 	}
 	p[53] = g_rumbleScale; // rumble strength % (protocol v5)
-	p[54] = g_swProRate; // Switch Pro report rate 0=66/1=120/2=full (protocol v6)
-	p[55] = g_swGyroScale10; // Switch Pro gyro sensitivity x10 (protocol v6)
+
+	// Switch Pro report rate 0=66/1=120/2=full (protocol v6)
+	p[54] = g_swProRate;
+
+	// Switch Pro gyro sensitivity x10 (protocol v6)
+	p[55] = g_swGyroScale10;
 	{
 		int16_t a[3] = { g_in.ax, g_in.ay, g_in.az };
 		memcpy(&p[56], a, 6);
@@ -150,14 +157,12 @@ void webusbPoll()
 			if (n == 0)
 				break;
 			uint8_t op = buf[0];
-			uint8_t need =
-				(op == 0x02) ?
-					3 :
-				(op == 0x03 || op == 0x05) ?
-					2 :
-				(op == 0x0A) ?
-					4 :
-					1; // 0x05 carries a value byte; 0x0A carries a 3-byte magic
+
+			// 0x05 carries a value byte; 0x0A carries a 3-byte magic
+			uint8_t need = (op == 0x02)		  ? 3 :
+				       (op == 0x03 || op == 0x05) ? 2 :
+				       (op == 0x0A)		  ? 4 :
+								    1;
 			if (op < 0x01 || op > 0x0A) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
@@ -168,23 +173,29 @@ void webusbPoll()
 				webusbSendBlob();
 			}
 #if OPK_LOG
+
+			// rewind drain: buf[1]=1 from boot (whole ring), 0 from now
 			else if (op == 0x05) {
 				hapLogResetDrain(buf[1] != 0);
-			} // rewind drain: buf[1]=1 from boot (whole ring), 0 from now
-			else if (op == 0x06) {
+			} else if (op == 0x06) {
 				webusbDrainCapture();
 			} // drain entries since the rewind (panel polls this)
 #endif
+
+			// clear a stuck/latched haptic buzz on the controller (functional)
 			else if (op == 0x07) {
 				hapticReinit();
-			} // clear a stuck/latched haptic buzz on the controller (functional)
+			}
+
+			// TEST: trigger the controller power-off (same path Steam 0x9F / host-suspend use)
 			else if (op == 0x08) {
 				hapticSendShutdown();
-			} // TEST: trigger the controller power-off (same path Steam 0x9F / host-suspend use)
-			else if (op ==
-				 0x0A) { // FULL factory wipe: erase cfg.bin + bonds.bin, reboot to clean defaults.
-				// Guarded by a 3-byte magic ("ERS") so a stray/corrupt byte can never trigger it; the panel double-
-				// confirms before sending. Irreversible -- the controller must be re-paired afterwards.
+			}
+
+			// FULL factory wipe: erase cfg.bin + bonds.bin, reboot to clean defaults.
+			// Guarded by a 3-byte magic ("ERS") so a stray/corrupt byte can never trigger it; the panel double-
+			// confirms before sending. Irreversible -- the controller must be re-paired afterwards.
+			else if (op == 0x0A) {
 				if (buf[1] == 0x45 && buf[2] == 0x52 &&
 				    buf[3] == 0x53) {
 					usb_web.flush();
@@ -194,8 +205,9 @@ void webusbPoll()
 				}
 			} else if (op == 0x02) {
 				uint8_t f = buf[1], v = buf[2];
-				bool persist =
-					true; // every settable field persists (poll rate is no longer settable)
+
+				// every settable field persists (poll rate is no longer settable)
+				bool persist = true;
 				switch (f) {
 				case 1:
 					g_mDiv = v < 4 ? 4 : v;
@@ -214,53 +226,73 @@ void webusbPoll()
 					g_back[f - 5] = v;
 					break;
 				// case 9 (pollU100) removed -- poll rate is fixed at POLL_US_DEFAULT and no longer configurable.
+
+				// E7 protocol-version B-byte (experimental v1 fast)
 				case 10:
 					g_e7b = v ? 1 : 0;
-					break; // E7 protocol-version B-byte (experimental v1 fast)
+					break;
+
+				// haptic-relay opcode (buzz hunt)
 				case 11:
 					g_relayOp = v;
-					break; // haptic-relay opcode (buzz hunt)
+					break;
+
+				// haptic-relay sub-type (buzz hunt)
 				case 12:
 					g_relaySub = v;
-					break; // haptic-relay sub-type (buzz hunt)
+					break;
 				case 13:
 					g_testHaptic = v ? v : 40;
 					break; // inject v test haptics (0->40)
+
+				// Steam: forward only fresh reports (dedupe)
 				case 14:
 					g_fwdNewOnly = v ? 1 : 0;
-					break; // Steam: forward only fresh reports (dedupe)
+					break;
 				case 15:
 					g_qos = v ? 1 : 0;
 					g_hopIdx = 0;
 					g_qosBad = 0;
 					g_qosCheckMs = millis();
 					break; // QoS adaptive channel hopping
+
+				// persist last mode across reboots (else always boot Steam)
 				case 16:
 					g_persistMode = v ? true : false;
-					break; // persist last mode across reboots (else always boot Steam)
+					break;
+
+				// back4+B/X/Y mode assignments
 				case 17:
 				case 18:
 				case 19:
 					if (modeValid(v))
 						g_chordBtn[f - 17] = v;
-					break; // back4+B/X/Y mode assignments
+					break;
+
+				// reboot once WITH the CDC serial console (puck mode), then auto-revert
 				case 20:
 					armDebugCdcNextBoot();
 					usb_web.flush();
 					delay(40);
 					NVIC_SystemReset();
-					break; // reboot once WITH the CDC serial console (puck mode), then auto-revert
+					break;
+
+				// QAM physical button remap code (0=default/unmapped)
 				case 21:
 					g_qamMap = v;
-					break; // QAM physical button remap code (0=default/unmapped)
+					break;
+
+				// rumble strength % (0=off, 100=1x, 200=double)
 				case 22:
 					g_rumbleScale = v;
-					break; // rumble strength % (0=off, 100=1x, 200=double)
+					break;
+
+				// Switch Pro report rate (0=66Hz,1=120Hz,2=full)
 				case 23:
 					g_swProRate = (v <= 2) ? v : 1;
 					swProSaveCfg();
 					persist = false;
-					break; // Switch Pro report rate (0=66Hz,1=120Hz,2=full)
+					break;
 				case 24:
 					g_swGyroScale10 =
 						(v >= 5 && v <= 30) ? v : 10;

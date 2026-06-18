@@ -94,8 +94,9 @@ static Adafruit_USBD_HID hid[NSLOT];
 // Steam, while running, re-sends settings report 0x87 (lizard-off) every ~3s as a heartbeat (captured on HW),
 // and ANY OUTPUT report likewise stamps g_steamAliveMs. When the heartbeat stops we fall back to lizard, so the
 // controller drives desktop keyboard+mouse whenever Steam isn't running. MODE_LIZARD forces lizard always.
-static unsigned long g_steamAliveMs =
-	0; // millis of last Steam OUTPUT/settings write; 0 at boot => lizard until Steam appears
+
+// millis of last Steam OUTPUT/settings write; 0 at boot => lizard until Steam appears
+static unsigned long g_steamAliveMs = 0;
 // Fall back to lizard this long after Steam's ~3s settings heartbeat stops. Keep >2x the cadence (7s): the
 // haptic relay is gated by !lizardActive(), so a shorter window lets a single jittered/delayed heartbeat flip
 // lizard mid-session while Steam is still running -> a haptic that arrives in that window gets gated out
@@ -132,21 +133,22 @@ static unsigned long g_resumeMs = 0;
 static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		      uint8_t const *b, uint16_t n)
 {
-	if (type ==
-	    HID_REPORT_TYPE_OUTPUT) { // Steam OUTPUT reports 0x80-0x89. The haptic/actuator reports (0x80-0x86)
-		// are relayed to the controller, and ONLY when they arrive on the CONNECTED slot's interface. We have one
-		// controller but expose 4 puck slots, and a report aimed at a DIFFERENT slot made the controller buzz at
-		// random -> that is what the slot gate below fixes. (This used to also clamp to 0x82-ONLY, which silently
-		// dropped the ping / grip / test haptics: those ride other report IDs such as 0x85/0x86, so they never
-		// reached the controller.) The 63-byte settings/config reports 0x87/0x88/0x89 are NOT haptics and are not
-		// pushed here -- 0x87 (lizard-off/settings) reaches the controller through the feature-0x01 passthrough path.
+	// Steam OUTPUT reports 0x80-0x89. The haptic/actuator reports (0x80-0x86)
+	// are relayed to the controller, and ONLY when they arrive on the CONNECTED slot's interface. We have one
+	// controller but expose 4 puck slots, and a report aimed at a DIFFERENT slot made the controller buzz at
+	// random -> that is what the slot gate below fixes. (This used to also clamp to 0x82-ONLY, which silently
+	// dropped the ping / grip / test haptics: those ride other report IDs such as 0x85/0x86, so they never
+	// reached the controller.) The 63-byte settings/config reports 0x87/0x88/0x89 are NOT haptics and are not
+	// pushed here -- 0x87 (lizard-off/settings) reaches the controller through the feature-0x01 passthrough path.
+	if (type == HID_REPORT_TYPE_OUTPUT) {
 		if (rid >= 0x80 && rid <= 0x89) {
-			hapLogAdd(
-				(uint8_t)slot, rid, b,
-				n); // capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
-			hostStampAlive(); // ANY Steam OUTPUT report (not just the 0x87 heartbeat) means Steam is present and
-				// driving -> leave lizard for gamepad NOW, so a haptic that arrives before the
-				// first 0x87 doesn't get relayed while we're still presenting lizard (-> buzz loop).
+			// capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
+			hapLogAdd((uint8_t)slot, rid, b, n);
+
+			// ANY Steam OUTPUT report (not just the 0x87 heartbeat) means Steam is present and
+			// driving -> leave lizard for gamepad NOW, so a haptic that arrives before the
+			// first 0x87 doesn't get relayed while we're still presenting lizard (-> buzz loop).
+			hostStampAlive();
 		}
 		// Post-resume mute also gates haptics: while onReport45 is muted Steam reads NO 0x45 back, which is the
 		// exact condition under which Steam loops the same haptic command (-> connect/wake buzz loop). Same logic
@@ -168,8 +170,9 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 					haptic82HostReport(b, n);
 			}
 		}
-		if (Serial.availableForWrite() >
-		    80) { // log so we can see what Steam actually sends (e.g. glide haptics)
+
+		// log so we can see what Steam actually sends (e.g. glide haptics)
+		if (Serial.availableForWrite() > 80) {
 			Serial.printf("# OUT if%d rid=%02X n=%u:", slot, rid,
 				      n);
 			for (uint16_t i = 0; i < n && i < 14; i++)
@@ -184,30 +187,32 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	uint8_t cmd = b[0], len = (n > 1) ? b[1] : 0;
 	const uint8_t *pl = b + 2;
 	uint16_t pln = (n >= 2) ? n - 2 : 0;
+
+	// settings/haptic/LED report (incl. 0x87 lizard-off heartbeat, SDL Triton lizard-disable)
 	if (cmd >= 0x80 && cmd <= 0x89)
-		hostStampAlive(); // settings/haptic/LED report (incl. 0x87 lizard-off heartbeat, SDL Triton lizard-disable)
+		hostStampAlive();
 	// Controller power-off: Steam's "turn off controller" is feature-0x01 frame 9F 04 6F 66 66 21 ("off!"),
 	// confirmed from a real puck capture. The feature-0x01 relay below forwards it once; hapticSendShutdown()
 	// bursts it for NO-ACK reliability (the single hook the test button + host-suspend also drive).
 	if (rid == 1 && cmd == 0x9F)
 		hapticSendShutdown();
-	if (rid == 1 &&
-	    n >= 2) { // report 0x01 = raw passthrough -> queue for RF relay to the controller
+
+	// report 0x01 = raw passthrough -> queue for RF relay to the controller
+	if (rid == 1 && n >= 2) {
 		// capture EVERY relayed feature-1 command for the WebUSB capture view
 		// (haptics, LED SET_LED_COLOR, 0x87 settings, 0x9F power-off). The log
 		// shows cmd as "rid"; bytes start [cmd][len]...  Was gated to 0x80-0x89,
 		// which hid exactly the LED/power-off frames we now need to see.
 		hapLogAdd((uint8_t)slot, cmd, b, n);
 		bool haptic82 = (cmd == 0x82 && len <= pln);
-		bool muted =
-			g_resumeMs &&
-			millis() - g_resumeMs <
-				POST_RESUME_MUTE_MS; // see the OUTPUT path: no haptics while Steam can't read 0x45 back
-		bool relayOk =
-			hapticRelaySlotOk(slot) &&
-			!(haptic82 &&
-			  (lizardActive() ||
-			   muted)); // never push haptics to the controller while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop)
+
+		// see the OUTPUT path: no haptics while Steam can't read 0x45 back
+		bool muted = g_resumeMs &&
+			     millis() - g_resumeMs < POST_RESUME_MUTE_MS;
+
+		// never push haptics to the controller while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop)
+		bool relayOk = hapticRelaySlotOk(slot) &&
+			       !(haptic82 && (lizardActive() || muted));
 		if (relayOk && (!haptic82 || !haptic82Blocked())) {
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's multi-register
 			// 0x87 settings blocks (LED brightness) and calibration writes are longer than the old 18B cap, and the
@@ -218,10 +223,10 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
 					cmd, len, (unsigned)RELAY_MAXP);
 			relayEnqueue(cmd, pl, rl);
+
+			// track from RELAYED frames only (see the OUTPUT path)
 			if (haptic82)
-				haptic82HostReport(
-					pl,
-					len); // track from RELAYED frames only (see the OUTPUT path)
+				haptic82HostReport(pl, len);
 		}
 	}
 	if (Serial.availableForWrite() >
@@ -254,8 +259,11 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		S.resp_len = 63;
 		break;
 	}
-	case 0xB4: // connection/version state per slot: value 0x02 = controller connected, 0x01 = not
-		hostStampAlive(); // SDL Triton polls this on init; treat like Steam contact so we forward 0x45
+
+	// connection/version state per slot: value 0x02 = controller connected, 0x01 = not
+	case 0xB4:
+		// SDL Triton polls this on init; treat like Steam contact so we forward 0x45
+		hostStampAlive();
 		S.resp[0] = 0xB4;
 		S.resp[1] = 0x01;
 		S.resp[2] = (slot == g_connSlot && !g_xbox &&
@@ -311,8 +319,10 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	(void)rid;
 	if (type != HID_REPORT_TYPE_FEATURE)
 		return 0;
+
+	// host reading feature data => gamepad consumer active (Steam/SDL)
 	if (g_usbMode == MODE_STEAM)
-		hostStampAlive(); // host reading feature data => gamepad consumer active (Steam/SDL)
+		hostStampAlive();
 	Slot &S = g_slot[slot];
 	uint16_t n = S.resp_len ? S.resp_len : 63;
 	if (n > reqlen)
@@ -368,8 +378,9 @@ void SteamPuckController::begin()
 	for (int i = 0; i < NSLOT; i++) {
 		hid[i].setReportDescriptor(desc, descLen);
 		hid[i].setReportCallback(GETCB[i], SETCB[i]);
-		hid[i].setPollInterval(
-			1); // 1ms USB poll (was default 10ms = 100/s cap -> choppy)
+
+		// 1ms USB poll (was default 10ms = 100/s cap -> choppy)
+		hid[i].setPollInterval(1);
 		hid[i].begin();
 	}
 }
@@ -475,14 +486,17 @@ void SteamPuckController::task()
 	wakeNudgeTask();
 	{
 		static bool wasSusp = false;
-		bool susp =
-			USBDevice.suspended(); // stamp the suspended->active edge for the post-resume mute
+
+		// stamp the suspended->active edge for the post-resume mute
+		bool susp = USBDevice.suspended();
 		if (wasSusp && !susp)
 			g_resumeMs = millis();
 		wasSusp = susp;
 	}
+
+	// no periodic 0x79/0x7B while the host sleeps -- those sends can wake it too
 	if (USBDevice.suspended())
-		return; // no periodic 0x79/0x7B while the host sleeps -- those sends can wake it too
+		return;
 	static bool usbConn = false;
 	static unsigned long last79 = 0, last7B = 0, connEdgeMs = 0;
 	bool conn = (g_connSlot >= 0 && millis() - g_connReplyMs < 300);

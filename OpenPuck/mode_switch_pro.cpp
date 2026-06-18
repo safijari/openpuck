@@ -18,8 +18,8 @@ SwitchProController g_switchPro;
 // 2wiCC-matching compat fallback; "full" is the 4 ms PC rate for those who want lowest latency and tolerate it.
 #define SW_PRO_REPORT_MS 15u // 66 Hz
 #define SW_PRO_REPORT_MS_120 8u // ~120 Hz
-#define SW_ACCEL_DIV \
-	4 // SC2 accel is +/-2g (16384/g); /4 -> the genuine Pro +/-8g (4096/g) the Switch cal expects
+// SC2 accel is +/-2g (16384/g); /4 -> the genuine Pro +/-8g (4096/g) the Switch cal expects
+#define SW_ACCEL_DIV 4
 
 uint8_t g_swProRate =
 	1; // 0 = 66Hz, 1 = 120Hz (default), 2 = full (~250Hz / USB_STREAM_MS)
@@ -44,10 +44,8 @@ static void swProLoadCfg()
 	uint8_t b[3];
 	if (f.open(SWPRO_CFG_FILE, FILE_O_READ)) {
 		if (f.read(b, 3) == 3 && b[0] == 0x01) {
-			g_swProRate =
-				(b[1] <= 2) ?
-					b[1] :
-					1; // 0=66Hz, 1=120Hz, 2=full; bad value -> default 120Hz
+			// 0=66Hz, 1=120Hz, 2=full; bad value -> default 120Hz
+			g_swProRate = (b[1] <= 2) ? b[1] : 1;
 			g_swGyroScale10 =
 				(b[2] >= 5 && b[2] <= 30) ?
 					b[2] :
@@ -145,8 +143,8 @@ static uint32_t codeToJc(uint8_t c, uint32_t fA, uint32_t fB, uint32_t fX,
 }
 static unsigned long g_swProLastMs = 0;
 static Adafruit_USBD_HID g_swPro;
-static uint8_t g_swProReportMode =
-	0; // 0 until the host's subcommand 0x03 selects 0x30 -> THEN we stream input
+// 0 until the host's subcommand 0x03 selects 0x30 -> THEN we stream input
+static uint8_t g_swProReportMode = 0;
 static const uint8_t JC_MAC[6] = {
 	0x7C, 0xBB, 0x8A, 0x00, 0x00, 0x01
 }; // synthetic but stable controller MAC
@@ -167,11 +165,13 @@ static void jcRumble(const uint8_t *p, uint16_t pn)
 		return; // [timer][left rumble x4][right rumble x4]
 	uint16_t lo = jcRumbleAmp(p + 1), hi = jcRumbleAmp(p + 5);
 	static uint16_t lastLo = 0, lastHi = 0;
+	// only relay on change: the Switch streams rumble every frame, so
 	if (lo == lastLo && hi == lastHi)
-		return; // only relay on change: the Switch streams rumble every frame, so
+		return;
 	lastLo = lo;
-	lastHi =
-		hi; // re-sending unchanged values would flood the RF relay and loop the motor
+
+	// re-sending unchanged values would flood the RF relay and loop the motor
+	lastHi = hi;
 	hapticSteamRumble(lo, hi);
 }
 static int jcStick12(int16_t v, bool inv)
@@ -179,8 +179,9 @@ static int jcStick12(int16_t v, bool inv)
 	int a = 2048 + (inv ? -((int)v >> 4) : ((int)v >> 4));
 	return a < 0 ? 0 : (a > 4095 ? 4095 : a);
 }
+// pack two 12-bit axes into 3 bytes (both normal; Switch Y polarity is opposite DS4)
 static void jcPackStick(uint8_t s[3], int16_t x, int16_t y)
-{ // pack two 12-bit axes into 3 bytes (both normal; Switch Y polarity is opposite DS4)
+{
 	int X = jcStick12(x, false), Y = jcStick12(y, false);
 	s[0] = (uint8_t)(X & 0xFF);
 	s[1] = (uint8_t)(((Y & 0x0F) << 4) | ((X >> 8) & 0x0F));
@@ -246,19 +247,21 @@ static void jcInputPrefix(uint8_t *out)
 	if (b & TB_R5)
 		jc |= codeToJc(g_back[3], fA, fB, fX, fY);
 	out[0] = g_jcTimer++;
+
 	// battery full+charging (hi nibble 0x9), connection_info=1 (lo nibble): a wired/charging Pro Controller.
 	// A real Switch reads this to show the pad as connected; Steam/hid-nintendo accept it too. (2wiCC parity)
 	out[1] = 0x91;
 	out[2] = (uint8_t)(jc);
 	out[3] = (uint8_t)(jc >> 8);
 	out[4] = (uint8_t)(jc >> 16);
+
 	// charging_grip bit (button "common" byte, bit7): genuine Pro Controller always sets it on USB; real
 	// Switch uses it to recognise a wired controller. Not a button, so hid-nintendo ignores it.
 	out[3] |= 0x80;
 	jcPackStick(out + 5, g_in.lx, g_in.ly);
 	jcPackStick(out + 8, g_in.rx, g_in.ry);
-	out[11] =
-		0x09; // rumble_input_report echo: genuine pad emits 0x09..0x0C; some Switch firmware expects this nonzero.
+	// rumble_input_report echo: genuine pad emits 0x09..0x0C; some Switch firmware expects this nonzero.
+	out[11] = 0x09;
 }
 static void switchProBuild(uint8_t out[63])
 {
@@ -278,18 +281,17 @@ static void switchProBuild(uint8_t out[63])
 	// by SW_ACCEL_DIV=4 to report ~1g of gravity. Without this the console reads gravity as ~4g, REJECTS the accel for
 	// drift correction (it must be linear accel, not gravity), and the gyro's roll error accumulates into the slow
 	// ~45deg lean. Gyro is left at native scale (aiming sensitivity is right); only the accel magnitude was wrong.
-	int16_t aX =
-		(int16_t)(g_in.ay /
-			  SW_ACCEL_DIV); // accel X <- +g_in.ay /4   (matches gyro +gy)
-	int16_t aY =
-		(int16_t)((-(int16_t)g_in.ax) /
-			  SW_ACCEL_DIV); // accel Y <- -g_in.ax /4   (matches gyro -gx)
-	int16_t aZ =
-		(int16_t)(g_in.az /
-			  SW_ACCEL_DIV); // accel Z <- +g_in.az /4   (matches gyro +gz)
-	int16_t groll = gscale(
-		(int16_t)g_in
-			.gy); // gyro outputs scaled by the user sensitivity factor
+	// accel X <- +g_in.ay /4   (matches gyro +gy)
+	int16_t aX = (int16_t)(g_in.ay / SW_ACCEL_DIV);
+
+	// accel Y <- -g_in.ax /4   (matches gyro -gx)
+	int16_t aY = (int16_t)((-(int16_t)g_in.ax) / SW_ACCEL_DIV);
+
+	// accel Z <- +g_in.az /4   (matches gyro +gz)
+	int16_t aZ = (int16_t)(g_in.az / SW_ACCEL_DIV);
+
+	// gyro outputs scaled by the user sensitivity factor
+	int16_t groll = gscale((int16_t)g_in.gy);
 	int16_t gpitch = gscale((int16_t)(-(int16_t)g_in.gx));
 	int16_t gyaw = gscale((int16_t)g_in.gz);
 	for (int k = 0; k < 3; k++) {
@@ -326,8 +328,8 @@ static const uint8_t SPI_PARAMS2[18] = { 0x0F, 0x30, 0x61, 0x96, 0x30, 0xF3,
 					 0xC7, 0x79, 0x9C, 0x33, 0x36, 0x63 };
 static const uint8_t SPI_COLOR[13] = { 0x32, 0x32, 0x32, 0xE6, 0xE6, 0xE6, 0x32,
 				       0x32, 0x32, 0x32, 0x32, 0x32, 0xFF };
-static uint8_t g_spiStickCal
-	[18]; // built at boot: left[9]+right[9] factory stick calibration (packed 12-bit)
+// built at boot: left[9]+right[9] factory stick calibration (packed 12-bit)
+static uint8_t g_spiStickCal[18];
 static void jcPack12(uint8_t *o9, const uint16_t v[6])
 { // pack 6 12-bit values into 9 bytes (Switch stick-cal format)
 	o9[0] = v[0] & 0xFF;
@@ -356,16 +358,14 @@ static void jcBuildStickCal()
 // can register the pad (Steam/hid-nintendo never do, which is why this was previously unneeded). The data is the
 // canonical hid handshake blob; the Switch only validates the shape, not the key contents. Each is the 31-byte
 // reply body that follows the 0x21 input prefix + ack(0x81) + echoed-subcommand(0x01). (adapted from 2wiCC)
-static const uint8_t BT_PAIR_1
-	[31] = { // type 1: echo type + controller BT addr + "Pro Controller" name
-		0x01,	   JC_MAC[0], JC_MAC[1], JC_MAC[2], JC_MAC[3],
-		JC_MAC[4], JC_MAC[5], 0x00,	 0x25,	    0x08,
-		0x50,	   0x72,      0x6F,	 0x20,	    0x43,
-		0x6F,	   0x6E,      0x74,	 0x72,	    0x6F,
-		0x6C,	   0x6C,      0x65,	 0x72, // "Pro Controller"
-		0x00,	   0x00,      0x00,	 0x00,	    0x00,
-		0x68
-	};
+// type 1: echo type + controller BT addr + "Pro Controller" name
+static const uint8_t BT_PAIR_1[31] = {
+	0x01, JC_MAC[0], JC_MAC[1], JC_MAC[2], JC_MAC[3], JC_MAC[4], JC_MAC[5],
+	0x00, 0x25,	 0x08,	    0x50,      0x72,	  0x6F,	     0x20,
+	0x43, 0x6F,	 0x6E,	    0x74,      0x72,	  0x6F,	     0x6C,
+	0x6C, 0x65,	 0x72, // "Pro Controller"
+	0x00, 0x00,	 0x00,	    0x00,      0x00,	  0x68
+};
 static const uint8_t BT_PAIR_2[31] = { // type 2: LTK exchange
 	0x02, 0xE5, 0xC8, 0xE4, 0x92, 0x05, 0xFF, 0xC9, 0x8A, 0x7D, 0xEA,
 	0x15, 0xF6, 0x19, 0xBA, 0x82, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -440,8 +440,8 @@ static void spiRead(uint32_t addr, uint8_t len, uint8_t *dst)
 		else if (a >= 0x6098 && a < 0x6098 + 18)
 			v = SPI_PARAMS2[a - 0x6098];
 		else if (a >= 0x8000 && a < 0x8100)
-			v = g_userCal[a -
-				      0x8000]; // persisted user cal (0xFF blank -> factory fallback)
+			// persisted user cal (0xFF blank -> factory fallback)
+			v = g_userCal[a - 0x8000];
 		dst[i] = v;
 	}
 }
@@ -477,7 +477,8 @@ static void jcSubcmd(uint8_t sub, const uint8_t *args, uint16_t alen)
 	jcInputPrefix(p);
 	p[13] = sub;
 	switch (sub) {
-	case 0x01: { // manual BT pairing: 3-stage key exchange a real Switch runs over USB
+	// manual BT pairing: 3-stage key exchange a real Switch runs over USB
+	case 0x01: {
 		const uint8_t *d = BT_PAIR_3;
 		uint8_t t = (alen >= 1) ? args[0] : 3;
 		if (t == 1)
@@ -491,7 +492,9 @@ static void jcSubcmd(uint8_t sub, const uint8_t *args, uint16_t alen)
 	case 0x02: // request device info
 		p[12] = 0x82;
 		p[14] = 0x03;
-		p[15] = 0x48; // firmware version 3.72 (genuine Pro Controller value)
+
+		// firmware version 3.72 (genuine Pro Controller value)
+		p[15] = 0x48;
 		p[16] = 0x03; // controller type: Pro Controller
 		p[17] = 0x02; // fixed
 		memcpy(&p[18], JC_MAC, 6);
@@ -518,7 +521,8 @@ static void jcSubcmd(uint8_t sub, const uint8_t *args, uint16_t alen)
 		spiRead(a, rl, &p[19]);
 		break;
 	}
-	case 0x11: // SPI flash write -> persist user calibration so Switch motion-cal sticks
+	// SPI flash write -> persist user calibration so Switch motion-cal sticks
+	case 0x11:
 		if (alen >= 5) {
 			uint32_t a = (uint32_t)args[0] |
 				     ((uint32_t)args[1] << 8) |
@@ -528,13 +532,18 @@ static void jcSubcmd(uint8_t sub, const uint8_t *args, uint16_t alen)
 				   (alen > 5) ? (uint16_t)(alen - 5) : 0);
 		}
 		p[12] = 0x80;
-		break; // write ACK
-	case 0x03: // set input report mode (0x30 = standard full) -> begin streaming
+
+		// write ACK
+		break;
+
+	// set input report mode (0x30 = standard full) -> begin streaming
+	case 0x03:
 		if (alen >= 1 && args[0] == 0x30)
 			g_swProReportMode = 0x30;
 		p[12] = 0x80;
 		break;
-	case 0x04: // trigger buttons elapsed time -> canned reply (genuine pad returns data)
+	// trigger buttons elapsed time -> canned reply (genuine pad returns data)
+	case 0x04:
 		p[12] = 0x83;
 		p[14] = 0x00;
 		p[15] = 0xCC;
@@ -548,7 +557,9 @@ static void jcSubcmd(uint8_t sub, const uint8_t *args, uint16_t alen)
 		break; // set NFC/IR config
 	default:
 		p[12] = 0x80;
-		break; // 0x06/0x08/0x30/0x38/0x40/0x41/0x48/... generic positive ACK
+
+		// 0x06/0x08/0x30/0x38/0x40/0x41/0x48/... generic positive ACK
+		break;
 	}
 	jcEnq(0x21, p, JC_REPLEN);
 }
@@ -610,20 +621,22 @@ static void jcSet(uint8_t rid, hid_report_type_t type, uint8_t const *b,
 void SwitchProController::begin()
 {
 	USBDevice.setID(0x057E, 0x2009);
-	USBDevice.setDeviceVersion(
-		0x0212); // bumped from 0x0211 for 1ms poll interval (Windows caches config by VID:PID:bcdDevice)
+	// bumped from 0x0211 for 1ms poll interval (Windows caches config by VID:PID:bcdDevice)
+	USBDevice.setDeviceVersion(0x0212);
 	USBDevice.setManufacturerDescriptor("Nintendo Co., Ltd.");
 	USBDevice.setProductDescriptor("Pro Controller");
 	jcBuildStickCal();
-	loadUserCal(); // restore any persisted Switch motion calibration (per-unit IMU bias correction)
+
+	// restore any persisted Switch motion calibration (per-unit IMU bias correction)
+	loadUserCal();
 	swProLoadCfg(); // restore report-rate + gyro-scale settings
 	g_swPro.enableOutEndpoint(true);
-	g_swPro.setReportCallback(
-		NULL,
-		jcSet); // answer the Nintendo USB handshake + subcommands (else Steam never binds it)
+	// answer the Nintendo USB handshake + subcommands (else Steam never binds it)
+	g_swPro.setReportCallback(NULL, jcSet);
 	g_swPro.setReportDescriptor(SWPRO_HID_DESC, sizeof SWPRO_HID_DESC);
-	g_swPro.setPollInterval(
-		1); // 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
+
+	// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
+	g_swPro.setPollInterval(1);
 	g_swPro.begin();
 }
 void SwitchProController::task()

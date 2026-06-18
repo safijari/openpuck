@@ -89,7 +89,10 @@ void serialConsolePoll()
 				g_rfRespond = false;
 				NRF_RADIO->TASKS_DISABLE = 1;
 				Serial.println("# RF off");
-			} else if (line[0] == 'x') {
+			}
+
+			// switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro 7=ps5-game/clean 8=ds4-game/clean
+			else if (line[0] == 'x') {
 				uint8_t m = strtoul(line + 1, 0, 10);
 				if (modeValid(m)) {
 					if (USBDevice.suspended()) {
@@ -105,8 +108,7 @@ void serialConsolePoll()
 						NVIC_SystemReset();
 					}
 				}
-			} // switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro 7=ps5-game/clean 8=ds4-game/clean
-			else if (line[0] == 'c') {
+			} else if (line[0] == 'c') {
 				g_rfCh = atoi(line + 1);
 				Serial.printf("# ch=%u\n", g_rfCh);
 				if (g_rfListen)
@@ -240,9 +242,9 @@ void serialConsolePoll()
 			} else if (line[0] == 'J') {
 				char *sp = 0;
 				uint8_t id = strtoul(line + 1, &sp, 0);
-				uint16_t val =
-					sp ? strtoul(sp, 0, 0) :
-					     0; // inject SET-SETTINGS to controller: report 0x87 [id][val u16 LE]
+
+				// inject SET-SETTINGS to controller: report 0x87 [id][val u16 LE]
+				uint16_t val = sp ? strtoul(sp, 0, 0) : 0;
 				uint8_t pl[3] = { id, (uint8_t)(val & 0xFF),
 						  (uint8_t)(val >> 8) };
 				relayEnqueue(0x87, pl, 3);
@@ -308,18 +310,19 @@ void serialConsolePoll()
 					"# E3 poll PID mode=%u (0=fixed07, 1=cyclePID+noack1, 2=cyclePID+noack0) - watch new=/s\n",
 					g_e3mode);
 			} else if (line[0] == 't') {
-				uint8_t n =
-					line[1] ?
-						strtoul(line + 1, 0, 10) :
-						40; // inject n test haptics (output 0x82 [01 01 F7]) over the relay
+				// inject n test haptics (output 0x82 [01 01 F7]) over the relay
+				uint8_t n = line[1] ? strtoul(line + 1, 0, 10) :
+						      40;
 				g_testHaptic = n;
 				Serial.printf(
 					"# test-haptic burst x%u queued (relay 0x82 01 01 F7 via op=%02X sub=%02X)\n",
 					n, g_relayOp, g_relaySub);
-			} else if (line[0] == 'H') {
+			}
+
+			// dump the captured OUTPUT-report history (oldest->newest)
+			else if (line[0] == 'H') {
 				hapticDumpLog();
-			} // dump the captured OUTPUT-report history (oldest->newest)
-			else if (line[0] == 'j') {
+			} else if (line[0] == 'j') {
 				g_connType = strtoul(line + 1, 0, 16);
 				Serial.printf("# connType=%02X\n", g_connType);
 			} else if (line[0] == 'Q') {

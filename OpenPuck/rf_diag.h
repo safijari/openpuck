@@ -31,7 +31,8 @@ void rfReplayOnce(); // bit-exact re-transmit of a captured real-puck frame
 void rfBeaconOnce(); // dongle beacon experiment ([01][seq][..][E2@5])
 void applyCfg(uint8_t i); // apply autosweep candidate radio config i
 void rfRespondStart(); // scan-then-respond (RX ch2 adv, reply host frame)
-void rfSniffStart(); // session sniffer (learn session params, then capture the live exchange)
+// session sniffer (learn session params, then capture the live exchange)
+void rfSniffStart();
 
 // Per-loop: service whichever diag mode is active.
 void rfDiagTask();

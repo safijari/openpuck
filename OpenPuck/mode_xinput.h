@@ -14,7 +14,8 @@ class XboxController : public IController {
 	void begin() override;
 	void onReport45(const uint8_t *rep, bool fresh,
 			uint8_t bodyTlen) override;
-	void
-	task() override; // legacy XInput rumble -> haptic relay + stuck-rumble watchdog
+
+	// legacy XInput rumble -> haptic relay + stuck-rumble watchdog
+	void task() override;
 };
 extern XboxController g_xboxCtl;

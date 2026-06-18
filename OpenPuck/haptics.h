@@ -47,15 +47,19 @@
 // Enqueue one host->controller report: rid = report/command id, payload = the bytes AFTER [cmd][len] (what
 // goes on the air). ISR-safe (brief PRIMASK critical section). Returns false (dropped) when the ring is full.
 bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen);
-bool relayPending(); // anything still queued (xinput uses it to pace rumble re-queues)
+
+// anything still queued (xinput uses it to pace rumble re-queues)
+bool relayPending();
 extern uint8_t g_relayOp; // relay frame opcode (E3 poll)
 extern uint8_t g_relaySub; // relay sub-TLV type byte = SET
 extern volatile uint8_t
 	g_testHaptic; // 't<n>' injects n test haptics for the buzz hunt
-extern volatile uint8_t
-	g_hapticStop; // pending haptic-STOP frames to relay (kill a latched whine)
+// pending haptic-STOP frames to relay (kill a latched whine)
+extern volatile uint8_t g_hapticStop;
 extern unsigned long g_hapticBlockUntil;
-void hapticSendShutdown(); // relay the controller power-off (0x9F "off!"), burst x3 (Steam 0x9F / host-suspend / test button)
+
+// relay the controller power-off (0x9F "off!"), burst x3 (Steam 0x9F / host-suspend / test button)
+void hapticSendShutdown();
 
 // ---- diagnostic capture (compiled in only when OPK_LOG): a ring of recent host->controller commands +
 //      link/TX markers, dumped over WebUSB. No-ops in a production build so call sites vanish. ----
@@ -98,9 +102,14 @@ bool hapticSteamRumble(
 void rfConnQueueHapticRelay();
 void rfConnFlushRelay(uint8_t ch, uint8_t s1);
 
-void hapticInit(); // boot reset: clear relay/active flags, arm the reconnect block
-void hapticTask(); // per-loop upkeep: link-edge markers + steam 0x82 quiet timeout + fires the scheduled re-init
-void hapticReinit(); // replay Steam's haptic-subsystem re-init to the controller -> clears a latched/stuck buzz
+// boot reset: clear relay/active flags, arm the reconnect block
+void hapticInit();
+
+// per-loop upkeep: link-edge markers + steam 0x82 quiet timeout + fires the scheduled re-init
+void hapticTask();
+
+// replay Steam's haptic-subsystem re-init to the controller -> clears a latched/stuck buzz
+void hapticReinit();
 // Called from rf_link the instant a controller (re)connect is detected (an F-reply after a gap): blocks haptic
 // relays for HAPTIC_RECONNECT_BLOCK_MS and schedules a re-init just after, to keep the freshly-booted
 // controller out of the degraded/latched haptic state. Reliable -- independent of hapticTask's link heuristic.

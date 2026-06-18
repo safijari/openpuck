@@ -28,8 +28,9 @@ extern const uint8_t PAIR_BASE[4]; // "ibex"
 extern uint8_t g_rfPrefix; // discovery prefix (rodata byte @0x56f98)
 extern uint8_t g_rfCh; // current TX/RX channel (hopped during beacon/poll)
 extern uint8_t g_rfBase[4]; // "ibex"
-extern uint8_t
-	g_sessCh; // connected-session channel: a CLEAN data channel off the congested adv ch2
+
+// connected-session channel: a CLEAN data channel off the congested adv ch2
+extern uint8_t g_sessCh;
 
 // Per-device SESSION address (base+prefix). Discovery/rendezvous stays on the SHARED "ibex" address (g_rfBase)
 // so any controller can find us; the host frame then advertises THIS unique address and the controller adopts
@@ -53,8 +54,9 @@ extern uint32_t g_crcpoly;
 extern uint16_t g_crccnf; // CRC16, address included
 extern uint8_t g_pid;
 extern uint8_t g_balen; // ESB 5-byte addr
-extern bool
-	g_prefixRaw; // false = bitrev8 prefix (ESB addr_conv); true = raw prefix byte
+
+// false = bitrev8 prefix (ESB addr_conv); true = raw prefix byte
+extern bool g_prefixRaw;
 
 uint8_t rfBitrev8(uint8_t x);
 // Access address (IBEX FUN_00037530): BASE0 = bitrev8 each base byte packed big-endian; PREFIX0 = raw or

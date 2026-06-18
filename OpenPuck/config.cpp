@@ -13,26 +13,27 @@ bool g_persistMode = false;
 uint8_t g_bootMode = 0xFF;
 
 bool g_debugCdcThisBoot = false;
-static uint8_t g_debugCdc =
-	0; // persisted one-shot arm, stored in Cfg.rsvd0 (1 = keep CDC for the next boot)
+
+// persisted one-shot arm, stored in Cfg.rsvd0 (1 = keep CDC for the next boot)
+static uint8_t g_debugCdc = 0;
 
 int g_mDiv = 64, g_mFric = 94;
 uint8_t g_abSwap = 0;
 uint8_t g_back[4] = {
 	5, 6, 7, 8
 }; // L4->LB R4->RB L5->L3 R5->R3 (0..11 buttons, 12..15 D-pad U/D/L/R)
-uint8_t g_qamMap =
-	0; // 0 = default (unmapped, uses hardcoded behavior per mode)
-uint8_t g_rumbleScale =
-	200; // rumble strength % (200 = double); adjustable from the WebUSB panel
+// 0 = default (unmapped, uses hardcoded behavior per mode)
+uint8_t g_qamMap = 0;
+// rumble strength % (200 = double); adjustable from the WebUSB panel
+uint8_t g_rumbleScale = 200;
 
 // poll rate is fixed. Faster than the controller can refresh wastes airtime; slower adds latency. Any rate
 // persisted by an older build is ignored and overwritten with the default on boot (see loadCfg).
 const uint32_t g_pollUs = POLL_US_DEFAULT;
 
 #define CFG_FILE "/cfg.bin"
-#define CFG_MAGIC \
-	0xC9 // bumped (rumbleScale): old cfg ignored -> clean defaults on first boot
+// bumped (rumbleScale): old cfg ignored -> clean defaults on first boot
+#define CFG_MAGIC 0xC9
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, abSwap, back[4], pollU100,
 		persistMode, bootMode, chordBtn[3], qamMap, rumbleScale;
@@ -104,15 +105,17 @@ void loadCfg()
 							c.chordBtn[i] :
 							CHORD_DEF[i];
 			g_qamMap = c.qamMap;
-			g_rumbleScale =
-				c.rumbleScale; // 0 is a valid setting (rumble off)
+
+			// 0 is a valid setting (rumble off)
+			g_rumbleScale = c.rumbleScale;
 		}
 		f.close();
 	}
+	// clear the one-shot so the NEXT cold boot reverts to the default/persist policy
 	if (consume) {
 		g_bootMode = 0xFF;
 		saveCfg();
-	} // clear the one-shot so the NEXT cold boot reverts to the default/persist policy
+	}
 }
 
 void saveMode(uint8_t m)
@@ -140,8 +143,8 @@ void armDebugCdcNextBoot()
 // every call site (serial "ERASE-ALL", WebUSB op 0x0A magic, both with on-screen warnings).
 void factoryErase()
 {
-	InternalFS
-		.begin(); // ensure mounted before we reformat (no-op if already up)
+	// ensure mounted before we reformat (no-op if already up)
+	InternalFS.begin();
 	InternalFS.format(); // wipes cfg.bin + bonds.bin + the entire FS
 }
 

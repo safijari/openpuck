@@ -873,9 +873,9 @@ int main(int argc, char **argv)
 		IOHIDDeviceClose(dev, kIOHIDOptionsTypeNone);
 		CFRelease(dev);
 		return rc;
-	} else if (arg < argc &&
-		   strcmp(argv[arg], "find") ==
-			   0) { // probe all non-destructive opcodes for bond/serial data
+	}
+	// probe all non-destructive opcodes for bond/serial data
+	else if (arg < argc && strcmp(argv[arg], "find") == 0) {
 		// BLOCKLIST = known state-changing/destructive opcodes; never sent here.
 		static const int block[] = { 0x80, 0x81, 0x85, 0x86, 0x87, 0x88,
 					     0x8D, 0x8E, 0x8F, 0x9F, 0xAD, 0xAF,

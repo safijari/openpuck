@@ -13,16 +13,16 @@
 bool g_rfHost = true;
 bool g_connOn = true;
 uint8_t g_connType = 0xE7; // start with protocol-version handshake, then 0xE3
-uint8_t g_e7b =
-	0; // 0=current(slow/awake), 1=test protocol-version-1. 'V<n>' to toggle.
+// 0=current(slow/awake), 1=test protocol-version-1. 'V<n>' to toggle.
+uint8_t g_e7b = 0;
 uint8_t g_connLen = 0x08;
-uint8_t g_getParam =
-	0x00; // GET report 0x45 param byte (try 0x00, fall back 0x2D) - 'q' cmd
-uint8_t g_e3mode =
-	1; // DEFAULT 1: cycling the ESB PID drains the controller's report queue (~400 new/s vs ~60 with a fixed PID) -- THE rate fix. 'e<n>' to A/B.
+// GET report 0x45 param byte (try 0x00, fall back 0x2D) - 'q' cmd
+uint8_t g_getParam = 0x00;
+// DEFAULT 1: cycling the ESB PID drains the controller's report queue (~400 new/s vs ~60 with a fixed PID) -- THE rate fix. 'e<n>' to A/B.
+uint8_t g_e3mode = 1;
 bool g_connVerbose = false;
-uint32_t g_rxWin =
-	1200; // poll RX-window (us); shorter=more polls/s but may miss DELAYED replies. Tunable 'r'.
+// poll RX-window (us); shorter=more polls/s but may miss DELAYED replies. Tunable 'r'.
+uint32_t g_rxWin = 1200;
 unsigned long g_connCooldown = 0;
 
 uint8_t g_connSt = 0; // 0=announce awake, 1=poll loop
@@ -40,16 +40,16 @@ unsigned long g_qosCheckMs = 0, g_qosLastHopMs = 0;
 
 uint16_t g_f1ps = 0;
 uint16_t g_newps = 0;
-uint16_t g_pollsps =
-	0; // polls/s (GET+relay TXs) last second -- distinguishes loop-starvation from reply-loss
-uint16_t g_pollPeriodUs =
-	0; // MEASURED avg us between GET-poll fires (vs intended g_pollUs) -- ground truth
+// polls/s (GET+relay TXs) last second -- distinguishes loop-starvation from reply-loss
+uint16_t g_pollsps = 0;
+// MEASURED avg us between GET-poll fires (vs intended g_pollUs) -- ground truth
+uint16_t g_pollPeriodUs = 0;
 static uint32_t g_pollDtSum = 0;
 static uint16_t g_pollDtCnt = 0;
-volatile uint8_t g_linkRssi =
-	0; // smoothed |dBm| of the controller's replies (0 = none yet)
-volatile uint8_t g_battery =
-	0; // battery % from the controller's report 0x43 (body[1]); 0 = none yet
+// smoothed |dBm| of the controller's replies (0 = none yet)
+volatile uint8_t g_linkRssi = 0;
+// battery % from the controller's report 0x43 (body[1]); 0 = none yet
+volatile uint8_t g_battery = 0;
 
 // ---- internal counters / timers ----
 static uint8_t g_e3pid = 0;
@@ -75,26 +75,26 @@ static void rfHostFrameOnce(int slot, bool discovery)
 {
 	if (slot < 0 || slot >= NSLOT || !g_slot[slot].used)
 		return;
-	uint8_t *rec =
-		g_slot[slot].rec; // [proteus_uuid 4][ibex_uuid 4][serial 16]
+	// [proteus_uuid 4][ibex_uuid 4][serial 16]
+	uint8_t *rec = g_slot[slot].rec;
 	// CRC-VALIDATED frame (decoded from real puck): ESB-DPL RAM = [LENGTH][S1=PID][payload(18)]. payload:
 	// [0]=0xE1, [1..5]=proteus_uuid LE, [5..9]=ibex_uuid LE, [9]=session channel, [10..13]=0, [13..17]=session
 	// base, [17]=session prefix. Radio auto-appends CRC16 0x11021.
 	memset(rftx, 0, sizeof rftx);
-	rftx[0] =
-		0x12; // LENGTH = 18 (controller's buf[0]==0x12 check validates this)
-	rftx[1] =
-		(uint8_t)((g_pid++ & 3)
-			  << 1); // S1 = PID<<1 | noack0  (matches real puck 00/02/04/06)
+	// LENGTH = 18 (controller's buf[0]==0x12 check validates this)
+	rftx[0] = 0x12;
+	// S1 = PID<<1 | noack0  (matches real puck 00/02/04/06)
+	rftx[1] = (uint8_t)((g_pid++ & 3) << 1);
 	rftx[2] = 0xE1; // payload[0] marker
-	memcpy(rftx + 3, rec + 0,
-	       4); // payload[1..5] proteus_uuid (LE, as bonded)
+	// payload[1..5] proteus_uuid (LE, as bonded)
+	memcpy(rftx + 3, rec + 0, 4);
 	memcpy(rftx + 7, rec + 4, 4); // payload[5..9] ibex_uuid
+
 	// payload[9] session channel: tell the controller to run the session on
 	// the clean channel (it adopts buf[0xe]); discovery beacon still TXes on ch2
 	rftx[11] = g_sessCh;
-	memcpy(rftx + 15, g_sessBase,
-	       4); // payload[13..17] session base  (the per-device UNIQUE address)
+	// payload[13..17] session base  (the per-device UNIQUE address)
+	memcpy(rftx + 15, g_sessBase, 4);
 	rftx[19] = g_sessPrefix; // payload[17] session prefix
 	// TX address: discovery uses the shared "ibex" rendezvous; the session keepalive uses our unique address
 	// (where the controller now listens). The advertised session params (above) are identical either way.
@@ -122,13 +122,13 @@ static void rfHostFrameOnce(int slot, bool discovery)
 	while (!NRF_RADIO->EVENTS_END && (micros() - t0) < bwin) {
 	}
 	if (NRF_RADIO->EVENTS_END) {
-		NRF_RADIO->EVENTS_END =
-			0; // ANY reception = controller answered our frame
+		// ANY reception = controller answered our frame
+		NRF_RADIO->EVENTS_END = 0;
 		g_rfRxCount++;
 		bool crcok = NRF_RADIO->CRCSTATUS & 1;
 		uint8_t len = rfrx[0];
-		if (Serial.availableForWrite() >
-		    90) { // non-blocking: don't stall the loop on CDC backpressure
+		// non-blocking: don't stall the loop on CDC backpressure
+		if (Serial.availableForWrite() > 90) {
 			Serial.printf(
 				"*** RESP#%lu ch%u crc%d rxmatch%lu len%u: ",
 				(unsigned long)g_rfRxCount, g_rfCh, crcok,
@@ -149,8 +149,8 @@ void rfHopTo(uint8_t newCh)
 		return;
 	uint8_t cur = g_sessCh, savedRfCh = g_rfCh;
 	g_sessCh = newCh;
-	g_rfCh =
-		cur; // host frame now advertises newCh but is TXed on cur (session addr)
+	// host frame now advertises newCh but is TXed on cur (session addr)
+	g_rfCh = cur;
 	for (int k = 0; k < 6; k++) {
 		rfHostFrameOnce(g_connSlot, false);
 		delayMicroseconds(700);
@@ -161,18 +161,15 @@ void rfHopTo(uint8_t newCh)
 uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		 uint16_t rxWinUs)
 {
-	uint16_t win =
-		rxWinUs ?
-			rxWinUs :
-			g_rxWin; // relays pass a tiny window (no reply expected); polls use g_rxWin
+	// relays pass a tiny window (no reply expected); polls use g_rxWin
+	uint16_t win = rxWinUs ? rxWinUs : g_rxWin;
 	memset(rftx, 0, sizeof rftx);
 	rftx[0] = plen; // LENGTH = payload byte count
 	rftx[1] = s1; // S1 (type-specific)
 	memcpy(rftx + 2, payload, plen); // payload[0]=type byte, then data/TLVs
 	rfConfig(ch);
-	rfSetAddr(
-		g_sessBase,
-		g_sessPrefix); // connected poll runs on this puck's UNIQUE session addr
+	// connected poll runs on this puck's UNIQUE session addr
+	rfSetAddr(g_sessBase, g_sessPrefix);
 	NRF_RADIO->PACKETPTR = (uint32_t)rftx;
 	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
 			    RADIO_SHORTS_END_DISABLE_Msk;
@@ -198,22 +195,22 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		NRF_RADIO->EVENTS_END = 0;
 		bool crcok = NRF_RADIO->CRCSTATUS & 1;
 		rxlen = rfrx[0];
+		// reply arrived but CRC failed -> RF quality (channel/interference)
 		if (!crcok) {
 			g_stCrc++;
 			g_qosBad++;
-		} // reply arrived but CRC failed -> RF quality (channel/interference)
-		if (crcok && rxlen &&
-		    rxlen <=
-			    96) { // F1 input ~46B; 0x43-augmented ~66B -> allow up to MAXLEN(96)
-			uint8_t rtype =
-				rfrx[2]; // reply type byte (proven offset from captures)
+		}
+		// F1 input ~46B; 0x43-augmented ~66B -> allow up to MAXLEN(96)
+		if (crcok && rxlen && rxlen <= 96) {
+			// reply type byte (proven offset from captures)
+			uint8_t rtype = rfrx[2];
 			// Only OUR controller's replies (F-type: 0xF1 input / 0xF2 disconnect / 0xF3 status) mark the link
 			// alive. Every OpenPuck shares the same RF address "ibex" + CRC config, and a puck transmits host-frame
 			// beacons (0xE1) + polls (0xE2/E3/E7) -- all E-type. Without this gate, puck A receives a SECOND puck's
 			// 0xE1 beacon (e.g. one just plugged into another computer), bumps g_connReplyMs, and the "new RF
 			// connection" wake in rfLinkTask() fires -> the second puck spuriously wakes this sleeping host.
-			if (rtype >=
-			    0xF0) { // F-type reply (F1/F2/F3) -> our controller is alive
+			// F-type reply (F1/F2/F3) -> our controller is alive
+			if (rtype >= 0xF0) {
 				// A reply after a long gap (or the first ever) = a (re)connect. Arm the haptic block + re-init HERE,
 				// directly off the reply stream -- reliable even when hapticTask's 300ms link-up edge doesn't fire
 				// (e.g. a power-cycled controller that reconnects without us cleanly seeing the link drop).
@@ -222,11 +219,12 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					    1500u)
 					hapticOnReconnect();
 				g_connRx++;
-				g_connReplyMs =
-					millis(); // link alive -> loop() suppresses the redundant E1 beacon
+				// link alive -> loop() suppresses the redundant E1 beacon
+				g_connReplyMs = millis();
+				// |dBm| of this reply (started by the ADDRESS short)
 				uint8_t rs =
-					(uint8_t)(NRF_RADIO->RSSISAMPLE &
-						  0x7F); // |dBm| of this reply (started by the ADDRESS short)
+					(uint8_t)(NRF_RADIO->RSSISAMPLE & 0x7F);
+				// EWMA, ~8-sample horizon
 				if (rs)
 					g_linkRssi =
 						g_linkRssi ?
@@ -234,15 +232,15 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									   7u +
 								   rs + 4u) /
 								  8u) :
-							rs; // EWMA, ~8-sample horizon
+							rs;
 			}
 			if (rtype == 0xF1)
 				g_stF1++;
+			// controller disconnecting/powering off -> back off 2.5s
 			if (rtype == 0xF2)
-				g_connCooldown =
-					millis(); // controller disconnecting/powering off -> back off 2.5s
-			if (rtype ==
-			    0xF3) { // F3 = controller status/version reply (reply to E7 handshake, byte[6]=version)
+				g_connCooldown = millis();
+			// F3 = controller status/version reply (reply to E7 handshake, byte[6]=version)
+			if (rtype == 0xF3) {
 				g_stF3++;
 				g_connF3v = rfrx[6];
 				if (g_connVerbose &&
@@ -259,17 +257,16 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 			bool isF1 = (rtype == 0xF1);
 			if (isF1) {
 				g_connF1++;
-				int idx = 3,
-				    end = rxlen +
-					  2; // walk ALL type6 TLVs (= HID report 0x45). idx is INT, not
+				// walk ALL type6 TLVs (= HID report 0x45). idx is INT, not
+				int idx = 3, end = rxlen + 2;
 				const uint8_t *lastRep = nullptr;
-				uint8_t lastTlen =
-					0; // uint8_t: a tlen of 0xFE would make idx+=tlen+2 wrap
-				while (idx + 1 <
-				       end) { // mod-256 back to itself -> infinite loop -> USB hang/"crash".
+				// uint8_t: a tlen of 0xFE would make idx+=tlen+2 wrap
+				uint8_t lastTlen = 0;
+				// mod-256 back to itself -> infinite loop -> USB hang/"crash".
+				while (idx + 1 < end) {
+					// pace with the real puck -- taking only [0] halved our rate.
 					uint8_t tlen = rfrx[idx],
-						ttype = rfrx[idx +
-							     1]; // pace with the real puck -- taking only [0] halved our rate.
+						ttype = rfrx[idx + 1];
 					if (tlen == 0)
 						break;
 					// Only a FULL 0x45 report that fits entirely in rfrx: a short or late/garbled TLV must not let the
@@ -278,15 +275,16 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					    (size_t)(idx + 2) + tlen <=
 						    sizeof(rfrx) &&
 					    rfrx[idx + 2] == 0x45) {
+						// report 0x45: [0x45][seq][buttons u32]...
 						const uint8_t *rep =
-							&rfrx[idx +
-							      2]; // report 0x45: [0x45][seq][buttons u32]...
+							&rfrx[idx + 2];
 						bool fresh =
 							(rep[1] != g_lastSeq);
+						// genuine new report vs stale poll-repeat
 						if (fresh) {
 							g_stNew++;
 							g_lastSeq = rep[1];
-						} // genuine new report vs stale poll-repeat
+						}
 						uint32_t bb = btnsOf(rep);
 						// USB remote wakeup on Steam button short press (down + up within 1 s). A long press likely means
 						// the user is powering off the controller, so we ignore it.
@@ -300,21 +298,24 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									(bb &
 									 TB_STEAM) !=
 									0;
+								// rising edge: record press time
 								if (steamNow &&
 								    !steamWasDown)
 									steamDownMs =
-										millis(); // rising edge: record press time
+										millis();
+								// falling edge within 1 s -> short press -> wake
 								if (!steamNow &&
 								    steamWasDown &&
 								    millis() - steamDownMs <
 									    1000u &&
 								    USBDevice
-									    .suspended()) { // falling edge within 1 s -> short press -> wake
+									    .suspended()) {
 									USBDevice
 										.remoteWakeup();
 									ledWakePulse();
+									// post-resume nudge (host needs real input to actually wake)
 									if (g_active)
-										g_active->wakeEvent(); // post-resume nudge (host needs real input to actually wake)
+										g_active->wakeEvent();
 								}
 								steamWasDown =
 									steamNow;
@@ -350,19 +351,22 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 								}
 								if (g_usbMode !=
 								    MODE_STEAM) {
-									g_in.buttons &= ~(
-										uint32_t)(TB_STEAM |
-											  TB_Y); // stream modes read g_in
+									// stream modes read g_in
+									g_in.buttons &=
+										~(uint32_t)(TB_STEAM |
+											    TB_Y);
+									// push modes read btnsOf(rep): TB_Y in rep[2],
 									((uint8_t *)
 										 rep)
 										[2] &=
 										~(uint8_t)
-											TB_Y; // push modes read btnsOf(rep): TB_Y in rep[2],
+											TB_Y;
+									// TB_STEAM in rep[4]
 									((uint8_t *)
 										 rep)
 										[4] &=
 										~(uint8_t)(TB_STEAM >>
-											   16); // TB_STEAM in rep[4]
+											   16);
 								}
 							} else {
 								offHoldMs = 0;
@@ -380,9 +384,9 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									  14);
 						g_in.lt =
 							trigU8(u16off(rep, 4));
-						g_in.rt = trigU8(u16off(
-							rep,
-							6)); // for the Switch digital-trigger threshold
+						// for the Switch digital-trigger threshold
+						g_in.rt =
+							trigU8(u16off(rep, 6));
 						g_in.lpx = (int16_t)s16off(rep,
 									   16);
 						g_in.lpy = (int16_t)s16off(rep,
@@ -431,12 +435,12 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						// Controller STATUS reports (0x43 = periodic power/battery, ~every 2s; 0x44 = status event). The real
 						// puck forwards these to the host verbatim -- that's how Steam reads battery -- but OpenPuck used to
 						// drop everything but 0x45. Forward them (onAuxReport), and snapshot the battery % for the WebUSB panel.
+						// [rid][body...]
 						const uint8_t *rep =
-							&rfrx[idx +
-							      2]; // [rid][body...]
+							&rfrx[idx + 2];
+						// 0x43 body[1] (~0x5e=94) reads as battery % (sniff-derived)
 						if (rep[0] == 0x43 && tlen >= 3)
-							g_battery =
-								rep[2]; // 0x43 body[1] (~0x5e=94) reads as battery % (sniff-derived)
+							g_battery = rep[2];
 						if (g_active)
 							g_active->onAuxReport(
 								rep[0], rep + 1,
@@ -503,10 +507,11 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 			}
 		} else
 			rxlen = 0;
+		// RX window expired with no packet at all
 	} else {
 		g_stNoRx++;
 		g_qosBad++;
-	} // RX window expired with no packet at all
+	}
 	NRF_RADIO->TASKS_DISABLE = 1;
 	RWAIT_DISABLED();
 	NRF_RADIO->EVENTS_DISABLED = 0;
@@ -523,10 +528,12 @@ static void rfConnStep()
 			g_connSlot = s;
 			break;
 		}
+	// need a bonded slot (session established by host frame)
 	if (g_connSlot < 0)
-		return; // need a bonded slot (session established by host frame)
+		return;
 	uint8_t ch = g_sessCh;
-	if (g_connSt == 0) { // announce HOST AWAKE: E7 00 00, a few times
+	// announce HOST AWAKE: E7 00 00, a few times
+	if (g_connSt == 0) {
 		uint8_t p[3] = { 0xE7, 0x00, g_e7b };
 		rfConnTx(ch, 0x01, p, 3);
 		if (++g_connStep >= 4) {
@@ -535,9 +542,11 @@ static void rfConnStep()
 			Serial.println(
 				"# CONN: awake announced -> polling GET report 0x45");
 		}
-	} else { // poll loop: E3 + GET report 0x45 every poll; re-assert awake periodically
+		// poll loop: E3 + GET report 0x45 every poll; re-assert awake periodically
+	} else {
+		// CONTROLLED CADENCE: poll ~every g_pollUs
 		if ((uint32_t)(micros() - g_lastPollUs) < g_pollUs)
-			return; // CONTROLLED CADENCE: poll ~every g_pollUs
+			return;
 		// FIXED-RATE schedule: advance the deadline by exactly one interval. The old `g_lastPollUs = micros()`
 		// reset the reference to AFTER the gate passed, so each cycle's ~1ms of poll work + loop jitter was added
 		// to the next interval and never reclaimed -- the period drifted to ~5000us (200/s) instead of 4000us
@@ -546,15 +555,16 @@ static void rfConnStep()
 		{
 			uint32_t now = micros();
 			static uint32_t lastFire = 0;
+			// MEASURED actual period
 			if (lastFire) {
 				g_pollDtSum += (uint32_t)(now - lastFire);
 				g_pollDtCnt++;
-			} // MEASURED actual period
+			}
 			lastFire = now;
 			g_lastPollUs += g_pollUs;
+			// fell >1 interval behind -> resync
 			if ((uint32_t)(now - g_lastPollUs) >= g_pollUs)
-				g_lastPollUs =
-					now; // fell >1 interval behind -> resync
+				g_lastPollUs = now;
 		}
 		if ((g_connPoll & 0x1F) == 0) {
 			uint8_t pa[3] = { 0xE7, 0x00, g_e7b };
@@ -569,19 +579,18 @@ static void rfConnStep()
 			rfConnFlushRelay(ch, rs1);
 		}
 		{
-			uint8_t p[5] = {
-				0xE3, 0x02, 0x01, 0x45, g_getParam
-			}; // E3 + TLV [len=02][subtype=01 GET][id=0x45][param]
+			// E3 + TLV [len=02][subtype=01 GET][id=0x45][param]
+			uint8_t p[5] = { 0xE3, 0x02, 0x01, 0x45, g_getParam };
+			// cycle PID (S1 1,3,5,7), NO_ACK=1
+			// cycle PID (S1 0,2,4,6), NO_ACK=0
+			// fixed (matches captured puck poll)
 			uint8_t s1 =
 				(g_e3mode == 1) ?
 					(uint8_t)((((g_e3pid++) & 3) << 1) |
-						  1) // cycle PID (S1 1,3,5,7), NO_ACK=1
-				:
+						  1) :
 				(g_e3mode == 2) ?
-					(uint8_t)(((g_e3pid++) & 3)
-						  << 1) // cycle PID (S1 0,2,4,6), NO_ACK=0
-					:
-					0x07; // fixed (matches captured puck poll)
+					(uint8_t)(((g_e3pid++) & 3) << 1) :
+					0x07;
 			uint8_t rx = rfConnTx(ch, s1, p, 5);
 			if (rx)
 				g_chF1[0]++;
@@ -619,15 +628,16 @@ void rfLinkTask()
 		rfConnStep();
 	} // connected-mode: poll controller, read input
 	{
-		static bool wasRfConn =
-			false; // remote wakeup on new RF controller connection
+		// remote wakeup on new RF controller connection
+		static bool wasRfConn = false;
 		bool nowRfConn =
 			(g_connSlot >= 0 && millis() - g_connReplyMs < 300);
 		if (nowRfConn && !wasRfConn && USBDevice.suspended()) {
 			USBDevice.remoteWakeup();
 			ledWakePulse();
+			// post-resume nudge (host needs real input to actually wake)
 			if (g_active)
-				g_active->wakeEvent(); // post-resume nudge (host needs real input to actually wake)
+				g_active->wakeEvent();
 		}
 		wasRfConn = nowRfConn;
 	}

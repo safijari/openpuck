@@ -14,28 +14,33 @@
 #include <stdint.h>
 
 // ---- operational toggles + tunables (set from the CDC console / WebUSB; read here + by webusb status) ----
-extern bool
-	g_rfHost; // auto-start host beacon on boot (resumes puck role after a USB replug)
+// auto-start host beacon on boot (resumes puck role after a USB replug)
+extern bool g_rfHost;
 extern bool g_connOn; // auto-start connected-mode poll on boot
 extern uint8_t g_connType; // start packet type (E7 handshake, then E3)
-extern uint8_t
-	g_e7b; // E7 payload B-byte: 0=current(slow/awake), 1=test protocol-version-1
+
+// E7 payload B-byte: 0=current(slow/awake), 1=test protocol-version-1
+extern uint8_t g_e7b;
 extern uint8_t g_connLen;
 extern uint8_t g_getParam; // GET report 0x45 param byte
-extern uint8_t
-	g_e3mode; // E3-poll PID/S1 mode (0=fixed07, 1=cyclePID+noack1, 2=cyclePID+noack0)
-extern bool
-	g_connVerbose; // full multi-line debug dump vs compact "I45 <hex>" stream
+
+// E3-poll PID/S1 mode (0=fixed07, 1=cyclePID+noack1, 2=cyclePID+noack0)
+extern uint8_t g_e3mode;
+
+// full multi-line debug dump vs compact "I45 <hex>" stream
+extern bool g_connVerbose;
 extern uint32_t g_rxWin; // poll RX-window (us): caps poll rate (~1e6/rxWin)
-extern unsigned long
-	g_connCooldown; // set on 0xF2 disconnect; pauses beacon+poll so a powering-off controller can sleep
+
+// set on 0xF2 disconnect; pauses beacon+poll so a powering-off controller can sleep
+extern unsigned long g_connCooldown;
 
 // connected-mode state (reset by the 'k' console toggle)
 extern uint8_t g_connSt, g_connStep;
 extern uint16_t g_connPoll;
 extern uint32_t g_connF1; // count of 0xF1 input reports seen
-extern uint8_t
-	g_connF3v; // last protocol version the controller reported in an F3 reply (0xFF=none)
+
+// last protocol version the controller reported in an F3 reply (0xFF=none)
+extern uint8_t g_connF3v;
 
 // QoS adaptive channel hopping
 extern uint8_t g_qos; // 0=off (static g_sessCh), 1=auto-hop on degradation
@@ -45,11 +50,14 @@ extern unsigned long g_qosCheckMs, g_qosLastHopMs;
 
 // per-second rate readouts for the WebUSB status blob
 extern uint16_t g_f1ps; // last completed second's F1 rate
-extern uint16_t g_newps; // genuine new-report rate (report 0x45 seq byte changes)
-extern uint16_t
-	g_pollsps; // last second's poll TX count (GET+relay) -- vs F1 tells starvation from reply-loss
-extern uint16_t
-	g_pollPeriodUs; // MEASURED avg us between GET-poll fires (compare to the intended g_pollUs=4000)
+// genuine new-report rate (report 0x45 seq byte changes)
+extern uint16_t g_newps;
+
+// last second's poll TX count (GET+relay) -- vs F1 tells starvation from reply-loss
+extern uint16_t g_pollsps;
+
+// MEASURED avg us between GET-poll fires (compare to the intended g_pollUs=4000)
+extern uint16_t g_pollPeriodUs;
 
 // Smoothed controller->puck signal strength, sampled by the radio (RSSISAMPLE) on each CRC-good controller
 // reply during the poll. Stored as the dBm MAGNITUDE (35 = -35dBm); 0 = no sample yet. puck_hid reports it

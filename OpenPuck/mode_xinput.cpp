@@ -45,8 +45,9 @@ static uint8_t g_xiInBuf[32], g_xiOutBuf[32];
 static volatile uint16_t g_rumbleLow = 0, g_rumbleHigh = 0;
 static volatile unsigned long g_rumbleMs =
 	0; // millis of last rumble OUT packet (stuck-rumble watchdog)
-#define RUMBLE_STUCK_MS \
-	2500u // release a held rumble if no OUT packet refreshes it for this long (covers a lost stop without cutting normal short rumbles)
+
+// release a held rumble if no OUT packet refreshes it for this long (covers a lost stop without cutting normal short rumbles)
+#define RUMBLE_STUCK_MS 2500u
 
 static void xi_init(void)
 {
@@ -148,44 +149,15 @@ class Adafruit_USBD_XInput : public Adafruit_USBD_Interface {
 		uint8_t epin = TinyUSBDevice.allocEndpoint(TUSB_DIR_IN),
 			epout = TinyUSBDevice.allocEndpoint(TUSB_DIR_OUT);
 		const uint8_t t[XINPUT_DESC_LEN] = {
-			9,
-			TUSB_DESC_INTERFACE,
-			itfnum,
-			0x00,
-			0x02,
-			0xFF,
-			0x5D,
-			0x01,
-			_strid,
-			0x11,
-			0x21,
-			0x00,
-			0x01,
-			0x01,
-			0x25,
-			epin,
-			0x14,
-			0x00,
-			0x00,
-			0x00,
-			0x00,
-			0x13,
-			epout,
-			0x08,
-			0x00,
-			0x00,
-			7,
-			TUSB_DESC_ENDPOINT,
-			epin,
-			TUSB_XFER_INTERRUPT,
+			9, TUSB_DESC_INTERFACE, itfnum, 0x00, 0x02, 0xFF, 0x5D,
+			0x01, _strid, 0x11, 0x21, 0x00, 0x01, 0x01, 0x25, epin,
+			0x14, 0x00, 0x00, 0x00, 0x00, 0x13, epout, 0x08, 0x00,
+			0x00, 7, TUSB_DESC_ENDPOINT, epin, TUSB_XFER_INTERRUPT,
 			U16_TO_U8S_LE(0x20),
-			1, // bInterval 1ms (1000Hz) so the RF rate is the only limit
-			7,
-			TUSB_DESC_ENDPOINT,
-			epout,
-			TUSB_XFER_INTERRUPT,
-			U16_TO_U8S_LE(0x20),
-			8
+
+			// bInterval 1ms (1000Hz) so the RF rate is the only limit
+			1, 7, TUSB_DESC_ENDPOINT, epout, TUSB_XFER_INTERRUPT,
+			U16_TO_U8S_LE(0x20), 8
 		};
 		memcpy(buf, t, XINPUT_DESC_LEN);
 		return XINPUT_DESC_LEN;
@@ -387,9 +359,9 @@ static void rfXboxMouse(const uint8_t *r)
 void XboxController::begin()
 {
 	g_rumbleLow = g_rumbleHigh = 0;
-	USBDevice.setID(
-		0x045E,
-		0x028E); // device-level 045E:028E match -> Windows xusb / SDL / Linux xpad all bind it
+
+	// device-level 045E:028E match -> Windows xusb / SDL / Linux xpad all bind it
+	USBDevice.setID(0x045E, 0x028E);
 	// bcdDevice 0x0115 (was 0x0114): Windows caches the config descriptor by VID:PID:bcdDevice, so any change to
 	// this mode's interfaces (here: the wake-mouse interface) MUST bump bcdDevice or Windows serves a stale
 	// descriptor and the change is invisible (no manual Device-Manager cache-clear should ever be needed).

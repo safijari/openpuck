@@ -24,8 +24,9 @@ void ledWakePulse()
 {
 	g_pulseMs = millis();
 	g_lit = true;
-	ledWrite(
-		WAKE_LED_ON); // light immediately at the remoteWakeup() call site, not on the next loop
+
+	// light immediately at the remoteWakeup() call site, not on the next loop
+	ledWrite(WAKE_LED_ON);
 }
 
 void ledTask()

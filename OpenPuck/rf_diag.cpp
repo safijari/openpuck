@@ -414,16 +414,14 @@ static void rfRespondPoll()
 // RX that session address on the primary channel to capture the live connected exchange (E3 poll + F1 reply).
 void rfSniffStart()
 {
+	// PARK (no hop): primary carries the traffic
 	uint8_t ch =
-		(g_sniffPh == 0) ?
-			2 :
-			(g_sniffPark ?
-				 g_sniffPark :
-				 g_schan[0]); // PARK (no hop): primary carries the traffic
+		(g_sniffPh == 0) ? 2 : (g_sniffPark ? g_sniffPark : g_schan[0]);
 	const uint8_t *base = (g_sniffPh == 0) ? g_rfBase : g_sbase;
 	uint8_t pfx = (g_sniffPh == 0) ? g_rfPrefix : g_sprefix;
-	rfConfig(
-		ch); // Ble_2Mbit, PCNF0=0x30008, ENDIAN big, BALEN4, CRC16 0x11021
+
+	// Ble_2Mbit, PCNF0=0x30008, ENDIAN big, BALEN4, CRC16 0x11021
+	rfConfig(ch);
 	uint8_t b[4];
 	for (int i = 0; i < 4; i++)
 		b[i] = rfBitrev8(base[i]);
@@ -449,9 +447,8 @@ static void rfSniffPoll()
 		uint8_t len = rfrx[0];
 		if (crcok && len && len < 40) {
 			g_sniffN++;
-			if (g_sniffPh == 0 &&
-			    rfrx[2] ==
-				    0xE1) { // host frame -> learn session params + DUMP FULL (app-data may ride here)
+			// host frame -> learn session params + DUMP FULL (app-data may ride here)
+			if (g_sniffPh == 0 && rfrx[2] == 0xE1) {
 				memcpy(g_sbase, rfrx + 15, 4);
 				g_sprefix = rfrx[19];
 				g_schan[0] = rfrx[11];
@@ -470,8 +467,8 @@ static void rfSniffPoll()
 				g_schi = 0;
 				rfSniffStart();
 			} else if (g_sniffPh == 1) {
-				uint8_t ty =
-					rfrx[2]; // 0xF1=input, 0x12/0xE1/0xE4=puck host-frame w/ app-data
+				// 0xF1=input, 0x12/0xE1/0xE4=puck host-frame w/ app-data
+				uint8_t ty = rfrx[2];
 				const char *tag = (ty == 0xF1) ? "<<<INPUT" :
 						  (ty == 0x12 || ty == 0xE1 ||
 						   ty == 0xE4) ?
@@ -480,10 +477,8 @@ static void rfSniffPoll()
 				Serial.printf("%s SNIFF#%lu ch%u len%u: ", tag,
 					      (unsigned long)g_sniffN,
 					      g_schan[g_schi], len);
-				uint8_t dn =
-					(len + 2 < 64) ?
-						len + 2 :
-						64; // FULL frame (app-data TLVs sit near the end)
+				// FULL frame (app-data TLVs sit near the end)
+				uint8_t dn = (len + 2 < 64) ? len + 2 : 64;
 				for (uint8_t i = 0; i < dn; i++)
 					Serial.printf("%02X", rfrx[i]);
 				Serial.println();

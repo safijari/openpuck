@@ -19,8 +19,8 @@ struct Slot {
 };
 extern Slot g_slot[NSLOT];
 
-extern int
-	g_connSlot; // bonded slot being polled (== the USB-connected slot); -1 = none
+// bonded slot being polled (== the USB-connected slot); -1 = none
+extern int g_connSlot;
 extern unsigned long
 	g_connReplyMs; // millis of last RF reply (link-alive timestamp)
 extern volatile bool g_dirty; // bonds changed -> flush to flash from loop()

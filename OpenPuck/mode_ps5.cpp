@@ -46,7 +46,8 @@ static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 		return 0;
 	memset(buf, 0, reqlen);
 	switch (rid) {
-	case 0x03: { // capabilities: identify as DualSense-capable (SDL checks byte 2 == 0x28)
+	// capabilities: identify as DualSense-capable (SDL checks byte 2 == 0x28)
+	case 0x03: {
 		if (reqlen < 47)
 			return 0;
 		buf[0] = 0x00;
@@ -56,7 +57,9 @@ static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 		buf[4] = 0x0E; // sensors + lightbar + vibration capability bits
 		return 47;
 	}
-	case 0x05: { // calibration: neutral-ish non-zero block so SDL's read succeeds
+
+	// calibration: neutral-ish non-zero block so SDL's read succeeds
+	case 0x05: {
 		uint16_t n = reqlen < 40 ? reqlen : 40;
 		for (uint16_t i = 0; i < n; i++)
 			buf[i] = 0;
@@ -148,15 +151,17 @@ static void ps5Build(uint8_t out[63])
 void Ps5Controller::begin()
 {
 	USBDevice.setID(0x054C, 0x0CE6);
-	USBDevice.setDeviceVersion(
-		0x0104); // bumped: clean-PS is now a separate mode (PS5_GAME); normal PS5 keeps wake+WebUSB. Host re-reads config by VID:PID:serial (per-mode suffix) -- bump invalidates any cached 0x0103.
+
+	// bumped: clean-PS is now a separate mode (PS5_GAME); normal PS5 keeps wake+WebUSB. Host re-reads config by VID:PID:serial (per-mode suffix) -- bump invalidates any cached 0x0103.
+	USBDevice.setDeviceVersion(0x0104);
 	USBDevice.setManufacturerDescriptor("Sony Interactive Entertainment");
 	USBDevice.setProductDescriptor("DualSense Wireless Controller");
 	g_ps5.enableOutEndpoint(true);
 	g_ps5.setReportCallback(ps5Get, ps5Set);
 	g_ps5.setReportDescriptor(PS5_HID_DESC, sizeof PS5_HID_DESC);
-	g_ps5.setPollInterval(
-		1); // 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
+
+	// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
+	g_ps5.setPollInterval(1);
 	g_ps5.begin();
 }
 void Ps5Controller::task()
