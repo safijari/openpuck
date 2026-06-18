@@ -165,7 +165,7 @@ void SwitchHoriController::begin()
 {
 	USBDevice.setID(0x0F0D, 0x0092);
 
-	// bumped from 0x0201 for 1ms poll interval (Windows caches config by VID:PID:bcdDevice)
+	// Windows caches config by VID:PID:bcdDevice, so any interface change MUST bump this
 	USBDevice.setDeviceVersion(0x0202);
 	USBDevice.setManufacturerDescriptor("HORI CO.,LTD.");
 	USBDevice.setProductDescriptor("POKKEN CONTROLLER");

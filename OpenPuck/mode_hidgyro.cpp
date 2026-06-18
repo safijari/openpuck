@@ -102,7 +102,7 @@ void HidGyroController::begin()
 {
 	USBDevice.setID(0x054C, 0x05C4);
 
-	// bumped: clean-DS4 is now a separate mode (DS4_GAME); normal HIDGYRO keeps wake+WebUSB. Host re-reads config by VID:PID:serial (per-mode suffix) -- bump invalidates any cached 0x0103.
+	// Host re-reads config by VID:PID:serial (per-mode suffix); bump invalidates any cached descriptor
 	USBDevice.setDeviceVersion(0x0104);
 	USBDevice.setManufacturerDescriptor("Sony Computer Entertainment");
 	USBDevice.setProductDescriptor("Wireless Controller");

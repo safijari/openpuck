@@ -1,16 +1,14 @@
 // status_led.h -- LED indication of wake activity.
 //
 // The LED is DARK in all steady states -- including while wake is armed (host suspended) -- and flashes for
-// half a second at the moment a wake is actually sent (USBDevice.remoteWakeup() fired by a Steam-button short
-// press, a controller connect, or the boot-time wake). This turns the LED into a wake debugger you can read
-// from the couch: flash + PC stays asleep = the resume signal was sent and the HOST ignored it (fix on the
-// host: powercfg /deviceenablewake); no flash = the firmware never fired (it didn't see the gesture, or it
-// didn't consider the bus suspended).
+// half a second when a wake is actually sent (USBDevice.remoteWakeup()). It's a wake debugger: flash + PC
+// stays asleep = resume signal was sent and the HOST ignored it (fix host-side: powercfg /deviceenablewake);
+// no flash = firmware never fired (didn't see the gesture, or didn't consider the bus suspended).
 //
-// Board note: the sketch is built with the Feather nRF52840 variant, but the usual hardware is a SuperMini
-// "Pro Micro" clone. The Feather's user LED is P1.15 (D3, active high); the SuperMini's blue user LED is
-// P0.15 (= D24 in the Feather pin map -- SPI MISO, unused by this project). We drive BOTH pins so the
-// indicator works on either board. Override the pins/polarity below if your board differs.
+// Board note: built with the Feather nRF52840 variant, but the usual hardware is a SuperMini "Pro Micro"
+// clone. The Feather's user LED is P1.15 (D3, active high); the SuperMini's blue user LED is P0.15 (= D24 in
+// the Feather pin map -- SPI MISO, unused here). We drive BOTH pins so the indicator works on either board.
+// Override the pins/polarity below if your board differs.
 #pragma once
 
 #ifndef WAKE_LED_PIN_A

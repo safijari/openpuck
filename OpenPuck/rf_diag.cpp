@@ -30,8 +30,8 @@ static uint8_t g_schan[3] = { 78, 2, 80 };
 static uint8_t g_schi = 0;
 
 // ===================== promiscuous raw capture (calibration only) =====================
-// preamble-match on 0x55 bytes, fixed-length grab, no CRC. Catches any 2Mbit packet on a channel so we can
-// read the controller's reconnect addr/prefix/framing.
+// Preamble-match on 0x55, fixed-length grab, no CRC. Catches any 2Mbit packet on a channel so we can read the
+// controller's reconnect addr/prefix/framing.
 #define RAWCAP 48
 void rfRawStart(uint8_t ch)
 {
@@ -65,8 +65,8 @@ void rfRawStart(uint8_t ch)
 }
 
 // ===================== CRC-validating framing sweep =====================
-// Data looked bit-reversed (not whitened). Firmware-correct: ESB DPL (S0L0, LFLEN6or8, S1LEN3), BALEN4
-// (5-byte addr), CRC8/16 addr-included. Sweep PCNF0{LFLEN6,8} x CRC{8,16} x BALEN{4,3} x ENDIAN{Big,Lit}.
+// ESB DPL (S0L0, LFLEN6or8, S1LEN3), BALEN4 (5-byte addr), CRC8/16 addr-included.
+// Sweep PCNF0{LFLEN6,8} x CRC{8,16} x BALEN{4,3} x ENDIAN{Big,Lit}.
 static const uint32_t CAPP0B[] = {
 	0x00030006, 0x00030008
 }; // S1LEN3 + LFLEN6 / LFLEN8 (dynamic length)
@@ -109,9 +109,9 @@ void rfCapStart(uint8_t ch)
 	NRF_RADIO->EVENTS_END = 0;
 	NRF_RADIO->TASKS_RXEN = 1;
 }
-// REPLAY: capture one real-puck frame (raw, ENDIAN=Little) then re-transmit it VERBATIM (same bits, addr, ch)
-// to impersonate the puck bit-for-bit -- sidesteps unknown framing/CRC. Controller must be bonded to the REAL
-// puck (replayed frame carries real-puck uuids + its valid CRC).
+// REPLAY: capture one real-puck frame (raw, ENDIAN=Little) then re-transmit it VERBATIM to impersonate the puck
+// bit-for-bit -- sidesteps unknown framing/CRC. Controller must be bonded to the REAL puck (replayed frame
+// carries real-puck uuids + its valid CRC).
 static void rfCapPoll()
 {
 	if (!g_rfCap)
@@ -157,7 +157,7 @@ void rfReplayOnce()
 #if defined(RADIO_MODECNF0_RU_Fast)
 	NRF_RADIO->MODECNF0 = (RADIO_MODECNF0_RU_Fast << RADIO_MODECNF0_RU_Pos);
 #endif
-	NRF_RADIO->FREQUENCY = 2; // ch2
+	NRF_RADIO->FREQUENCY = 2;
 	NRF_RADIO->PCNF0 = 0; // static, ENDIAN=Little -> reproduce on-air bits
 	NRF_RADIO->PCNF1 = (3u << RADIO_PCNF1_BALEN_Pos) |
 			   ((uint32_t)g_replayLen << RADIO_PCNF1_STATLEN_Pos) |
@@ -202,7 +202,7 @@ static void rfPoll()
 	if (g_rfRaw) {
 		if (NRF_RADIO->EVENTS_END) {
 			NRF_RADIO->EVENTS_END = 0;
-			// filter noise: require some non-0x55/0xAA/0x00 structure
+			// filter noise: require non-preamble/idle byte structure
 			int nz = 0;
 			for (int i = 0; i < RAWCAP; i++) {
 				uint8_t b = rfrx[i];
@@ -240,8 +240,8 @@ static void rfPoll()
 }
 
 // ===================== autosweep candidate radio configs =====================
-// Cycle candidate radio configs while beaconing, so ONE controller search window covers the space. S0LEN=1 /
-// CRC16 0x11021 / addr "ibex" held fixed; sweep the residual unknowns (PHY, whitening, BALEN, prefix).
+// Cycle configs while beaconing so ONE controller search window covers the space. S0LEN=1 / CRC16 0x11021 /
+// addr "ibex" held fixed; sweep the residual unknowns (PHY, whitening, BALEN, prefix).
 struct RfCfg {
 	uint8_t mode;
 	uint32_t pcnf0, pcnf1;
@@ -289,7 +289,7 @@ void rfBeaconOnce()
 	memset(pl, 0, sizeof pl);
 	pl[0] = 0x01;
 	pl[1] = g_seq++;
-	pl[5] = 0xE2; // dongle beacon (FUN_00027ed8 format)
+	pl[5] = 0xE2; // dongle-beacon marker
 	rfConfig(g_rfCh);
 	rfSetAddr(g_rfBase, g_rfPrefix);
 	if (g_s1incl)
@@ -333,7 +333,7 @@ void rfBeaconOnce()
 }
 
 // ===================== scan-then-respond (dongle role) =====================
-// Listen on ch2 for the controller's advertisement, and the instant one arrives, TX the host frame (its ack).
+// Listen on ch2 for the controller's advertisement; the instant one arrives, TX the host frame (its ack).
 static void buildHostTx()
 {
 	int slot = -1;
@@ -399,7 +399,6 @@ static void rfRespondPoll()
 			for (uint8_t i = 0; i <= len && i < 32; i++)
 				Serial.printf("%02X", rfrx[i]);
 			Serial.println();
-			// re-arm RX
 			NRF_RADIO->PACKETPTR = (uint32_t)rfrx;
 			NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
 					    RADIO_SHORTS_END_START_Msk;

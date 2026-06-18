@@ -19,7 +19,7 @@ extern bool g_rfHost;
 extern bool g_connOn; // auto-start connected-mode poll on boot
 extern uint8_t g_connType; // start packet type (E7 handshake, then E3)
 
-// E7 payload B-byte: 0=current(slow/awake), 1=test protocol-version-1
+// E7 payload B-byte: 0=current(slow/awake), 1=protocol-version-1
 extern uint8_t g_e7b;
 extern uint8_t g_connLen;
 extern uint8_t g_getParam; // GET report 0x45 param byte

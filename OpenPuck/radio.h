@@ -1,9 +1,9 @@
 // radio.h -- bare-metal nRF52 RADIO (ESB-style) hardware layer.
 //
-// We drive the RADIO peripheral directly, with NO SoftDevice (BLE is never started), coexisting with TinyUSB.
-// This file owns the register-level config: PHY/CRC/whitening/address parameters (all live-tunable from the
-// CDC console for hardware iteration) plus rfConfig()/rfSetAddr() which program the radio, and the rfrx/rftx
-// DMA buffers. The puck *protocol* built on top lives in rf_link.cpp; the RE/calibration tooling in rf_diag.cpp.
+// Drives the RADIO peripheral directly with NO SoftDevice (BLE is never started), coexisting with TinyUSB.
+// Owns the register-level config (PHY/CRC/whitening/address, all live-tunable from the CDC console),
+// rfConfig()/rfSetAddr() to program the radio, and the rfrx/rftx DMA buffers. The puck protocol on top lives
+// in rf_link.cpp; the RE/calibration tooling in rf_diag.cpp.
 //
 // Register-confirmed config (decoded from real-puck capture): PHY=Ble_2Mbit, ENDIAN=Big (MSB-first), whitening
 // off, addr "ibex", CRC16 poly 0x11021 init 0xFFFF (address included). On-air address = bitrev8 of stored bytes.
@@ -11,9 +11,8 @@
 #include <stdint.h>
 #include <Arduino.h>
 
-// Bounded radio-disable wait: NEVER spin forever. A wedged RADIO peripheral would otherwise hang the whole
-// main loop (and USB stops being serviced -> device "dies" until replug). On timeout we bail and continue;
-// the next rfConfig re-inits the radio.
+// Bounded radio-disable wait: NEVER spin forever. A wedged RADIO would hang the main loop (USB stops being
+// serviced -> device "dies" until replug). On timeout we bail; the next rfConfig re-inits the radio.
 #define RWAIT_DISABLED()                                   \
 	do {                                               \
 		uint32_t _w = micros();                    \
@@ -31,10 +30,10 @@ extern uint8_t g_rfBase[4]; // "ibex"
 // connected-session channel: a CLEAN data channel off the congested adv ch2
 extern uint8_t g_sessCh;
 
-// Per-device SESSION address (base+prefix). Discovery/rendezvous stays on the SHARED "ibex" address (g_rfBase)
-// so any controller can find us; the host frame then advertises THIS unique address and the controller adopts
-// it for the connected session. Two OpenPucks therefore never share an on-air session address -> no crosstalk,
-// no spurious cross-wake. Derived from the FICR DEVICEID (stable per chip, unique across chips).
+// Per-device SESSION address (base+prefix). Discovery stays on the SHARED "ibex" address (g_rfBase) so any
+// controller can find us; the host frame advertises THIS unique address and the controller adopts it for the
+// session. Two OpenPucks therefore never share an on-air session address -> no crosstalk, no cross-wake.
+// Derived from the FICR DEVICEID (stable per chip, unique across chips).
 extern uint8_t g_sessBase[4];
 extern uint8_t g_sessPrefix;
 void rfGenSessionAddr();

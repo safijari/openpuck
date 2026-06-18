@@ -76,18 +76,17 @@ void loadCfg()
 			for (int i = 0; i < 4; i++)
 				g_back[i] = c.back[i];
 			g_persistMode = c.persistMode ? true : false;
-			// one-shot debug-CDC (Cfg.rsvd0): honor it for THIS boot, then consume so the next boot reverts to normal.
+			// one-shot debug-CDC (Cfg.rsvd0): honor for THIS boot, then consume so the next boot reverts to normal.
 			g_debugCdcThisBoot = c.rsvd0 ? true : false;
 			if (c.rsvd0) {
 				g_debugCdc = 0;
 				consume = true;
 			}
-			// poll rate is fixed (g_pollUs const = POLL_US_DEFAULT). A stale rate from an older build is never
-			// applied; rewrite cfg so the persisted byte also matches the new default.
+			// poll rate is fixed; rewrite cfg so the persisted byte matches the new default.
 			if (c.pollU100 != (uint8_t)(POLL_US_DEFAULT / 100))
 				consume = true;
-			// boot-mode policy: a one-shot bootMode (set by an explicit switch when !persist) wins once and is then
-			// cleared; otherwise persist->last mode, else->Steam. (poll rate stays POLL_US_DEFAULT -- never restored from cfg.)
+			// boot-mode policy: a one-shot bootMode (explicit switch when !persist) wins once then clears;
+			// otherwise persist->last mode, else->Steam.
 			if (c.bootMode != 0xFF) {
 				g_usbMode = modeValid(c.bootMode) ? c.bootMode :
 								    0;
@@ -135,27 +134,22 @@ void armDebugCdcNextBoot()
 	saveCfg();
 } // next boot keeps CDC; loadCfg() consumes it after
 
-// FULL factory wipe: erase ALL persistent storage in one shot -- cfg.bin (modes/tunables/chords), bonds.bin
-// (the paired-controller record), and anything else living in the internal LittleFS. format() reformats the
-// whole filesystem, so there's nothing left to selectively miss. The caller is expected to reboot immediately
-// (NVIC_SystemReset): on the next boot loadCfg()/loadBonds() find no files and fall back to clean defaults,
-// and the controller must be re-paired. Destructive and irreversible -- gated behind explicit confirmation at
-// every call site (serial "ERASE-ALL", WebUSB op 0x0A magic, both with on-screen warnings).
+// FULL factory wipe: reformat the internal LittleFS, erasing cfg.bin (modes/tunables/chords) AND bonds.bin
+// (paired-controller record). Caller reboots: next boot finds no files and falls back to clean defaults, and
+// the controller must be re-paired. Irreversible -- gated behind explicit confirmation at every call site.
 void factoryErase()
 {
 	// ensure mounted before we reformat (no-op if already up)
 	InternalFS.begin();
-	InternalFS.format(); // wipes cfg.bin + bonds.bin + the entire FS
+	InternalFS.format();
 }
 
-// One-time factory reset for the -DOPK_FACTORY_RESET recovery build. The point is to clear a bad config/bond
-// ONCE (at the first boot after flashing) and then behave like a normal build that PERSISTS settings -- NOT to
-// wipe on every boot (which would make the board un-configurable). We track "already reset" with a tiny tag file
-// holding the build's git hash, written AFTER the wipe (so it survives in the freshly-formatted FS):
-//   - tag missing or != this build's hash  -> a reset is pending: wipe, then stamp the tag. Next boot persists.
+// One-time factory reset for the -DOPK_FACTORY_RESET recovery build: clear a bad config/bond ONCE (first boot
+// after flashing) then persist normally. "Already reset" is tracked by a tag file holding the build's git hash,
+// written AFTER the wipe (so it survives in the freshly-formatted FS):
+//   - tag missing or != this build's hash  -> wipe, then stamp the tag. Next boot persists.
 //   - tag == this build's hash             -> already reset for this build: skip, boot normally.
-// Because the tag is keyed to the git hash, flashing a DIFFERENT build re-triggers the one-time wipe; re-flashing
-// the identical image does not (use the WebUSB/serial erase for an on-demand wipe). buildTag is OPK_GIT_HASH.
+// Keying the tag to the git hash means flashing a DIFFERENT build re-triggers the wipe. buildTag is OPK_GIT_HASH.
 #define RESET_TAG_FILE "/rsttag"
 void factoryResetOnce(const char *buildTag)
 {

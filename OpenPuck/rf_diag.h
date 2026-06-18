@@ -1,10 +1,9 @@
 // rf_diag.h -- RF reverse-engineering & calibration scaffolding (NOT used in normal operation).
 //
-// The puck protocol is solved (see radio.cpp / rf_link.cpp), but the tooling that solved it is preserved here:
-// promiscuous raw capture, CRC-validating config sweeps, bit-exact frame replay, address/CRC listen, the
-// scan-then-respond dongle experiment, the dongle beacon, and the live-session sniffer. Each is driven by a
-// flag toggled from the CDC console (serial_console.cpp) and serviced by rfDiagTask() from loop(). Isolating
-// it keeps rf_link.cpp readable while keeping the hard-won RE history compilable and runnable.
+// Tooling that solved the puck protocol, preserved here: promiscuous raw capture, CRC-validating config sweeps,
+// bit-exact frame replay, address/CRC listen, the scan-then-respond dongle experiment, the dongle beacon, and
+// the live-session sniffer. Each is driven by a flag toggled from the CDC console (serial_console.cpp) and
+// serviced by rfDiagTask() from loop().
 #pragma once
 #include <stdint.h>
 

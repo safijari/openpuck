@@ -7,7 +7,7 @@
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
-// custom class-driver API (usbd_class_driver_t, usbd_edpt_*) for the XInput interface
+// custom class-driver API for the XInput interface
 extern "C" {
 #include "device/usbd_pvt.h"
 }
@@ -34,8 +34,7 @@ enum {
 };
 
 // ===================== XInput custom TinyUSB class driver =====================
-// Custom class driver (registered via usbd_app_driver_get_cb) + an Adafruit_USBD_Interface subclass that emits
-// the interface + 0x21-blob + 2 endpoints. (Verified against Adafruit nRF52 1.7.0 / TinyUSB 0.18.)
+// Custom class driver + an Adafruit_USBD_Interface subclass emitting the interface + 0x21-blob + 2 endpoints.
 #define XINPUT_DESC_LEN \
 	(9 + 17 + 7 + 7) // interface(9)+vendor0x21(17)+IN ep(7)+OUT ep(7) = 40
 static uint8_t g_xiItf = 0xFF, g_xiEpIn = 0, g_xiEpOut = 0;
@@ -46,7 +45,7 @@ static volatile uint16_t g_rumbleLow = 0, g_rumbleHigh = 0;
 static volatile unsigned long g_rumbleMs =
 	0; // millis of last rumble OUT packet (stuck-rumble watchdog)
 
-// release a held rumble if no OUT packet refreshes it for this long (covers a lost stop without cutting normal short rumbles)
+// release a held rumble if no OUT packet refreshes it for this long (covers a lost stop)
 #define RUMBLE_STUCK_MS 2500u
 
 static void xi_init(void)
@@ -245,7 +244,7 @@ static void rfXboxGamepad(const uint8_t *r)
 		b &= ~(uint32_t)TB_QAM;
 		b |= tritonFromCode(g_qamMap);
 	}
-	uint16_t btn = 0; // map Triton buttons -> XInput button word
+	uint16_t btn = 0;
 	if (b & TB_DUP)
 		btn |= XB_DUP;
 	if (b & TB_DDN)
@@ -296,9 +295,8 @@ static void rfXboxGamepad(const uint8_t *r)
 		   (int16_t)s16off(r, 12),
 		   (int16_t)s16off(r, 14)); // R stick X/Y
 }
-// Right pad -> mouse, riding ALONGSIDE the XInput gamepad on a second HID-mouse interface. Same glide model as
-// Lizard's right pad. Purely a USB-side translation -- touches NOTHING about the RF poll or relay. RPad click =
-// left button, LPad click = right.
+// Right pad -> mouse on a second HID-mouse interface alongside the XInput gamepad. Same glide model as Lizard's
+// right pad; RPad click = left button, LPad click = right.
 static void rfXboxMouse(const uint8_t *r)
 {
 	uint32_t b = btnsOf(r);
@@ -360,16 +358,15 @@ void XboxController::begin()
 {
 	g_rumbleLow = g_rumbleHigh = 0;
 
-	// device-level 045E:028E match -> Windows xusb / SDL / Linux xpad all bind it
+	// 045E:028E -> Windows xusb / SDL / Linux xpad all bind it
 	USBDevice.setID(0x045E, 0x028E);
-	// bcdDevice 0x0115 (was 0x0114): Windows caches the config descriptor by VID:PID:bcdDevice, so any change to
-	// this mode's interfaces (here: the wake-mouse interface) MUST bump bcdDevice or Windows serves a stale
-	// descriptor and the change is invisible (no manual Device-Manager cache-clear should ever be needed).
+	// Windows caches the config descriptor by VID:PID:bcdDevice, so any interface change here MUST bump bcdDevice
+	// or Windows serves a stale descriptor.
 	USBDevice.setDeviceVersion(0x0115);
 	USBDevice.setManufacturerDescriptor("Microsoft");
 	USBDevice.setProductDescriptor("Controller");
 	g_xinput.setStringDescriptor("Controller");
-	g_xinput.begin(); // XInput vendor interface (FF/5D/01) -> MI_00
+	g_xinput.begin();
 	g_mouse.setStringDescriptor("OpenPuck Mouse");
 	g_mouse.setBootProtocol(HID_ITF_PROTOCOL_MOUSE);
 	g_mouse.setReportDescriptor(MOUSE_HID_DESC, sizeof MOUSE_HID_DESC);
@@ -382,7 +379,7 @@ void XboxController::onReport45(const uint8_t *rep, bool fresh,
 	(void)fresh;
 	(void)bodyTlen;
 	rfXboxGamepad(rep);
-	rfXboxMouse(rep); // standard gamepad + right-pad mouse (2nd interface)
+	rfXboxMouse(rep);
 }
 // Lost-stop watchdog: Steam/Triton rumble is latched, so force a zero report if the host stops refreshing.
 void XboxController::task()

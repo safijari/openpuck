@@ -11,8 +11,8 @@
 #include <string.h>
 
 // CDC commands: l=listen, s=stop, cN=channel, p<hex>=prefix, a<8hex>=base addr, b=bonds, etc.
-// NOTE: command order matters -- this is an else-if chain, so the FIRST matching letter wins. A couple of
-// letters ('C', 'H') appear twice; the second occurrence is unreachable (kept verbatim from the original).
+// Command order matters: else-if chain, FIRST matching letter wins. 'C' and 'H' appear twice; the second
+// occurrence is unreachable.
 void serialConsolePoll()
 {
 	static char line[24];
@@ -21,9 +21,8 @@ void serialConsolePoll()
 		char c = Serial.read();
 		if (c == '\n' || c == '\r') {
 			line[li] = 0;
-			// FULL factory wipe -- requires the exact word "ERASE-ALL" (not a single letter) so it can't be fat-
-			// fingered. Reformats the internal FS (cfg.bin + bonds.bin gone), then reboots into clean defaults; the
-			// controller must be re-paired afterwards.
+			// FULL factory wipe -- requires the exact word "ERASE-ALL" so it can't be fat-fingered. Reformats the
+			// internal FS (cfg.bin + bonds.bin gone), reboots into clean defaults; controller must be re-paired.
 			if (!strcmp(line, "ERASE-ALL")) {
 				Serial.println(
 					"# ERASING ALL persistent storage (config + bonds)...");

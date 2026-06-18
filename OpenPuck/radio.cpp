@@ -1,25 +1,24 @@
 #include "radio.h"
 
-// Pairing rendezvous bytes from IBEX rodata. The 0x91A2A793 key that precedes the "ibex" string is a
-// DIFFERENT key, NOT the discovery address (confirmed via PTR_s_ibexesb_common=0x56f99 -> "ibex...").
+// Pairing rendezvous bytes from IBEX rodata. The 0x91A2A793 key preceding "ibex" is a DIFFERENT key,
+// NOT the discovery address.
 const uint8_t PAIR_BASE[4] = { 0x69, 0x62, 0x65, 0x78 }; // "ibex"
 uint8_t g_rfPrefix = 0x10;
 uint8_t g_rfCh = 2;
 uint8_t g_rfBase[4] = { 0x69, 0x62, 0x65, 0x78 }; // "ibex"
-// ch18 measured clean (RSSI 95/90, PER 0) on the REAL PUCK's own channel scan and is in its active hop set
-// {18,2,80}; trackpad data bursts collide on bad channels -> reply-rate crash. Tunable 'C'.
+// ch18: clean channel in the real puck's active hop set {18,2,80}; bad channels collide with trackpad
+// data bursts -> reply-rate crash. Tunable 'C'.
 uint8_t g_sessCh = 18;
 
-// pre-init to "ibex"/0x10 as a safe default; rfGenSessionAddr() overwrites with the per-device value at boot.
+// Safe default; rfGenSessionAddr() overwrites with the per-device value at boot.
 uint8_t g_sessBase[4] = { 0x69, 0x62, 0x65, 0x78 };
 uint8_t g_sessPrefix = 0x10;
 
 void rfGenSessionAddr()
 {
-	// Mix the 64-bit FICR DEVICEID into a 4-byte base + a prefix. Deterministic per chip (stable across reboots,
-	// debuggable) and unique across chips (DEVICEID is unique) -> two OpenPucks never collide on the connected
-	// session. Avoid degenerate address bytes (0x00/0xFF) for clean preamble correlation, and never reproduce
-	// the shared discovery base "ibex" (else the isolation is lost).
+	// Mix the 64-bit FICR DEVICEID into a 4-byte base + prefix: deterministic per chip, unique across chips
+	// -> two OpenPucks never collide on the connected session. Avoid degenerate address bytes (0x00/0xFF) for
+	// clean preamble correlation, and never reproduce the shared discovery base "ibex" (else isolation is lost).
 	uint32_t h = NRF_FICR->DEVICEID[0] * 0x9E3779B1u ^
 		     NRF_FICR->DEVICEID[1];
 	uint32_t h2 = NRF_FICR->DEVICEID[1] * 0x85EBCA6Bu ^
@@ -36,25 +35,24 @@ void rfGenSessionAddr()
 	g_sessPrefix = p;
 	if (g_sessBase[0] == g_rfBase[0] && g_sessBase[1] == g_rfBase[1] &&
 	    g_sessBase[2] == g_rfBase[2] && g_sessBase[3] == g_rfBase[3])
-		g_sessBase[0] ^= 0x80; // collided with "ibex"
+		g_sessBase[0] ^= 0x80; // collided with discovery base "ibex"
 }
 
 uint8_t rfrx[100], rftx[100];
 uint32_t g_rfRxCount = 0;
 
-// HYBRID puck-link config (firmware-derived, definitive). DECODED from real-puck capture: puck TX = Ble_2Mbit,
-// ENDIAN=Big (MSB-first), NO whitening, addr "ibex", CRC16 0x11021/0xFFFF; frame = FUN_00027e9a (static length).
+// Puck-link config decoded from real-puck capture: puck TX = Ble_2Mbit, ENDIAN=Big (MSB-first), NO whitening,
+// addr "ibex", CRC16 0x11021/0xFFFF; static-length frame.
 uint32_t g_crcinit = 0xFFFF;
 uint8_t g_whiteiv = 37;
-// <-- was the bug (1Mbit). Real puck = 2Mbit.
 uint8_t g_mode = RADIO_MODE_MODE_Ble_2Mbit;
 
 // S0LEN0, LFLEN8, S1LEN3 (ESB DPL) - CRC-VALIDATED
 uint32_t g_pcnf0 = 0x00030008UL;
 uint8_t g_statlen = 0x20;
 
-// ENDIAN=Big, BALEN4, MAXLEN=96 (was 64 -> truncated the controller's
-// 66-byte 0x43-battery-augmented F1 -> CRC-fail -> battery never arrived)
+// ENDIAN=Big, BALEN4, MAXLEN=96. MAXLEN must be >=66 or the controller's 0x43-battery-augmented F1 (66B)
+// truncates -> CRC-fail -> battery never arrives.
 uint32_t g_pcnf1 = 0x01040060;
 uint32_t g_crcpoly = 0x11021UL;
 uint16_t g_crccnf = 0x2; // CRC16, address included
@@ -89,19 +87,16 @@ void rfConfig(uint8_t ch)
 	NRF_RADIO->TASKS_DISABLE = 1;
 	RWAIT_DISABLED();
 	NRF_RADIO->EVENTS_DISABLED = 0;
-	NRF_RADIO->MODE = ((uint32_t)g_mode
-			   << RADIO_MODE_MODE_Pos); // Ble_2Mbit (tunable 'M')
+	NRF_RADIO->MODE = ((uint32_t)g_mode << RADIO_MODE_MODE_Pos);
 	NRF_RADIO->FREQUENCY = ch;
 	NRF_RADIO->TXPOWER =
 		(RADIO_TXPOWER_TXPOWER_0dBm << RADIO_TXPOWER_TXPOWER_Pos);
 #if defined(RADIO_MODECNF0_RU_Fast)
 	NRF_RADIO->MODECNF0 = (RADIO_MODECNF0_RU_Fast << RADIO_MODECNF0_RU_Pos);
 #endif
-	// static length (tunable '0'); g_pcnf1=0 -> build from g_statlen/g_balen
 	NRF_RADIO->PCNF0 = g_pcnf0;
 
-	// ENDIAN=Big (puck transmits MSB-first)
-	// WHITEEN=0
+	// g_pcnf1=0 -> build static-length config from g_statlen/g_balen (ENDIAN=Big, WHITEEN=0)
 	NRF_RADIO->PCNF1 =
 		g_pcnf1 ? g_pcnf1 :
 			  ((1u << RADIO_PCNF1_ENDIAN_Pos) |

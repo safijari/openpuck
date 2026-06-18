@@ -1,28 +1,22 @@
 // config.h -- USB-presentation modes + persisted, runtime-tunable settings.
 //
 // One puck speaks the SAME RF protocol no matter which USB face it wears; only the USB enumeration and the
-// input-report mapping change. The active face is g_usbMode, persisted to flash (cfg.bin). Tunables here
-// (mouse sensitivity, back-paddle mapping, A/B swap, chord assignments, QoS) are set over the CDC console
-// (serial_console.cpp) and the WebUSB panel (webusb_config.cpp) and likewise persist.
+// input-report mapping change. The active face is g_usbMode, persisted to flash (cfg.bin). Tunables here are
+// set over the CDC console (serial_console.cpp) and the WebUSB panel (webusb_config.cpp) and likewise persist.
 #pragma once
 #include <stdint.h>
 
-// ---- Compile-time logging / diagnostics ----
-// 0 (default) = PRODUCTION build: no host->controller capture ring (reclaims ~80KB RAM), no per-event
-// logging, no main-loop section timing, no WebUSB capture channel. The functional bits (haptic reconnect
-// block, the buzz-clear re-init, rate stats) stay. Build the diagnostic firmware with -DOPK_LOG=1.
-// The WebUSB panel reads this back in the status blob and hides its logging UI when it's 0.
+// Compile-time logging / diagnostics. 0 (default) = PRODUCTION build: no host->controller capture ring
+// (reclaims ~80KB RAM), no per-event logging, no main-loop section timing, no WebUSB capture channel.
+// Functional bits (haptic reconnect block, buzz-clear re-init, rate stats) stay. -DOPK_LOG=1 for diagnostics.
 #ifndef OPK_LOG
 #define OPK_LOG 0
 #endif
 
-// Build-time FACTORY RESET (recovery build). 0 (default) = normal. Build with -DOPK_FACTORY_RESET=1 to produce a
-// firmware that wipes ALL persistent storage (cfg.bin + bonds.bin) ONCE -- on the first boot after flashing --
-// then behaves exactly like a normal build that persists settings. It is NOT a wipe-every-boot image: a git-hash
-// tag file (written after the wipe) records that this build already did its one-time reset, so subsequent boots
-// skip it. This makes it a safe recovery image for a bad config/bond: flash it, boot once (cleaned), keep using
-// it. Flashing a DIFFERENT build re-triggers the one-time wipe; for an on-demand wipe use the serial "ERASE-ALL"
-// or WebUSB "Factory erase". Re-pair the controller after the reset. See factoryResetOnce() in config.cpp.
+// Build-time FACTORY RESET (recovery build). 0 (default) = normal. -DOPK_FACTORY_RESET=1 wipes ALL persistent
+// storage (cfg.bin + bonds.bin) ONCE -- on the first boot after flashing -- then persists normally. A git-hash
+// tag file (written after the wipe) records that this build already reset, so subsequent boots skip it. Flashing
+// a DIFFERENT build re-triggers the one-time wipe. Re-pair the controller after the reset. See factoryResetOnce().
 #ifndef OPK_FACTORY_RESET
 #define OPK_FACTORY_RESET 0
 #endif
@@ -69,18 +63,16 @@ extern bool g_xbox;
 extern uint8_t g_chordBtn[3]; // back4+B/X/Y -> these modes (A always STEAM)
 
 // Mode persistence policy: by DEFAULT every fresh power-on/reconnect lands in STEAM mode (0). An explicit
-// mode switch still works for the session via a ONE-SHOT bootMode (honored once, then cleared, so the next
-// cold boot reverts to Steam). The WebUI "persist last mode" toggle (g_persistMode) instead remembers the
-// last selected mode across reboots.
+// mode switch still works for the session via a ONE-SHOT bootMode (honored once, then cleared). g_persistMode
+// instead remembers the last selected mode across reboots.
 // false (default) = always boot Steam; true = boot into last mode
 extern bool g_persistMode;
 // one-shot: boot into this mode once then clear (!persistMode + explicit switch)
 extern uint8_t g_bootMode;
 
 // One-shot debug CDC. Puck mode normally DROPS the CDC serial console to free the USB endpoint its wake-mouse
-// interface needs (so puck can wake a sleeping Windows host). Arming this keeps CDC for the NEXT boot only --
-// dropping the wake mouse that boot -- so someone can attach the serial debugger; the boot after reverts to
-// normal automatically. Mirrors the g_bootMode one-shot. Armed from the WebUSB panel or CDC 'D' command.
+// interface needs (to wake a sleeping Windows host). Arming this keeps CDC for the NEXT boot only -- dropping
+// the wake mouse that boot -- to attach the serial debugger; the boot after reverts automatically.
 // decision for THIS boot: true => keep CDC, skip the wake interface
 extern bool g_debugCdcThisBoot;
 void armDebugCdcNextBoot(); // persist the one-shot (caller reboots)

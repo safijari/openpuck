@@ -60,20 +60,18 @@ static void webusbSendBlob()
 	// poll TX rate (vs delivered/new -> starvation vs reply-loss)
 	p[29] = (uint8_t)(g_pollsps >> 8);
 	p[30] = (uint8_t)g_loopPeriodUs;
-	p[31] = (uint8_t)(g_loopPeriodUs >>
-			  8); // loop diag: avg iteration time + slowest section
+	p[31] = (uint8_t)(g_loopPeriodUs >> 8); // avg loop iteration time
 	p[32] = g_loopWorst;
 	p[33] = (uint8_t)g_loopWorstUs;
 	p[34] = (uint8_t)(g_loopWorstUs >> 8);
 	p[35] = (uint8_t)g_pollPeriodUs;
 	p[36] = (uint8_t)(g_pollPeriodUs >>
-			  8); // measured actual poll period (vs intended 4000)
+			  8); // measured poll period (intended 4000)
 	p[37] = OPK_LOG; // logging build? panel shows/hides its log UI
 	p[38] = g_battery; // controller battery % (report 0x43); 0=unknown
 	p[39] = g_linkRssi; // RAW signal strength |dBm| (0=no sample)
-	// Build provenance: which git commit this firmware was built from, and whether the tree was dirty. Lets the
-	// panel confirm exactly what's flashed. Injected at build time (build_info.h / gen_version.sh); "unknown" if
-	// the version header wasn't generated.
+	// git commit this firmware was built from + dirty flag; injected at build time
+	// (build_info.h / gen_version.sh); "unknown" if the version header wasn't generated.
 	p[40] = OPK_GIT_DIRTY ? 1 : 0;
 	memset(&p[41], 0, 12); // 12B ASCII git hash, NUL-padded
 	{
@@ -96,8 +94,7 @@ static void webusbSendBlob()
 	usb_web.flush();
 }
 #if OPK_LOG
-// Stream the capture ring (haptics / relayed host commands) to the panel as 0xA6 frames, so the browser can
-// pull it with no CDC. Frame formats:
+// Stream the capture ring (haptics / relayed host commands) to the panel as 0xA6 frames. Frame formats:
 //   entry: [0xA6][L][T=1][age u32 LE][slot][rid][n][bytes n]   (L = 8 + n)
 //   end:   [0xA6][1][T=0]
 static void webusbCapFrame(uint32_t ms, uint8_t slot, uint8_t rid, uint8_t nb,
@@ -127,7 +124,7 @@ static void webusbCapEnd()
 	usb_web.write(e, 3);
 	usb_web.flush();
 }
-// 0x06: drain -- entries since the last drain (or since the 0x05 start/rewind). The panel polls this on a
+// 0x06: drain entries since the last drain (or since the 0x05 start/rewind). The panel polls this on a
 // timer and accumulates, so a dump-from-boot of the whole ring streams over many polls without blocking the
 // loop. A per-call budget bounds how long one poll spends here.
 static void webusbDrainCapture()
@@ -182,19 +179,19 @@ void webusbPoll()
 			} // drain entries since the rewind (panel polls this)
 #endif
 
-			// clear a stuck/latched haptic buzz on the controller (functional)
+			// clear a stuck/latched haptic buzz on the controller
 			else if (op == 0x07) {
 				hapticReinit();
 			}
 
-			// TEST: trigger the controller power-off (same path Steam 0x9F / host-suspend use)
+			// trigger controller power-off (same path Steam 0x9F / host-suspend use)
 			else if (op == 0x08) {
 				hapticSendShutdown();
 			}
 
-			// FULL factory wipe: erase cfg.bin + bonds.bin, reboot to clean defaults.
-			// Guarded by a 3-byte magic ("ERS") so a stray/corrupt byte can never trigger it; the panel double-
-			// confirms before sending. Irreversible -- the controller must be re-paired afterwards.
+			// factory wipe: erase cfg.bin + bonds.bin, reboot to clean defaults.
+			// Guarded by a 3-byte magic ("ERS") so a stray/corrupt byte can never trigger it.
+			// Irreversible -- the controller must be re-paired afterwards.
 			else if (op == 0x0A) {
 				if (buf[1] == 0x45 && buf[2] == 0x52 &&
 				    buf[3] == 0x53) {
@@ -232,12 +229,12 @@ void webusbPoll()
 					g_e7b = v ? 1 : 0;
 					break;
 
-				// haptic-relay opcode (buzz hunt)
+				// haptic-relay opcode
 				case 11:
 					g_relayOp = v;
 					break;
 
-				// haptic-relay sub-type (buzz hunt)
+				// haptic-relay sub-type
 				case 12:
 					g_relaySub = v;
 					break;

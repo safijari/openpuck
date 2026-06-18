@@ -10,8 +10,7 @@
 IController *g_active = nullptr;
 
 // Map a USB-presentation mode to its singleton controller. Steam and Lizard share the puck controller (the
-// lizard-vs-forward decision is made per-report inside it). This is the one place that knows the mode->class
-// mapping; everything else dispatches through g_active.
+// lizard-vs-forward decision is made per-report inside it).
 IController *controllerFor(uint8_t mode)
 {
 	switch (mode) {

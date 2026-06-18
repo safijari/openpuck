@@ -6,17 +6,15 @@
 //
 // The queue is a small ring, NOT a single buffer: producers run in USB-ISR context while the consumer may be
 // mid-flush in loop context, and Steam writes settings/calibration as bursts of back-to-back feature reports.
-// The old single g_relayBuf both LOST every report that arrived before the previous one flushed and could be
-// TORN mid-copy by the ISR (a half-old-half-new command on the air) -- the settings-never-save and the
-// corrupted-haptic-latch bugs. Entries carry up to RELAY_MAXP payload bytes (the RF frame fits 60: [E3][len]
-// [05][rid] + payload <= MAXLEN 64); the old path truncated everything to 18, which chopped any multi-register
-// 0x87 settings block (LED brightness) and calibration write.
+// A single buffer LOSES reports arriving before the previous flush and can be TORN mid-copy by the ISR.
+// Entries carry up to RELAY_MAXP payload bytes (the RF frame fits 60: [E3][len][05][rid] + payload <= MAXLEN
+// 64); a smaller cap chops multi-register 0x87 settings blocks (LED brightness) and calibration writes.
 //
 // The controller's haptic LATCHES until told to stop. If the host's stop is lost over RF (or the link drops
 // mid-buzz) the actuator whines forever -- so we send 0x82-zero stop bursts on reconnect, but ONLY when a
 // haptic was actually active when the link dropped: every extra 0x82 frame is an audible click on the
-// controller (captured), so the old unconditional burst on each link-up edge was itself a buzz source on a
-// flapping link. The g_hapLog ring captures recent OUTPUT reports for the 'H' dump.
+// controller (captured), so an unconditional burst on each link-up edge is itself a buzz source on a flapping
+// link. The g_hapLog ring captures recent OUTPUT reports for the 'H' dump.
 #pragma once
 #include <stdint.h>
 #include "config.h" // OPK_LOG
@@ -25,7 +23,7 @@
 #define HAPTIC_QUIET_MS 300u
 // Block ALL haptic relays for this long after a (re)connect: a just-powered-on controller's haptic engine
 // isn't ready, and feeding it haptics in that window leaves it in a degraded/latched state (slow/stuck/missing
-// haptics until a re-init). 3s gives it time to initialize. (Was 1500.)
+// haptics until a re-init). 3s gives it time to initialize.
 #define HAPTIC_RECONNECT_BLOCK_MS 3000u
 // 0x82-zero relays per stop event (sent at poll cadence -- not loop rate)
 #define HAPTIC_STOP_BURST 4u
@@ -52,8 +50,7 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen);
 bool relayPending();
 extern uint8_t g_relayOp; // relay frame opcode (E3 poll)
 extern uint8_t g_relaySub; // relay sub-TLV type byte = SET
-extern volatile uint8_t
-	g_testHaptic; // 't<n>' injects n test haptics for the buzz hunt
+extern volatile uint8_t g_testHaptic; // 't<n>' injects n test haptics
 // pending haptic-STOP frames to relay (kill a latched whine)
 extern volatile uint8_t g_hapticStop;
 extern unsigned long g_hapticBlockUntil;

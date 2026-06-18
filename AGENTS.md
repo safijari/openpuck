@@ -5,23 +5,48 @@
 - **Linux kernel style**, enforced by `.clang-format` (8-wide tabs, 80 columns).
   Pinned to **clang-format 18** — other versions reformat differently and CI
   will reject them.
-- **No long trailing comments.** clang-format can't relocate a trailing `//`
-  comment, so a long one either splits the statement or runs past 80 columns.
-  Instead put the comment on its own line(s) **above** the statement, with a
-  blank line before it for separation:
 
-  ```c
-  // why this value matters, at whatever length you need
-  static int g_foo = 0;
-  ```
+## Comments
 
-  not
+Comment to explain **why**, not **what** — the code already says what it does.
+This codebase reverse-engineers an RF/HID protocol, so the comments worth
+writing are the ones that capture knowledge the code can't show on its own.
 
-  ```c
-  static int g_foo = 0; // why this value matters, at whatever length ...
-  ```
+Write a comment only when it carries genuine nuance:
 
-  Short trailing comments that fit within 80 columns are fine.
+- the meaning of a magic value or protocol constant,
+- a hardware / host-OS quirk or gotcha,
+- a non-obvious constraint or consequence ("lower than 96 truncates the
+  battery report → CRC fail"),
+- why a non-obvious approach was chosen over the obvious one.
+
+Delete a comment if it:
+
+- restates the code (`i++; // increment i`),
+- narrates history or changelog ("was 64, bumped to 96"),
+- editorializes ("THE fix", "the magic part"),
+- leaves debug / A-B-test breadcrumbs.
+
+Keep the constraint, drop the story. Prefer no comment to an obvious one; when
+tempted to annotate, first see if clearer code makes the comment unnecessary.
+
+**No long trailing comments.** clang-format can't relocate a trailing `//`
+comment, so a long one either splits the statement or runs past 80 columns.
+Put it on its own line(s) **above** the statement, with a blank line before it:
+
+```c
+// 0xE7 selects the protocol-version handshake; 0xE3 is the steady-state poll
+uint8_t g_connType = 0xE7;
+```
+
+not
+
+```c
+uint8_t g_connType = 0xE7; // 0xE7 selects the protocol-version handshake ...
+```
+
+Short trailing comments that fit within 80 columns are fine. The lint
+(`make lint`) enforces only the column rule; the rest is on you and review.
 
 ## Before pushing
 

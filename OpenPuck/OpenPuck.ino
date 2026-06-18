@@ -21,7 +21,7 @@ using namespace Adafruit_LittleFS_Namespace;
 
 #include "config.h"
 
-// OPK_GIT_HASH (used to tag the one-time factory-reset build)
+// OPK_GIT_HASH: tags the one-time factory-reset build
 #include "build_info.h"
 #include "identity.h"
 #include "bonds.h"
@@ -57,29 +57,27 @@ void setup()
 #endif
 	loadCfg();
 
-	// load persisted config + decide USB presentation BEFORE registering interfaces
+	// decide USB presentation BEFORE registering interfaces
 	g_xbox = !modeIsPuck(g_usbMode);
 	g_active = controllerFor(g_usbMode);
 
 	// ---- USB descriptor rebuild ----
-	// Puck mode NORMALLY drops the CDC serial console (clearConfiguration) to free a USB endpoint for the
-	// wake-mouse interface that lets it wake a sleeping Windows host. The one-shot debug arm (g_debugCdcThisBoot,
-	// set via the WebUSB panel / CDC 'D', auto-reverting after one boot) instead KEEPS the boot CDC composite
-	// for that boot and skips the wake mouse (no endpoint room for both). Clean modes always rebuild bare.
+	// Puck mode drops the CDC serial console (clearConfiguration) to free a USB endpoint for the wake-mouse
+	// interface that wakes a sleeping Windows host. The one-shot debug arm (g_debugCdcThisBoot, set via WebUSB
+	// panel / CDC 'D', auto-reverting after one boot) instead KEEPS the boot CDC composite and skips the wake
+	// mouse (no endpoint room for both). Clean modes always rebuild bare.
 	const bool puckMode = g_active->isPuck();
 	const bool keepCdc = puckMode && g_debugCdcThisBoot;
 	// The "game" PlayStation modes enumerate as a CLEAN single HID gamepad so games that classify off the raw HID
 	// device (Fortnite/UE GameInput, Windows.Gaming.Input) recognise them as PlayStation. A real Sony pad is just
 	// the gamepad HID (+ a USB-audio interface); our extra wake-mouse HID and WebUSB vendor interface make those
-	// classifiers refuse the PS glyph path even with the correct VID/PID (SDL/Steam tolerate the extras, which is
-	// why Steam still sees the normal PS modes). In clean-PS modes we skip BOTH the wake mouse and WebUSB -- the
-	// cost is no config panel / host-wake; chord back to Steam (back-paddle 4 + A) to reach the panel. The normal
-	// MODE_PS5 / MODE_HIDGYRO keep wake + panel (use those when you need host-wake; the *_GAME ones for games).
+	// classifiers refuse the PS glyph path even with the correct VID/PID (SDL/Steam tolerate the extras). So
+	// clean-PS modes skip BOTH the wake mouse and WebUSB -- no config panel / host-wake; chord back to Steam
+	// (back-paddle 4 + A) to reach the panel. Normal MODE_PS5 / MODE_HIDGYRO keep wake + panel.
 	const bool psClean = modeIsCleanPS(g_usbMode);
 	USBDevice.detach();
 	delay(30);
 	if (keepCdc) {
-		// keep boot CDC composite (debug boot)
 		USBDevice.setConfigurationBuffer(g_usbCfgDesc,
 						 sizeof g_usbCfgDesc);
 	} else {
@@ -111,7 +109,6 @@ void setup()
 	if (puckMode && !keepCdc)
 		wakeHidBegin();
 
-	// register this mode's USB interface(s) + set VID/PID/strings
 	g_active->begin();
 
 	// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
@@ -124,11 +121,10 @@ void setup()
 	// slots; other clean modes after controller. PS modes omit it to present a genuine single-HID PS controller.
 	if (!puckMode && !psClean)
 		usb_web.begin();
-	// Enable USB Remote Wakeup (bit 5) so the host lets us signal wake-from-sleep. Bit 7 is always required.
-	// bmAttributes: required(0x80) | remote_wakeup(0x20)
+	// bmAttributes: required(0x80) | remote_wakeup(0x20). Remote Wakeup lets us signal wake-from-sleep.
 	USBDevice.setConfigurationAttribute(0x80 | 0x20);
 
-	// re-connect with the final descriptor (host re-reads it fresh -> deterministic enumeration)
+	// re-attach with the final descriptor (host re-reads it fresh -> deterministic enumeration)
 	USBDevice.attach();
 	Serial.begin(115200);
 	for (int i = 0; i < 300 && !USBDevice.mounted(); i++)
@@ -138,8 +134,6 @@ void setup()
 		ledWakePulse();
 	} // wake host if bus was sleeping when we (re-)attached
 	loadBonds();
-
-	// clear relay/active flags + arm the reconnect block & initial stop burst
 	hapticInit();
 	static const char *MODE_NAME[] = {
 		"STEAM(puck)",	       "XBOX(xinput+mouse)",
@@ -161,9 +155,9 @@ void setup()
 		"# session addr %02X%02X%02X%02X/%02X ch%u (discovery on ibex/ch2)\n",
 		g_sessBase[0], g_sessBase[1], g_sessBase[2], g_sessBase[3],
 		g_sessPrefix, g_sessCh);
-	// Hardware watchdog: if loop() ever stops feeding it (a wedged radio busy-wait, a HardFault spin, a blocked
-	// CDC write) the WDT resets the nRF52 after ~8s -- re-enumerating USB and re-initialising RF on its own, so a
-	// hang no longer needs a physical replug. RUN keeps it counting in sleep; PAUSE freezes it under a debugger.
+	// Hardware watchdog: if loop() ever stops feeding it (wedged radio busy-wait, HardFault spin, blocked CDC
+	// write) the WDT resets the nRF52 after ~8s, re-enumerating USB + re-initialising RF, so a hang no longer
+	// needs a physical replug. RUN keeps it counting in sleep; PAUSE freezes it under a debugger.
 	NRF_WDT->CONFIG = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) |
 			  (WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos);
 	NRF_WDT->CRV = 8UL * 32768UL - 1; // timeout in 32.768 kHz ticks (~8 s)
@@ -171,9 +165,9 @@ void setup()
 	NRF_WDT->TASKS_START = 1;
 }
 
-// loop-timing diagnostics: the poll rate is capped by the loop ITERATION time (the pacing wants 4000us but a
-// slow loop fires the poll only as often as it comes around). Per-section us is accumulated and, each second,
-// the average loop period + the slowest section are published for the WebUSB panel to pinpoint the culprit.
+// loop-timing diagnostics: poll rate is capped by loop ITERATION time (pacing wants 4000us but the poll only
+// fires as often as the loop comes around). Per-section us accumulates and each second the avg loop period +
+// slowest section are published for the WebUSB panel.
 
 // avg loop iteration time last second (1e6/iterations)
 uint16_t g_loopPeriodUs = 0;
@@ -183,7 +177,7 @@ uint8_t g_loopWorst = 0;
 uint16_t g_loopWorstUs = 0; // that section's avg us per iteration
 void loop()
 {
-	// feed the watchdog each loop; if we ever stop, the ~8s WDT auto-resets us
+	// feed the watchdog; if we ever stop, the ~8s WDT auto-resets us
 	NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 	if (g_dirty) {
 		g_dirty = false;

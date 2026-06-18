@@ -3,7 +3,7 @@
 #include "config.h"
 
 uint8_t swStick(int16_t v, bool invert)
-{ // int16 (center 0) -> uint8 (center 0x80)
+{
 	int32_t a = 0x80 + (invert ? -((int32_t)v >> 8) : ((int32_t)v >> 8));
 	if (a < 0)
 		a = 0;

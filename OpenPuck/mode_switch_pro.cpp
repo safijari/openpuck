@@ -13,9 +13,8 @@ using namespace Adafruit_LittleFS_Namespace;
 SwitchProController g_switchPro;
 
 // Switch full-report (0x30) cadence. The console integrates the 3 IMU samples per report assuming ~5 ms/sample
-// (3 samples / 15 ms genuine); too high a rate over-integrates the gyro. With the accel scale fixed (gravity-
-// correction now works) 120 Hz is drift-free and lower-latency, so it is the DEFAULT. 66 Hz is the genuine
-// 2wiCC-matching compat fallback; "full" is the 4 ms PC rate for those who want lowest latency and tolerate it.
+// (3 samples / 15 ms genuine); too high a rate over-integrates the gyro. 120 Hz is drift-free and lower-latency
+// (default); 66 Hz is the genuine compat fallback; "full" is the 4 ms PC rate (lowest latency).
 #define SW_PRO_REPORT_MS 15u // 66 Hz
 #define SW_PRO_REPORT_MS_120 8u // ~120 Hz
 // SC2 accel is +/-2g (16384/g); /4 -> the genuine Pro +/-8g (4096/g) the Switch cal expects
@@ -152,8 +151,8 @@ static uint16_t jcRumbleAmp(const uint8_t r[4])
 {
 	// Nintendo packs a high band (r[0],r[1]) and low band (r[2],r[3]) of frequency+amplitude. We only need a
 	// magnitude for the Steam motor, so pull the two amplitude fields: HF amp = r[1]>>1, LF amp = r[3]&0x3F.
-	// Every canonical idle/neutral frame -- 00 01 40 40, 00 00 01 40, and all-zero -- decodes to 0 this way, so a
-	// steady idle rumble stream maps to "off" instead of latching the motor on. NO forced floor: 0 amplitude -> 0.
+	// Every canonical idle/neutral frame (00 01 40 40, 00 00 01 40, all-zero) decodes to 0 this way, so a steady
+	// idle rumble stream maps to "off" instead of latching the motor on. No forced floor: 0 amplitude -> 0.
 	uint8_t hf = r[1] >> 1; // high-band amplitude (neutral 0x01 -> 0)
 	uint8_t lf = r[3] & 0x3F; // low-band amplitude  (neutral 0x40 -> 0)
 	uint8_t a = hf > lf ? hf : lf; // 0..0x7F
@@ -165,12 +164,11 @@ static void jcRumble(const uint8_t *p, uint16_t pn)
 		return; // [timer][left rumble x4][right rumble x4]
 	uint16_t lo = jcRumbleAmp(p + 1), hi = jcRumbleAmp(p + 5);
 	static uint16_t lastLo = 0, lastHi = 0;
-	// only relay on change: the Switch streams rumble every frame, so
+	// only relay on change: the Switch streams rumble every frame; re-sending
+	// unchanged values would flood the RF relay and loop the motor
 	if (lo == lastLo && hi == lastHi)
 		return;
 	lastLo = lo;
-
-	// re-sending unchanged values would flood the RF relay and loop the motor
 	lastHi = hi;
 	hapticSteamRumble(lo, hi);
 }
@@ -249,7 +247,7 @@ static void jcInputPrefix(uint8_t *out)
 	out[0] = g_jcTimer++;
 
 	// battery full+charging (hi nibble 0x9), connection_info=1 (lo nibble): a wired/charging Pro Controller.
-	// A real Switch reads this to show the pad as connected; Steam/hid-nintendo accept it too. (2wiCC parity)
+	// A real Switch reads this to show the pad as connected; Steam/hid-nintendo accept it too.
 	out[1] = 0x91;
 	out[2] = (uint8_t)(jc);
 	out[3] = (uint8_t)(jc >> 8);
@@ -267,27 +265,21 @@ static void switchProBuild(uint8_t out[63])
 {
 	memset(out, 0, 63);
 	jcInputPrefix(out);
-	// Gyro slot order follows hid-nintendo: raw+6 = ROLL, raw+8 = PITCH, raw+10 = YAW. Steam-validated source
-	// routing (a proper rotation, det +1): SwitchX<-+gy, SwitchY<--gx, SwitchZ<-+gz.
+	// Gyro slot order follows hid-nintendo: raw+6 = ROLL, raw+8 = PITCH, raw+10 = YAW. Source routing (a proper
+	// rotation, det +1): SwitchX<-+gy, SwitchY<--gx, SwitchZ<-+gz.
 	//
-	// CRITICAL: the accel MUST use the SAME signed permutation as the gyro. Steam reads the gyro raw and ignores
-	// this, but the Switch console FUSES accel (gravity) with gyro to anchor absolute orientation -- and if the
-	// accel frame has the opposite handedness, the fusion's gravity-correction term points the wrong way and the
-	// attitude estimate latches into a rotated solution (the intermittent ~45deg axis-mixing, per-unit roll bias,
-	// and "only a replug clears it" behaviour). So accel Y must be -ax to match the gyro's -gx pitch axis; with
-	// that, accel is also det +1 and resting gravity lands cleanly on Switch Z (the up axis).
-	// The SC2 accelerometer is +/-2g full-scale (~16384 counts = 1g; measured |a|=16364 at rest). The factory cal we
-	// present (sensitivity 0x4000) tells the Switch it's a genuine +/-8g Pro Controller (4096 counts = 1g), so divide
-	// by SW_ACCEL_DIV=4 to report ~1g of gravity. Without this the console reads gravity as ~4g, REJECTS the accel for
-	// drift correction (it must be linear accel, not gravity), and the gyro's roll error accumulates into the slow
-	// ~45deg lean. Gyro is left at native scale (aiming sensitivity is right); only the accel magnitude was wrong.
-	// accel X <- +g_in.ay /4   (matches gyro +gy)
+	// The accel MUST use the SAME signed permutation as the gyro. Steam reads the gyro raw and ignores this, but the
+	// Switch console FUSES accel (gravity) with gyro to anchor absolute orientation -- if the accel frame has the
+	// opposite handedness, the gravity-correction term points the wrong way and the attitude estimate latches into a
+	// rotated solution (intermittent ~45deg axis-mixing, per-unit roll bias, cleared only by a replug). So accel Y
+	// must be -ax to match the gyro's -gx pitch axis; resting gravity then lands cleanly on Switch Z (the up axis).
+	// The SC2 accelerometer is +/-2g full-scale (~16384 counts = 1g). The factory cal we present (sensitivity 0x4000)
+	// tells the Switch it's a genuine +/-8g Pro Controller (4096 counts = 1g), so divide by SW_ACCEL_DIV=4 to report
+	// ~1g. Without this the console reads gravity as ~4g, REJECTS the accel for drift correction (it must be linear
+	// accel, not gravity), and gyro roll error accumulates into a slow ~45deg lean. Gyro is left at native scale.
+	// accel X <- +ay, accel Y <- -ax, accel Z <- +az (signs match gyro)
 	int16_t aX = (int16_t)(g_in.ay / SW_ACCEL_DIV);
-
-	// accel Y <- -g_in.ax /4   (matches gyro -gx)
 	int16_t aY = (int16_t)((-(int16_t)g_in.ax) / SW_ACCEL_DIV);
-
-	// accel Z <- +g_in.az /4   (matches gyro +gz)
 	int16_t aZ = (int16_t)(g_in.az / SW_ACCEL_DIV);
 
 	// gyro outputs scaled by the user sensitivity factor
@@ -297,20 +289,17 @@ static void switchProBuild(uint8_t out[63])
 	for (int k = 0; k < 3; k++) {
 		int o = 12 + k * 12;
 		out[o + 0] = aX & 0xFF;
-		out[o + 1] = (aX >> 8) & 0xFF; // accel X (Switch)
+		out[o + 1] = (aX >> 8) & 0xFF;
 		out[o + 2] = aY & 0xFF;
-		out[o + 3] = (aY >> 8) & 0xFF; // accel Y (Switch)
+		out[o + 3] = (aY >> 8) & 0xFF;
 		out[o + 4] = aZ & 0xFF;
-		out[o + 5] = (aZ >> 8) & 0xFF; // accel Z (Switch)
+		out[o + 5] = (aZ >> 8) & 0xFF;
 		out[o + 6] = groll & 0xFF;
-		out[o + 7] = (groll >> 8) &
-			     0xFF; // gyro ROLL  <- +g_in.gy (scaled)
+		out[o + 7] = (groll >> 8) & 0xFF;
 		out[o + 8] = gpitch & 0xFF;
-		out[o + 9] = (gpitch >> 8) &
-			     0xFF; // gyro PITCH <- -g_in.gx (scaled)
+		out[o + 9] = (gpitch >> 8) & 0xFF;
 		out[o + 10] = gyaw & 0xFF;
-		out[o + 11] = (gyaw >> 8) &
-			      0xFF; // gyro YAW   <- +g_in.gz (scaled)
+		out[o + 11] = (gyaw >> 8) & 0xFF;
 	}
 }
 // --- Canonical factory SPI dumps the host reads for calibration. Neutral IMU + centered sticks so a fresh
@@ -355,9 +344,8 @@ static void jcBuildStickCal()
 	jcPack12(&g_spiStickCal[9], Rr);
 }
 // Manual-pairing (subcommand 0x01) reply payloads. A real Switch runs this 3-stage BT key exchange over USB so it
-// can register the pad (Steam/hid-nintendo never do, which is why this was previously unneeded). The data is the
-// canonical hid handshake blob; the Switch only validates the shape, not the key contents. Each is the 31-byte
-// reply body that follows the 0x21 input prefix + ack(0x81) + echoed-subcommand(0x01). (adapted from 2wiCC)
+// can register the pad (Steam/hid-nintendo do not). The Switch only validates the shape, not the key contents. Each
+// is the 31-byte reply body following the 0x21 input prefix + ack(0x81) + echoed-subcommand(0x01).
 // type 1: echo type + controller BT addr + "Pro Controller" name
 static const uint8_t BT_PAIR_1[31] = {
 	0x01, JC_MAC[0], JC_MAC[1], JC_MAC[2], JC_MAC[3], JC_MAC[4], JC_MAC[5],
@@ -376,10 +364,8 @@ static const uint8_t BT_PAIR_3[31] = {
 }; // type 3: save pairing (all zero body)
 // User-calibration SPI mirror (0x8000-0x80FF). A real Pro Controller stores the gyro/accel (and stick) calibration
 // the Switch writes during "Calibrate Motion Controls" here, then reads it back and applies it -- that's how a
-// resting IMU/neutral offset gets cancelled. We previously DISCARDED SPI writes and returned 0xFF (blank), so the
-// Switch's calibration never stuck (it appeared to do nothing and reverted on replug) -- which is why calibrating
-// did not fix the Mario Kart roll/neutral offset. Now we store writes and serve them back, persisted to flash so
-// it survives unplug/replug. 0xFF = blank -> Switch falls back to our factory block at 0x6020 (default until cal'd).
+// resting IMU/neutral offset gets cancelled. We store writes and serve them back, persisted to flash so it survives
+// unplug/replug. 0xFF = blank -> Switch falls back to our factory block at 0x6020 (default until cal'd).
 #define SWCAL_FILE "/swimucal.bin"
 static uint8_t g_userCal[0x100];
 static void loadUserCal()
@@ -531,9 +517,7 @@ static void jcSubcmd(uint8_t sub, const uint8_t *args, uint16_t alen)
 			jcSpiWrite(a, args[4], &args[5],
 				   (alen > 5) ? (uint16_t)(alen - 5) : 0);
 		}
-		p[12] = 0x80;
-
-		// write ACK
+		p[12] = 0x80; // write ACK
 		break;
 
 	// set input report mode (0x30 = standard full) -> begin streaming
@@ -658,12 +642,10 @@ void SwitchProController::task()
 	}
 	if (g_swProReportMode != 0x30)
 		return; // not until the host has finished init + selected 0x30
-	// Stream the standard full report at ~66 Hz (15 ms), NOT the 250 Hz USB_STREAM_MS the PC modes use. The Switch
-	// integrates the report's 3 IMU samples by SAMPLE COUNT at a fixed ~5 ms/sample (it ignores the timer byte and
-	// assumes a 3-samples-per-15ms genuine cadence). At 250 Hz x 3 samples = 750 samples/s it credits ~3.75 s of
-	// gyro rotation per real second, so any residual gyro bias accumulates ~3.75x too fast -> the slow orientation
-	// lean that builds over minutes and resets on replug. 15 ms matches the genuine push (and 2wiCC's ~60 Hz /
-	// MissionControl), making integration 1:1. (Buttons/sticks on the Switch are genuine-rate-limited anyway.)
+	// The Switch integrates the report's 3 IMU samples by SAMPLE COUNT at a fixed ~5 ms/sample (it ignores the timer
+	// byte and assumes a 3-samples-per-15ms genuine cadence). Streaming faster (e.g. 250 Hz x 3 = 750 samples/s)
+	// over-credits gyro rotation ~3.75x, so residual bias accumulates into the slow orientation lean that builds over
+	// minutes and resets on replug. 15 ms matches the genuine push, making integration 1:1.
 	uint32_t interval = (g_swProRate == 2) ? USB_STREAM_MS :
 			    (g_swProRate == 1) ? SW_PRO_REPORT_MS_120 :
 						 SW_PRO_REPORT_MS;

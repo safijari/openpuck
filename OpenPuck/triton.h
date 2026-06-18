@@ -1,8 +1,8 @@
 // triton.h -- the controller's native input as it comes off the RF link, and the decoders for it.
 //
 // "Triton" is the Steam Controller 2 controller. Its HID input report 0x45 is what the puck relays; rf_link.cpp
-// decodes one into the shared g_in struct each fresh frame, and every USB personality (the IController
-// implementations in mode_*.cpp) reads g_in to build its own host report. report 0x45 layout:
+// decodes one into the shared g_in struct each fresh frame, and every USB personality reads g_in to build its
+// own host report. report 0x45 layout:
 //   [0]=0x45 [1]=seq [2..5]=buttons u32; analog offsets below are from the buttons low byte (rep[2]).
 #pragma once
 #include <stdint.h>
@@ -55,9 +55,8 @@ static inline int u16off(const uint8_t *r, int off)
 {
 	return r[2 + off] | (r[2 + off + 1] << 8);
 }
-// Controller trigger analog: the u16 in report 0x45 tops out near half-scale (~0x8000) at a full pull, so a
-// straight >>8 reads only ~0x80 (host sees a half-pressed trigger). Scale x2 (>>7) and saturate so a full
-// pull maps to the full 0xFF.
+// Controller trigger u16 tops out near half-scale (~0x8000) at a full pull, so a straight >>8 reads only ~0x80
+// (host sees a half-pressed trigger). Scale x2 (>>7) and saturate so a full pull maps to 0xFF.
 static inline uint8_t trigU8(int u16v)
 {
 	int v = u16v >> 7;
@@ -73,8 +72,6 @@ void imuFrom45(const uint8_t *r, int16_t *ax, int16_t *ay, int16_t *az,
 	       int16_t *gx, int16_t *gy, int16_t *gz);
 
 // ---- shared decoded input (filled by rf_link.cpp once per fresh report 0x45, read by every mode) ----
-// This single struct replaces the per-mode duplicates the firmware used to carry (the IMU/stick/button state
-// was copied verbatim into g_swPro*, g_ps5*, and g_gyro*). One source, many consumers.
 struct PuckInput {
 	// raw Triton buttons (TB_*); per-mode builders apply their own chord masking
 	uint32_t buttons;

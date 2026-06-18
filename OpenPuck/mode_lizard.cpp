@@ -65,8 +65,7 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 	if (dw < -15)
 		dw = -15; // finger up = wheel up (positive)
 	// --- mouse buttons: left=R-pad-click|R-trigger, right=L-trigger, middle=L-pad-click ---
-	// trigU8 (full-range scale + saturate) so a full pull reaches ~0xFF; a raw >>8 tops out ~0x80 and never
-	// crosses the threshold, leaving the trigger clicks dead.
+	// trigU8 scales full-range so a full pull reaches ~0xFF; a raw >>8 tops out ~0x80, never crossing threshold.
 	uint8_t rtrig = trigU8(u16off(r, 6)), ltrig = trigU8(u16off(r, 4));
 	uint8_t mbtn = 0;
 	if ((b & TB_RPADC) || rtrig > 180)

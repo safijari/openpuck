@@ -14,8 +14,8 @@
 #include "controllers.h"
 #include <stdint.h>
 
-// Steam mode: forward report 0x45 only when the seq advanced (dedupe like the real puck). Sending stale
-// repeats makes Steam's trackpad smoothing stair-step. Toggle to A/B (WebUSB field 14).
+// Forward report 0x45 only when the seq advanced (dedupe like the real puck); sending stale
+// repeats makes Steam's trackpad smoothing stair-step. (WebUSB field 14)
 extern uint8_t g_fwdNewOnly;
 
 class SteamPuckController : public IController {
@@ -27,7 +27,6 @@ class SteamPuckController : public IController {
 		override; // forward controller 0x43/0x44 status to Steam
 	void task() override;
 
-	// queue the harmless post-resume wake nudge (mouse jiggle + Ctrl tap)
 	void wakeEvent() override;
 	bool isPuck() const override
 	{

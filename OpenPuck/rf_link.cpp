@@ -13,12 +13,12 @@
 bool g_rfHost = true;
 bool g_connOn = true;
 uint8_t g_connType = 0xE7; // start with protocol-version handshake, then 0xE3
-// 0=current(slow/awake), 1=test protocol-version-1. 'V<n>' to toggle.
+// 0=current(slow/awake), 1=protocol-version-1. 'V<n>' to toggle.
 uint8_t g_e7b = 0;
 uint8_t g_connLen = 0x08;
-// GET report 0x45 param byte (try 0x00, fall back 0x2D) - 'q' cmd
+// GET report 0x45 param byte. 'q' cmd.
 uint8_t g_getParam = 0x00;
-// DEFAULT 1: cycling the ESB PID drains the controller's report queue (~400 new/s vs ~60 with a fixed PID) -- THE rate fix. 'e<n>' to A/B.
+// cycling the ESB PID drains the controller's report queue (~400 new/s vs ~60 with a fixed PID). 'e<n>' selects.
 uint8_t g_e3mode = 1;
 bool g_connVerbose = false;
 // poll RX-window (us); shorter=more polls/s but may miss DELAYED replies. Tunable 'r'.
@@ -42,7 +42,7 @@ uint16_t g_f1ps = 0;
 uint16_t g_newps = 0;
 // polls/s (GET+relay TXs) last second -- distinguishes loop-starvation from reply-loss
 uint16_t g_pollsps = 0;
-// MEASURED avg us between GET-poll fires (vs intended g_pollUs) -- ground truth
+// measured avg us between GET-poll fires (vs intended g_pollUs)
 uint16_t g_pollPeriodUs = 0;
 static uint32_t g_pollDtSum = 0;
 static uint16_t g_pollDtCnt = 0;
@@ -90,8 +90,8 @@ static void rfHostFrameOnce(int slot, bool discovery)
 	memcpy(rftx + 3, rec + 0, 4);
 	memcpy(rftx + 7, rec + 4, 4); // payload[5..9] ibex_uuid
 
-	// payload[9] session channel: tell the controller to run the session on
-	// the clean channel (it adopts buf[0xe]); discovery beacon still TXes on ch2
+	// payload[9] session channel: controller runs the session on this clean
+	// channel (adopts buf[0xe]); discovery beacon still TXes on ch2
 	rftx[11] = g_sessCh;
 	// payload[13..17] session base  (the per-device UNIQUE address)
 	memcpy(rftx + 15, g_sessBase, 4);
@@ -122,7 +122,7 @@ static void rfHostFrameOnce(int slot, bool discovery)
 	while (!NRF_RADIO->EVENTS_END && (micros() - t0) < bwin) {
 	}
 	if (NRF_RADIO->EVENTS_END) {
-		// ANY reception = controller answered our frame
+		// any reception = controller answered our frame
 		NRF_RADIO->EVENTS_END = 0;
 		g_rfRxCount++;
 		bool crcok = NRF_RADIO->CRCSTATUS & 1;
@@ -209,7 +209,6 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 			// beacons (0xE1) + polls (0xE2/E3/E7) -- all E-type. Without this gate, puck A receives a SECOND puck's
 			// 0xE1 beacon (e.g. one just plugged into another computer), bumps g_connReplyMs, and the "new RF
 			// connection" wake in rfLinkTask() fires -> the second puck spuriously wakes this sleeping host.
-			// F-type reply (F1/F2/F3) -> our controller is alive
 			if (rtype >= 0xF0) {
 				// A reply after a long gap (or the first ever) = a (re)connect. Arm the haptic block + re-init HERE,
 				// directly off the reply stream -- reliable even when hapticTask's 300ms link-up edge doesn't fire
@@ -257,14 +256,12 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 			bool isF1 = (rtype == 0xF1);
 			if (isF1) {
 				g_connF1++;
-				// walk ALL type6 TLVs (= HID report 0x45). idx is INT, not
+				// walk ALL type6 TLVs (= HID report 0x45); taking only [0] halves the rate. idx is INT,
+				// not uint8_t: tlen 0xFE would make idx+=tlen+2 wrap mod-256 -> infinite loop -> USB hang.
 				int idx = 3, end = rxlen + 2;
 				const uint8_t *lastRep = nullptr;
-				// uint8_t: a tlen of 0xFE would make idx+=tlen+2 wrap
 				uint8_t lastTlen = 0;
-				// mod-256 back to itself -> infinite loop -> USB hang/"crash".
 				while (idx + 1 < end) {
-					// pace with the real puck -- taking only [0] halved our rate.
 					uint8_t tlen = rfrx[idx],
 						ttype = rfrx[idx + 1];
 					if (tlen == 0)
@@ -433,8 +430,8 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						   (rfrx[idx + 2] == 0x43 ||
 						    rfrx[idx + 2] == 0x44)) {
 						// Controller STATUS reports (0x43 = periodic power/battery, ~every 2s; 0x44 = status event). The real
-						// puck forwards these to the host verbatim -- that's how Steam reads battery -- but OpenPuck used to
-						// drop everything but 0x45. Forward them (onAuxReport), and snapshot the battery % for the WebUSB panel.
+						// puck forwards these verbatim (onAuxReport) -- that's how Steam reads battery; also snapshot the
+						// battery % for the WebUSB panel.
 						// [rid][body...]
 						const uint8_t *rep =
 							&rfrx[idx + 2];
@@ -547,11 +544,9 @@ static void rfConnStep()
 		// CONTROLLED CADENCE: poll ~every g_pollUs
 		if ((uint32_t)(micros() - g_lastPollUs) < g_pollUs)
 			return;
-		// FIXED-RATE schedule: advance the deadline by exactly one interval. The old `g_lastPollUs = micros()`
-		// reset the reference to AFTER the gate passed, so each cycle's ~1ms of poll work + loop jitter was added
-		// to the next interval and never reclaimed -- the period drifted to ~5000us (200/s) instead of 4000us
-		// (250/s). Advancing by g_pollUs keeps the long-run average at exactly the target; the resync guard
-		// prevents a catch-up burst if we ever fall more than a full interval behind (a real stall).
+		// FIXED-RATE schedule: advance the deadline by exactly one interval (NOT reset-to-now, which would add
+		// each cycle's ~1ms of poll work + loop jitter to the next interval -- the period drifts to ~5000us
+		// instead of the 4000us target). The resync guard prevents a catch-up burst after a real stall.
 		{
 			uint32_t now = micros();
 			static uint32_t lastFire = 0;
