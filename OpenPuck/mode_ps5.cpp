@@ -131,8 +131,8 @@ static void ps5Build(uint8_t out[63])
 		 ((b & TB_MUTE) ? 0x04 : 0);
 	out[15] = g_in.gx & 0xFF;
 	out[16] = g_in.gx >> 8;
-	out[17] = (-g_in.gz) & 0xFF;
-	out[18] = (-g_in.gz) >> 8;
+	out[17] = g_in.gz & 0xFF;
+	out[18] = g_in.gz >> 8;
 	out[19] = g_in.gy & 0xFF;
 	out[20] = g_in.gy >> 8;
 	out[21] = g_in.ax & 0xFF;
