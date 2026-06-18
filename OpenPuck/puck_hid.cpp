@@ -154,10 +154,10 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		if (rid >= 0x80 && rid <= 0x86 && n >= 1 &&
 		    hapticRelaySlotOk(slot) && !lizardActive() && !muted) {
 			if (!haptic82Blocked()) {
-				relayEnqueue(rid, b,
-					     (uint8_t)(n > RELAY_MAXP ?
-							       RELAY_MAXP :
-							       n));
+				relayHaptic(rid, b,
+					    (uint8_t)(n > RELAY_MAXP ?
+							      RELAY_MAXP :
+							      n));
 				// Track on/off from what was actually RELAYED (= the controller's believed state): a
 				// BLOCKED stop must leave "on" set (controller may be latched -> reconnect stop-burst),
 				// a blocked ON must not set it (nothing reached the controller -> no spurious clicks).
@@ -213,7 +213,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				Serial.printf(
 					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
 					cmd, len, (unsigned)RELAY_MAXP);
-			relayEnqueue(cmd, pl, rl);
+			// relayHaptic bursts a 0x82/0x80 STOP (gain/type 0); non-haptic cmds enqueue once, unchanged.
+			relayHaptic(cmd, pl, rl);
 
 			// track from RELAYED frames only (see the OUTPUT path)
 			if (haptic82)

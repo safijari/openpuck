@@ -29,6 +29,14 @@
 #define HAPTIC_STOP_BURST 4u
 // max relayed payload bytes per entry: RF frame = [E3][len][05][rid][payload] and MAXLEN=64 -> 60
 #define RELAY_MAXP 60u
+// Proactive post-(re)connect haptic re-init: this many shots, this far apart, starting ~200ms after the link
+// comes up -- covers ~0.2s..3s so the brief controller-side connect buzz gets reset before it can sustain.
+#define HAPTIC_REINIT_SHOTS 8u
+#define HAPTIC_REINIT_GAP_MS 350u
+// After haptic activity, if it's been idle this long, fire one clear-re-init -- kills a latch that engaged
+// during use (a buzz that starts seconds after connect and won't self-clear). Long enough not to fire between
+// rapid in-game haptics; short enough to clear a stuck buzz soon after the user pauses.
+#define HAPTIC_CLEAR_IDLE_MS 1200u
 // Controller power-off: hapticSendShutdown() relays Steam's confirmed "turn off controller" command (feature-0x01
 // cmd 0x9F, payload "off!" -- captured from the real puck). Sent as a small burst because the RF relay is NO-ACK.
 #define HAPTIC_SHUTDOWN_SHOTS 3u
@@ -37,8 +45,10 @@
 // Enqueue one host->controller report: rid = report/command id, payload = the bytes AFTER [cmd][len] (what
 // goes on the air). ISR-safe (brief PRIMASK critical section). Returns false (dropped) when the ring is full.
 bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen);
-// Same, but forces the type-01 LANDING framing (bypasses the discard whitelist). Connect-init use only.
-bool relayEnqueueLand(uint8_t rid, const uint8_t *payload, uint8_t plen);
+// Relay a haptic actuator report (0x80-0x86), BURSTING a stop (0x82 gain==0 / 0x80 type==0) HAPTIC_STOP_BURST
+// times so a single NO-ACK loss can't leave the actuator latched (the buzz). ON pulses enqueue once. Use this
+// for the host->controller haptic relay instead of relayEnqueue.
+bool relayHaptic(uint8_t rid, const uint8_t *payload, uint8_t plen);
 
 // anything still queued (xinput uses it to pace rumble re-queues)
 bool relayPending();
@@ -99,11 +109,7 @@ void hapticInit();
 // per-loop upkeep: link-edge markers + steam 0x82 quiet timeout + fires the scheduled re-init
 void hapticTask();
 
-// Replay the real puck's connect-time haptic-engine init (landing-framed 0x87 enable+config + 0x81), lifted
-// byte-for-byte from the hardware sniff. Initializes the engine so Steam's haptics don't latch. Leaves the
-// subsystem ENABLED (omits the puck's 0x30=0x00 disable tail, which would freeze OpenPuck's always-on gyro).
-void hapticConnectInit();
-// Manual "clear stuck buzz" (WebUSB op) -- alias for hapticConnectInit (the faithful landing init).
+// replay Steam's haptic-subsystem re-init to the controller -> clears a latched/stuck buzz
 void hapticReinit();
 // Called from rf_link the instant a controller (re)connect is detected (an F-reply after a gap): blocks haptic
 // relays for HAPTIC_RECONNECT_BLOCK_MS and schedules a re-init just after, to keep the freshly-booted
