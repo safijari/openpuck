@@ -42,6 +42,26 @@ jobs:
             --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4" \
             OpenPuck
 
+      - name: Copy build outputs before cleanup
+        run: |
+          # The Adafruit core stores outputs in a temp dir; copy them out
+          # The env var ARDUINO_BUILD_OUTPUT_DIR points to the output dir
+          OUTPUT_DIR="${ARDUINO_BUILD_OUTPUT_DIR:-.}"
+          echo "ARDUINO_BUILD_OUTPUT_DIR=$OUTPUT_DIR"
+          
+          # List what we find in the output dir
+          if [ -d "$OUTPUT_DIR" ]; then
+            echo "Files in $OUTPUT_DIR:"
+            ls -la "$OUTPUT_DIR"
+            
+            # Copy any binary/uf2/elf/zip files to build_outputs
+            mkdir -p build_outputs
+            find "$OUTPUT_DIR" -maxdepth 1 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \;
+          fi
+          
+          echo "build_outputs contents:"
+          ls -la build_outputs/
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
