@@ -41,14 +41,7 @@ static unsigned long g_rumble80Ms = 0;
 // Steam/Triton rumble is latched on until an explicit zero report
 static bool g_rumble80On = false;
 
-// when to fire the next post-reconnect haptic re-init (0 = none scheduled)
-static unsigned long g_reinitAt = 0;
-
-// how many re-init shots remain in this connect window
-static uint8_t g_reinitLeft = 0;
-
-// haptic activity happened -> arm a clear once it goes idle (catches a
-// latch that engaged during/after use, even seconds after connect)
+// haptic activity happened (tracked for the 0x82 quiet timeout; the idle-clear that read it is gone)
 static bool g_hapClearArmed = false;
 
 // ---- relay ring: multi-producer (USB ISR + loop-context console/xinput), single consumer (poll flush) ----
@@ -435,16 +428,13 @@ void hapticOnReconnect()
 
 	// drop any haptic ON queued before the link came up
 	hapticCancelPendingOn();
-	// Re-init the haptic engine repeatedly across the settle window rather than waiting for the block to end: the
-	// brief connect buzz engages early (during the block, controller-internal), so a single late shot misses it.
-	// The re-init is settings only (no haptic play) and Steam haptics are blocked throughout, so it can't buzz.
-	g_reinitAt = millis() + 200u; // first reset ~200ms after (re)connect
-
-	// then every HAPTIC_REINIT_GAP_MS across the window
-	g_reinitLeft = HAPTIC_REINIT_SHOTS;
+	// NO re-init injection. The buzz is fixed at its root by bursting the haptic STOP (relayHaptic) so a lost
+	// NO-ACK stop can't latch the actuator -- so the old connect-time 0x81/0x87 re-init flood is redundant. It
+	// also injected in EVERY mode and could freeze the controller IMU in the emulated modes, so it's removed
+	// outright (all modes). We still hold haptics off for the 3s connect settle (block above). Be a pure relay.
 	uint8_t mk = 2;
 
-	// capture marker: RECONNECT detected (block+reinit armed)
+	// capture marker: RECONNECT detected (block armed, no reinit)
 	hapLogAdd(0xFD, 0xEE, &mk, 1);
 }
 void hapticTask()
@@ -463,14 +453,7 @@ void hapticTask()
 		hapLogAdd(0xFD, 0xEE, &mk, 1);
 	}
 	wasHapticLinkUp = up;
-	if (g_reinitAt && up &&
-	    (int32_t)(millis() - g_reinitAt) >=
-		    0) { // proactive haptic re-init across the connect window
-		hapticReinit();
-		g_reinitAt = (g_reinitLeft && --g_reinitLeft) ?
-				     (millis() + HAPTIC_REINIT_GAP_MS) :
-				     0;
-	}
+	// (Connect-time re-init flood removed -- the stop-burst is the real fix; see hapticOnReconnect.)
 	// Controller power-off on host SLEEP: send the power-off command (0x9F "off!") the instant the USB bus
 	// suspends, like the real puck. BUT only when USB power (VBUS) is still present -- i.e. a genuine host sleep,
 	// NOT a cable unplug. Pulling the dongle ALSO trips the suspend edge (in the brief window it runs on residual
@@ -492,13 +475,8 @@ void hapticTask()
 		g_haptic82On = false;
 	if (g_rumble80On && millis() - g_rumble80Ms > 2500u)
 		hapticSteamRumble(0, 0);
-	// Haptic activity has gone idle for a while -> fire one re-init to clear any latch it left behind (the buzz
-	// that engages during/after use and won't self-clear, incl. after a mode switch). Fires only after a quiet
-	// gap, so it never interrupts active haptics; the brightness-less re-init is silent (settings, no play, no
-	// LED). Runs in ALL modes (the controller-side latch is mode-independent).
-	if (g_hapClearArmed &&
-	    (millis() - g_haptic82Ms) > HAPTIC_CLEAR_IDLE_MS) {
-		g_hapClearArmed = false;
-		hapticReinit();
-	}
+	// Idle-clear re-init removed: with the stop-burst (relayHaptic) a lost stop can't latch the actuator, so
+	// there's no during-use latch to clear -- and the old idle-clear injected 0x81/0x87 ~1.2s after every haptic
+	// burst in ALL modes (a likelier latch CAUSE than cure, and an IMU-freeze risk in emulated modes).
+	(void)g_hapClearArmed;
 }

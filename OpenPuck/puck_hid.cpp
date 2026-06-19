@@ -307,7 +307,6 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 			  uint8_t *buf, uint16_t reqlen)
 {
-	(void)rid;
 	if (type != HID_REPORT_TYPE_FEATURE)
 		return 0;
 
@@ -319,6 +318,11 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	if (n > reqlen)
 		n = reqlen;
 	memcpy(buf, S.resp, n);
+	// Log feature READS (we already log writes as "# SET"). Battery-hunt: shows whether Steam polls a specific
+	// report / the last-answered cmd when the gamepad is active (resp[0]=the cmd we're echoing back).
+	if (Serial.availableForWrite() > 60)
+		Serial.printf("# GET if%d rid=%02X resp0=%02X len=%u\n", slot,
+			      rid, S.resp[0], (unsigned)n);
 	return n;
 }
 
@@ -421,8 +425,20 @@ void SteamPuckController::onAuxReport(uint8_t rid, const uint8_t *data,
 		return;
 	if (g_connSlot < 0 || g_connSlot >= NSLOT)
 		return;
-	if (g_slot[g_connSlot].used && hid[g_connSlot].ready())
-		hid[g_connSlot].sendReport(rid, data, n);
+	if (!(g_slot[g_connSlot].used && hid[g_connSlot].ready()))
+		return;
+	// Send EXACTLY the descriptor-declared length, zero-padded. Hosts (macOS especially -- see the HID
+	// report-length note) DROP an input report whose length doesn't match its declared size, so a short/odd 0x43
+	// never reaches Steam and its battery indicator stays at the default (100%) even though the value is correct
+	// in our own readout. 0x43 (power/battery) is declared 14 bytes, 0x44 (status event) 5 bytes. Battery % sits
+	// in the early bytes, so trailing zero-pad doesn't move it; we only normalize the frame length.
+	uint8_t declared = (rid == 0x43) ? 14u : (rid == 0x44) ? 5u : n;
+	uint8_t buf[14] = { 0 };
+	uint8_t cn = (n < declared) ? n : declared;
+	if (declared > sizeof buf)
+		declared = sizeof buf; // safety; both known aux reports fit
+	memcpy(buf, data, cn);
+	hid[g_connSlot].sendReport(rid, buf, declared);
 }
 
 // wake nudge: a bare USB resume signal is NOT enough to wake some hosts (Windows in particular) -- they only

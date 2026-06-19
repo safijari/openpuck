@@ -29,14 +29,6 @@
 #define HAPTIC_STOP_BURST 4u
 // max relayed payload bytes per entry: RF frame = [E3][len][05][rid][payload] and MAXLEN=64 -> 60
 #define RELAY_MAXP 60u
-// Proactive post-(re)connect haptic re-init: this many shots, this far apart, starting ~200ms after the link
-// comes up -- covers ~0.2s..3s so the brief controller-side connect buzz gets reset before it can sustain.
-#define HAPTIC_REINIT_SHOTS 8u
-#define HAPTIC_REINIT_GAP_MS 350u
-// After haptic activity, if it's been idle this long, fire one clear-re-init -- kills a latch that engaged
-// during use (a buzz that starts seconds after connect and won't self-clear). Long enough not to fire between
-// rapid in-game haptics; short enough to clear a stuck buzz soon after the user pauses.
-#define HAPTIC_CLEAR_IDLE_MS 1200u
 // Controller power-off: hapticSendShutdown() relays Steam's confirmed "turn off controller" command (feature-0x01
 // cmd 0x9F, payload "off!" -- captured from the real puck). Sent as a small burst because the RF relay is NO-ACK.
 #define HAPTIC_SHUTDOWN_SHOTS 3u
