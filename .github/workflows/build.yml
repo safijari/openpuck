@@ -44,39 +44,53 @@ jobs:
 
       - name: Copy build outputs before cleanup
         run: |
-          # The Adafruit core stores outputs in build/<board-id>/ directory
-          # Also check .arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/
+          # The Adafruit core stores outputs in .arduino15/packages/adafruit/hardware/nrf52/<version>/tools/gen_sketch/<board-id>/
+          # Also check standard ARDUINO_BUILD_OUTPUT_DIR
           echo "Searching for build outputs..."
           
-          # Find all possible output locations
-          SEARCH_PATHS=(
+          # Define all possible output locations
+          OUTPUT_LOCATIONS=(
+            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*/build_feather52840"
+            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*/build_feather52840_XXAA"
+            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*/build_feather52840_nano"
+            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*/build_feather52840_nano_XXAA"
             "build"
-            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*"
+            "build_outputs"
           )
           
-          FOUND_FILES=""
-          for path in "${SEARCH_PATHS[@]}"; do
-            if [ -d "$path" ]; then
-              echo "Checking $path..."
-              ls -la "$path" 2>/dev/null || true
-              
-              # Copy any binary/uf2/elf/zip files
-              mkdir -p build_outputs
-              find "$path" -maxdepth 1 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
+          # Create destination directory
+          mkdir -p build_outputs
+          
+          # Search each location for firmware files
+          for loc in "${OUTPUT_LOCATIONS[@]}"; do
+            # Expand glob patterns
+            if [[ "$loc" == *"/*"* ]]; then
+              expanded=$(echo "$loc" | sed 's|\*/|/build_feather52840|;s|/build_feather52840|/build_feather52840_XXAA|;s|/build_feather52840_XXAA|/build_feather52840_nano|;s|/build_feather52840_nano|/build_feather52840_nano_XXAA|' | tr ' ' '\n' | grep -v '^$')
+              for dir in $expanded; do
+                if [ -d "$dir" ]; then
+                  echo "Found output directory: $dir"
+                  # Copy firmware files
+                  find "$dir" -maxdepth 1 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
+                fi
+              done
+            elif [ -d "$loc" ]; then
+              echo "Found output directory: $loc"
+              find "$loc" -maxdepth 1 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
             fi
           done
           
-          # Also search recursively in case files are in subdirectories
-          echo "Searching recursively..."
-          find . -maxdepth 3 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
+          # Also search recursively in .arduino15 for any firmware files
+          echo "Searching .arduino15 recursively..."
+          find .arduino15 -maxdepth 4 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
           
-           # Only list contents if directory exists and has files
-           if [ -d "build_outputs" ] && [ "$(ls -A build_outputs 2>/dev/null)" ]; then
-             echo "build_outputs contents:"
-             ls -la build_outputs/
-           else
-             echo "build_outputs is empty or doesn't exist (no firmware files found)"
-           fi
+          # Report results
+          if [ -d "build_outputs" ] && [ "$(ls -A build_outputs 2>/dev/null)" ]; then
+            echo "build_outputs contents:"
+            ls -la build_outputs/
+            echo "Found $(ls -1 build_outputs | wc -l) firmware files"
+          else
+            echo "build_outputs is empty or doesn't exist (no firmware files found)"
+          fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
