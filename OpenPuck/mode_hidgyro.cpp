@@ -27,6 +27,48 @@ static const uint8_t GYRO_HID_DESC[] = {
 static unsigned long g_gyroLastMs = 0;
 static Adafruit_USBD_HID g_hidGyro;
 
+static const uint8_t DS4_MAC[6] = { 0x00, 0x1B, 0xDC, 0x4F, 0x55, 0x53 };
+
+// GET_FEATURE handler. SteamOS drives the DS4 (054C:05C4) with hid-playstation (older kernels: hid-sony); both
+// issue GET_FEATURE requests during probe (calibration + MAC + firmware) and ABORT the bind if any STALLs or
+// returns the wrong length. ps_get_report enforces, on every bus: the response is the exact report size with the
+// report id as its first byte (data fields then start at buf[1]); CRC is only checked over Bluetooth. macOS/SDL
+// are lenient (re-derive), which is why the DS4 shows up there but not on a Deck. TinyUSB writes the report id
+// itself and hands us the buffer PAST it, so we fill only the PAYLOAD and return size-1. We satisfy both drivers'
+// report ids. (Sizes per drivers/hid/hid-playstation.c: 0x02=37, 0x12=16, 0xA3=49; legacy hid-sony MAC 0x81=7.)
+static uint16_t hidGyroGet(uint8_t rid, hid_report_type_t type, uint8_t *buf,
+			   uint16_t reqlen)
+{
+	if (type != HID_REPORT_TYPE_FEATURE || !buf || reqlen == 0)
+		return 0;
+	memset(buf, 0, reqlen);
+	switch (rid) {
+	case 0x02: // motion calibration (37 incl id)
+		if (reqlen < 36)
+			return 0;
+		psNeutralCalib(buf);
+		return 36;
+	case 0x12: // pairing info / MAC, hid-playstation (16 incl id)
+		if (reqlen < 15)
+			return 0;
+		memcpy(buf, DS4_MAC, 6);
+		return 15;
+	case 0x81: // MAC, legacy hid-sony USB (7 incl id)
+		if (reqlen < 6)
+			return 0;
+		memcpy(buf, DS4_MAC, 6);
+		return 6;
+	case 0xA3: // firmware / hardware info (49 incl id)
+		if (reqlen < 48)
+			return 0;
+		// non-zero version (contents not validated over USB)
+		buf[0] = 0x01;
+		return 48;
+	default:
+		return 0;
+	}
+}
+
 static void hidGyroSet(uint8_t rid, hid_report_type_t type, uint8_t const *b,
 		       uint16_t n)
 {
@@ -71,10 +113,10 @@ static void hidGyroBuild(uint8_t out[63])
 	out[8] = g_in.rt;
 	out[12] = g_in.gx & 0xFF;
 	out[13] = g_in.gx >> 8;
-	out[14] = g_in.gy & 0xFF;
-	out[15] = g_in.gy >> 8;
-	out[16] = (-g_in.gz) & 0xFF;
-	out[17] = (-g_in.gz) >> 8;
+	out[14] = g_in.gz & 0xFF;
+	out[15] = g_in.gz >> 8;
+	out[16] = (-g_in.gy) & 0xFF;
+	out[17] = (-g_in.gy) >> 8;
 	out[18] = g_in.ax & 0xFF;
 	out[19] = g_in.ax >> 8;
 	out[20] = g_in.ay & 0xFF;
@@ -107,7 +149,7 @@ void HidGyroController::begin()
 	USBDevice.setManufacturerDescriptor("Sony Computer Entertainment");
 	USBDevice.setProductDescriptor("Wireless Controller");
 	g_hidGyro.enableOutEndpoint(true);
-	g_hidGyro.setReportCallback(NULL, hidGyroSet);
+	g_hidGyro.setReportCallback(hidGyroGet, hidGyroSet);
 	g_hidGyro.setReportDescriptor(GYRO_HID_DESC, sizeof GYRO_HID_DESC);
 
 	// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)

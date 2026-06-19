@@ -30,14 +30,15 @@
 #define TB_LB 0x80000u
 #define TB_RPADT 0x200000u
 #define TB_RPADC 0x400000u
-
-// virtual: PS Touch Click (back-paddle/QAM target, not a real Triton button)
-#define TB_TOUCH 0x100000u
-
-// virtual: PS5 Mute button (back-paddle/QAM target, not a real Triton button)
-#define TB_MUTE 0x1000000u
 #define TB_LPADT 0x2000000u
 #define TB_LPADC 0x4000000u
+
+// Virtual PS targets, settable ONLY via a back-paddle/QAM remap (psOrBackCode / tritonFromCode), never by the
+// controller itself. They live on bits 30/31 -- the only bits the SC2 0x45 report does NOT use (see PROTOCOL.md
+// §8.1; bits 0..29 are all real). They originally aliased 0x00100000 (right stick touch) and 0x01000000 (left
+// stick touch), so merely RESTING a thumb on a capacitive stick fired the DualSense trackpad-click / mute.
+#define TB_TOUCH 0x40000000u // PS touchpad click
+#define TB_MUTE 0x80000000u // PS5 mute
 
 // all four back paddles held -> mode-switch chord guard
 #define CHORD_BACK4 (TB_R4 | TB_L4 | TB_R5 | TB_L5)

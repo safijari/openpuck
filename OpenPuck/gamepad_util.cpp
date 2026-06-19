@@ -2,6 +2,26 @@
 #include "triton.h"
 #include "config.h"
 
+void psNeutralCalib(uint8_t *buf)
+{
+	// Payload offsets = kernel buf[] index minus 1. buf[0..5] gyro bias stays zero (caller memset). Symmetric
+	// ranges -> non-zero divisors on the host.
+	le16(buf + 6, 2844);
+	le16(buf + 8, -2844); // gyro pitch +/-
+	le16(buf + 10, 2844);
+	le16(buf + 12, -2844); // gyro yaw +/-
+	le16(buf + 14, 2844);
+	le16(buf + 16, -2844); // gyro roll +/-
+	le16(buf + 18, 2844);
+	le16(buf + 20, 2844); // gyro speed +/- (sum != 0)
+	le16(buf + 22, 8192);
+	le16(buf + 24, -8192); // accel X +/-
+	le16(buf + 26, 8192);
+	le16(buf + 28, -8192); // accel Y +/-
+	le16(buf + 30, 8192);
+	le16(buf + 32, -8192); // accel Z +/-
+}
+
 uint8_t swStick(int16_t v, bool invert)
 {
 	int32_t a = 0x80 + (invert ? -((int32_t)v >> 8) : ((int32_t)v >> 8));
