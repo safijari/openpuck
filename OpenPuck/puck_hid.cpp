@@ -197,14 +197,22 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// 0x87 settings, 0x9F power-off). Log shows cmd as "rid"; bytes start [cmd][len]...
 		hapLogAdd((uint8_t)slot, cmd, b, n);
 		bool haptic82 = (cmd == 0x82 && len <= pln);
+		// ALL actuator reports 0x80-0x86 (not just 0x82) are gated like a haptic: blocked during the connect
+		// settle / lizard / post-resume mute. This matters at CONNECT -- Steam's handshake fires 0x81 haptic
+		// TRIGGERS, and since our framing discards Steam's bracketing 0x87 engine-config (whitelist) but the
+		// 0x81 still lands, those triggers played on an un-configured engine = the spurious connect buzzes the
+		// real puck never makes. Holding 0x80-0x86 off during the 3s settle suppresses them. 0x87+ settings and
+		// 0x9F power-off are NOT actuators and still relay. (The OUTPUT path already gates 0x80-0x86 this way;
+		// this aligns the feature path, which previously leaked 0x81/0x83-0x86 straight through.)
+		bool isActuator = (cmd >= 0x80 && cmd <= 0x86);
 
 		bool muted = g_resumeMs &&
 			     millis() - g_resumeMs < POST_RESUME_MUTE_MS;
 
 		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop)
 		bool relayOk = hapticRelaySlotOk(slot) &&
-			       !(haptic82 && (lizardActive() || muted));
-		if (relayOk && (!haptic82 || !haptic82Blocked())) {
+			       !(isActuator && (lizardActive() || muted));
+		if (relayOk && (!isActuator || !haptic82Blocked())) {
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
 			// 18B cap, and the chopped frames were why those settings never landed on the controller.

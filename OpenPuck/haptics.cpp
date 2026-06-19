@@ -93,16 +93,12 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen)
 	__set_PRIMASK(pm);
 	return true;
 }
-// Relay a haptic actuator report (0x80-0x86), BURSTING a stop. CONFIRMED in the real-puck sniff (during-play,
-// t=49075..50230): the glide is a stream of `82 [side] 01 [gain]`, and Steam DOES send explicit stops
-// `82 [side] 01 00` (gain 0). OpenPuck relays each frame exactly ONCE over a NO-ACK link, so a single dropped
-// stop leaves that side's actuator driven -> the persistent buzz that survives mode switches and only the Steam
-// button (controller-side reset) clears. The fix is the same one already used for power-off (hapticSendShutdown
-// bursts because "a single lost frame must not leave the controller on"): send the STOP several times. A gain-0
-// stop is SILENT, so repeating it adds no pad clicks -- unlike an ON pulse, which we still send exactly once.
-//   * 0x82 stop = gain byte (payload[2]) == 0     (per side; Steam sends one stop frame per side)
-//   * 0x80 stop = type byte (payload[0]) == 0     (the rumble off/zero report)
-// Non-haptic rids (LED/settings/power-off routed through here) are never stops -> single enqueue, unchanged.
+// Relay a haptic actuator report (0x80-0x86). A STOP (0x82 gain-0 / 0x80 zero) is enqueued HAPTIC_STOP_BURST
+// times ACROSS poll cycles (distinct NO-ACK frames), not retransmitted in-cycle: an in-cycle same-PID retransmit
+// RE-TRIGGERS the actuator (the controller does NOT dedup our raw-radio retransmits -> extra clicks / a buzz on
+// connect -- proven on hardware), so reliable-delivery-by-retransmit is NOT viable here. Spreading distinct stop
+// frames across cycles raises the odds one lands without re-firing. ON pulses go once (bursting ON = stacked
+// clicks). A dropped stop over the NO-ACK relay is what latches the actuator = the persistent buzz.
 bool relayHaptic(uint8_t rid, const uint8_t *p, uint8_t n)
 {
 	bool stop = (rid == 0x82 && n >= 3 && p[2] == 0) ||
@@ -323,20 +319,16 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			uint8_t rl = m.len;
 			if (rl > RELAY_MAXP)
 				rl = RELAY_MAXP;
-			// On-air sub-TLV framing. CONFIRMED from real puck<->controller sniffs (puck_sniffer): a command LANDS on
-			// the controller only with the type-01 + inner-len form  E3 [2+rl][01][rid][innerlen][data]; with the legacy
-			// form  E3 [1+rl][05][rid][data]  (no inner-len) the controller DISCARDS any 0x87+ command (it reads data[0]
-			// as the length).
+			// On-air sub-TLV framing. CONFIRMED from real puck<->controller sniffs (puck_sniffer): config/settings
+			// reports (rid >= 0x87) are only ACTED ON in the type-01 + inner-len form  E3 [2+rl][01][rid][innerlen][data];
+			// in the legacy form  E3 [1+rl][05][rid][data]  the controller mis-parses (reads data[0] as a length) and
+			// ignores them. Actuator reports (rid < 0x87, e.g. 0x82 haptic / 0x81 trigger) ACT in the legacy form.
 			//
-			// WHITELIST the landing form to EXACTLY the two commands that need it; everything else keeps legacy form:
-			//   * LED brightness  -- report 0x87 whose first register byte is 0x2D
-			//   * controller power-off -- report 0x9F ("off!")
-			// Steam ALSO sends other 0x87 passthrough writes during play -- the haptic-config block (reg 0x30 =
-			// IMU/subsystem enable, 0x34/0x35 = haptic amplitude). Landing those regresses BOTH: a landed 0x30 FREEZES
-			// the IMU (gyro stops) and landed 0x34/0x35 = the connect buzz. So keep this list tight.
-			bool land01 =
-				(m.rid == 0x9F) ||
-				(m.rid == 0x87 && rl >= 1 && m.data[0] == 0x2D);
+			// FULLY TRANSPARENT RELAY (2026-06-19): land ALL config/settings (rid >= 0x87) byte-for-byte like the
+			// real dongle -- haptic-engine config, IMU/haptic subsystem enable 0x30, amplitude 0x34/0x35, LED, 0x9F
+			// power-off. (Earlier we excluded reg 0x30 fearing a landed 0x30=0x00 would freeze the default-on gyro;
+			// now letting it through to test -- WATCH: gyro must keep streaming everywhere, idle/SDL/games.)
+			bool land01 = (m.rid >= 0x87);
 			uint8_t p[5 + RELAY_MAXP], plen;
 			if (land01) {
 				p[0] = g_relayOp;
@@ -359,9 +351,10 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1)
 
 			// copied out -> release the slot before the TX
 			g_rqTail = rqNext(g_rqTail);
-			// s1 carries a PID distinct from the GET poll that follows (caller cycles it), so the controller's ESB
-			// dedup never mistakes the GET for a retransmit of this relay. 80us RX window: the relay is NO-ACK, so
-			// don't burn the full ~1.2ms reply window (that halves the poll rate during haptics).
+			// Single-shot NO-ACK (80us window). In-cycle ack+retransmit was tried and REVERTED: the controller
+			// re-triggers our raw-radio retransmits (no effective dedup), so resending a stop fires the actuator
+			// again = spurious momentary haptics + a connect buzz. Stop robustness is the spread burst in
+			// relayHaptic (distinct frames across cycles), not retransmit.
 			rfConnTx(ch, s1, p, plen, 80);
 
 			// ONE relay per poll cycle (matches the real puck's pacing)
