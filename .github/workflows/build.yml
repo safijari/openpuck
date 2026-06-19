@@ -70,8 +70,13 @@ jobs:
           echo "Searching recursively..."
           find . -maxdepth 3 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
           
-          echo "build_outputs contents:"
-          ls -la build_outputs/
+           # Only list contents if directory exists and has files
+           if [ -d "build_outputs" ] && [ "$(ls -A build_outputs 2>/dev/null)" ]; then
+             echo "build_outputs contents:"
+             ls -la build_outputs/
+           else
+             echo "build_outputs is empty or doesn't exist (no firmware files found)"
+           fi
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
