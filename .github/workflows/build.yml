@@ -44,20 +44,31 @@ jobs:
 
       - name: Copy build outputs before cleanup
         run: |
-          # The Adafruit core stores outputs in a temp dir; copy them out
-          # The env var ARDUINO_BUILD_OUTPUT_DIR points to the output dir
-          OUTPUT_DIR="${ARDUINO_BUILD_OUTPUT_DIR:-.}"
-          echo "ARDUINO_BUILD_OUTPUT_DIR=$OUTPUT_DIR"
+          # The Adafruit core stores outputs in build/<board-id>/ directory
+          # Also check .arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/
+          echo "Searching for build outputs..."
           
-          # List what we find in the output dir
-          if [ -d "$OUTPUT_DIR" ]; then
-            echo "Files in $OUTPUT_DIR:"
-            ls -la "$OUTPUT_DIR"
-            
-            # Copy any binary/uf2/elf/zip files to build_outputs
-            mkdir -p build_outputs
-            find "$OUTPUT_DIR" -maxdepth 1 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \;
-          fi
+          # Find all possible output locations
+          SEARCH_PATHS=(
+            "build"
+            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*"
+          )
+          
+          FOUND_FILES=""
+          for path in "${SEARCH_PATHS[@]}"; do
+            if [ -d "$path" ]; then
+              echo "Checking $path..."
+              ls -la "$path" 2>/dev/null || true
+              
+              # Copy any binary/uf2/elf/zip files
+              mkdir -p build_outputs
+              find "$path" -maxdepth 1 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
+            fi
+          done
+          
+          # Also search recursively in case files are in subdirectories
+          echo "Searching recursively..."
+          find . -maxdepth 3 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
           
           echo "build_outputs contents:"
           ls -la build_outputs/
