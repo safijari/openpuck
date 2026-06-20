@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install adafruit-nrfutil
+        run: pip install adafruit-nrfutil
+
+      - name: Install Adafruit nRF52 core
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config set board_manager.additional_urls https://adafruit.github.io/arduino-board-index/package_adafruit_index.json
+          arduino-cli core update-index
+          arduino-cli core install adafruit:nrf52
+
+      - name: Generate version header
+        run: ./gen_version.sh
+
+      - name: Compile OpenPuck
+        run: |
+          mkdir -p build/openpuck build/cache/openpuck
+          arduino-cli compile \
+            -b adafruit:nrf52:feather52840 \
+            --clean \
+            --build-path build/cache/openpuck \
+            --output-dir build/openpuck \
+            --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4" \
+            OpenPuck
+
+      - name: Compile recovery build
+        run: |
+          mkdir -p build/openpuck-recovery build/cache/openpuck-recovery
+          arduino-cli compile \
+            -b adafruit:nrf52:feather52840 \
+            --clean \
+            --build-path build/cache/openpuck-recovery \
+            --output-dir build/openpuck-recovery \
+            --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4 -DOPK_FACTORY_RESET=1" \
+            OpenPuck
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p release_assets
+          REF="${GITHUB_REF_NAME}"
+          SAFE_REF="$(printf '%s' "$REF" | tr -c 'A-Za-z0-9._-' '-')"
+          SHA_SHORT="$(git rev-parse --short=8 HEAD)"
+          VERSION="${SAFE_REF}-${SHA_SHORT}"
+
+          find build/openpuck build/openpuck-recovery \
+            -maxdepth 1 -type f \
+            \( -name '*.uf2' -o -name '*.bin' -o -name '*.hex' -o -name '*.elf' -o -name '*.map' -o -name '*.zip' \) \
+            -print | while read -r f; do
+            base="$(basename "$f")"
+            dir="$(basename "$(dirname "$f")")"
+            if [ "$dir" = "openpuck-recovery" ]; then
+              flavor="factory-reset"
+            else
+              flavor="standard"
+            fi
+            cp "$f" "release_assets/OpenPuck-${VERSION}-${flavor}-${base}"
+          done
+          test -n "$(find release_assets -maxdepth 1 -type f -print -quit)"
+          ls -la release_assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ format('build-{0}', github.sha) }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ format('Build {0}', github.sha) }}
+          prerelease: true
+          files: release_assets/*
+          body: |
+            OpenPuck Firmware Release
+
+            Build: ${{ github.sha }}
+            Ref: ${{ github.ref_name }}
+
+            ### Files included:
+
+            - `.hex` files for manual flashing
+            - `.elf` and `.map` files for debugging with GDB/JTAG
+            - `.zip` files for Adafruit DFU tool
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

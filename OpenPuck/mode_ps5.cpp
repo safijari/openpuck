@@ -38,7 +38,13 @@ static const uint8_t PS5_HID_DESC[] = {
 #define PS5_STATUS_USB 0x1A // charging + level 10 (~100%)
 static unsigned long g_ps5LastMs = 0;
 static Adafruit_USBD_HID g_ps5;
+static const uint8_t PS5_MAC[6] = { 0x00, 0x1B, 0xDC, 0x4F, 0x55, 0x54 };
 
+// GET_FEATURE handler. SteamOS's hid-playstation reads calibration (0x05), pairing/MAC (0x09) and firmware
+// (0x20) during probe and ABORTS the bind unless each returns its EXACT size with the report id as the first
+// byte; CRC is checked only over Bluetooth. macOS/SDL are lenient, so the DualSense shows up there but not on a
+// Deck. TinyUSB writes the report id itself and hands us the buffer PAST it, so we fill only the PAYLOAD and
+// return size-1. Sizes per drivers/hid/hid-playstation.c: 0x05=41, 0x09=20, 0x20=64.
 static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 		       uint16_t reqlen)
 {
@@ -46,7 +52,7 @@ static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 		return 0;
 	memset(buf, 0, reqlen);
 	switch (rid) {
-	// capabilities: identify as DualSense-capable (SDL checks byte 2 == 0x28)
+	// capabilities: identify as DualSense-capable (SDL-only probe; hid-playstation never reads 0x03)
 	case 0x03: {
 		if (reqlen < 47)
 			return 0;
@@ -57,26 +63,23 @@ static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 		buf[4] = 0x0E; // sensors + lightbar + vibration capability bits
 		return 47;
 	}
-
-	// calibration: neutral-ish non-zero block so SDL's read succeeds
-	case 0x05: {
-		uint16_t n = reqlen < 40 ? reqlen : 40;
-		for (uint16_t i = 0; i < n; i++)
-			buf[i] = 0;
-		return n;
-	}
-	case 0x09: { // serial number feature
-		uint16_t n = reqlen < 20 ? reqlen : 20;
-		for (uint16_t i = 0; i < n && i < 12; i++)
-			buf[i] = (uint8_t)("010203040506"[i]);
-		return n;
-	}
-	case 0x20: { // firmware info
-		uint16_t n = reqlen < 63 ? reqlen : 63;
-		buf[0] = 0x01;
-		buf[1] = 0x00; // minimal non-zero firmware version
-		return n;
-	}
+	case 0x05: // motion calibration (41 incl id)
+		if (reqlen < 40)
+			return 0;
+		psNeutralCalib(buf);
+		return 40;
+	case 0x09: // pairing info / MAC (20 incl id)
+		if (reqlen < 19)
+			return 0;
+		// MAC at kernel buf[1..6] = payload[0..5]
+		memcpy(buf, PS5_MAC, 6);
+		return 19;
+	case 0x20: // firmware info (64 incl id)
+		if (reqlen < 63)
+			return 0;
+		buf[23] = 0x01; // hw_version (le32 @ kernel buf[24]) non-zero
+		buf[27] = 0x01; // fw_version (le32 @ kernel buf[28]) non-zero
+		return 63;
 	default:
 		return 0;
 	}
@@ -131,10 +134,10 @@ static void ps5Build(uint8_t out[63])
 		 ((b & TB_MUTE) ? 0x04 : 0);
 	out[15] = g_in.gx & 0xFF;
 	out[16] = g_in.gx >> 8;
-	out[17] = (-g_in.gz) & 0xFF;
-	out[18] = (-g_in.gz) >> 8;
-	out[19] = g_in.gy & 0xFF;
-	out[20] = g_in.gy >> 8;
+	out[17] = g_in.gz & 0xFF;
+	out[18] = g_in.gz >> 8;
+	out[19] = (-g_in.gy) & 0xFF;
+	out[20] = (-g_in.gy) >> 8;
 	out[21] = g_in.ax & 0xFF;
 	out[22] = g_in.ax >> 8;
 	out[23] = g_in.ay & 0xFF;

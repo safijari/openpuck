@@ -2,7 +2,8 @@ name: Build
 
 on:
   push:
-  pull_request:
+    branches:
+      - main
 
 jobs:
   compile:
@@ -32,9 +33,33 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install adafruit:nrf52
 
+      - name: Generate version header
+        run: ./gen_version.sh
+
       - name: Compile OpenPuck
         run: |
+          mkdir -p build/openpuck build/cache/openpuck
           arduino-cli compile \
             -b adafruit:nrf52:feather52840 \
+            --clean \
+            --build-path build/cache/openpuck \
+            --output-dir build/openpuck \
             --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4" \
             OpenPuck
+
+      - name: List build outputs
+        run: |
+          find build/openpuck -maxdepth 1 -type f -print | sort
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openpuck-firmware
+          retention-days: 7
+          path: |
+            build/openpuck/*.uf2
+            build/openpuck/*.bin
+            build/openpuck/*.hex
+            build/openpuck/*.elf
+            build/openpuck/*.map
+            build/openpuck/*.zip
