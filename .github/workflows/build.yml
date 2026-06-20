@@ -37,60 +37,18 @@ jobs:
 
       - name: Compile OpenPuck
         run: |
+          mkdir -p build/openpuck build/cache/openpuck
           arduino-cli compile \
             -b adafruit:nrf52:feather52840 \
+            --clean \
+            --build-path build/cache/openpuck \
+            --output-dir build/openpuck \
             --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4" \
             OpenPuck
 
-      - name: Copy build outputs before cleanup
+      - name: List build outputs
         run: |
-          # The Adafruit core stores outputs in .arduino15/packages/adafruit/hardware/nrf52/<version>/tools/gen_sketch/<board-id>/
-          # Also check standard ARDUINO_BUILD_OUTPUT_DIR
-          echo "Searching for build outputs..."
-          
-          # Define all possible output locations
-          OUTPUT_LOCATIONS=(
-            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*/build_feather52840"
-            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*/build_feather52840_XXAA"
-            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*/build_feather52840_nano"
-            ".arduino15/packages/adafruit/hardware/nrf52/*/tools/gen_sketch/*/build_feather52840_nano_XXAA"
-            "build"
-            "build_outputs"
-          )
-          
-          # Create destination directory
-          mkdir -p build_outputs
-          
-          # Search each location for firmware files
-          for loc in "${OUTPUT_LOCATIONS[@]}"; do
-            # Expand glob patterns
-            if [[ "$loc" == *"/*"* ]]; then
-              expanded=$(echo "$loc" | sed 's|\*/|/build_feather52840|;s|/build_feather52840|/build_feather52840_XXAA|;s|/build_feather52840_XXAA|/build_feather52840_nano|;s|/build_feather52840_nano|/build_feather52840_nano_XXAA|' | tr ' ' '\n' | grep -v '^$')
-              for dir in $expanded; do
-                if [ -d "$dir" ]; then
-                  echo "Found output directory: $dir"
-                  # Copy firmware files
-                  find "$dir" -maxdepth 1 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
-                fi
-              done
-            elif [ -d "$loc" ]; then
-              echo "Found output directory: $loc"
-              find "$loc" -maxdepth 1 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
-            fi
-          done
-          
-          # Also search recursively in .arduino15 for any firmware files
-          echo "Searching .arduino15 recursively..."
-          find .arduino15 -maxdepth 4 -type f \( -name "*.uf2" -o -name "*.bin" -o -name "*.elf" -o -name "*.zip" \) -print -exec cp {} "build_outputs/" \; 2>/dev/null || true
-          
-          # Report results
-          if [ -d "build_outputs" ] && [ "$(ls -A build_outputs 2>/dev/null)" ]; then
-            echo "build_outputs contents:"
-            ls -la build_outputs/
-            echo "Found $(ls -1 build_outputs | wc -l) firmware files"
-          else
-            echo "build_outputs is empty or doesn't exist (no firmware files found)"
-          fi
+          find build/openpuck -maxdepth 1 -type f -print | sort
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -98,7 +56,9 @@ jobs:
           name: openpuck-firmware
           retention-days: 7
           path: |
-            **/*.uf2
-            **/*.bin
-            **/*.elf
-            **/*.zip
+            build/openpuck/*.uf2
+            build/openpuck/*.bin
+            build/openpuck/*.hex
+            build/openpuck/*.elf
+            build/openpuck/*.map
+            build/openpuck/*.zip
