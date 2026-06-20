@@ -30,3 +30,4 @@ extern bool g_pairing;
 bool recEmpty(const uint8_t *r);
 void loadBonds();
 void saveBonds();
+int bondedSlotCount();

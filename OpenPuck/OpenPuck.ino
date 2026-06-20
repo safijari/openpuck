@@ -103,8 +103,10 @@ void setup()
 	if (puckMode) {
 		USBDevice.setSerialDescriptor(g_unit);
 	} else {
-		snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c", g_unit,
-			 MODE_SUFFIX[g_usbMode - 1]);
+		// Bond count in serial so Windows invalidates its cached config descriptor if the count changes.
+		snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c%d", g_unit,
+			 MODE_SUFFIX[g_usbMode - 1],
+			 bondedSlotCount() > 0 ? bondedSlotCount() : 1);
 		USBDevice.setSerialDescriptor(g_usbSerial);
 	}
 

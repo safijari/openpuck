@@ -169,17 +169,19 @@ void SwitchHoriController::begin()
 {
 	USBDevice.setID(0x0F0D, 0x0092);
 
-	// Windows caches config by VID:PID:bcdDevice, so any interface change MUST bump this. Bumped 0x0202 ->
-	// 0x0203 for the 4-HORIPAD enumeration (3 more HID interfaces vs the original single).
-	USBDevice.setDeviceVersion(0x0203);
+	int n = bondedSlotCount();
+	USBDevice.setDeviceVersion(
+		(uint16_t)(0x0210 + (uint16_t)(n > 0 ? n - 1 : 0)));
 	USBDevice.setManufacturerDescriptor("HORI CO.,LTD.");
 	USBDevice.setProductDescriptor("POKKEN CONTROLLER");
 	for (int s = 0; s < NSLOT; s++) {
+		if (n > 0 && !g_slot[s].used)
+			continue;
+		if (n == 0 && s > 0)
+			break;
 		g_switch[s].enableOutEndpoint(true);
 		g_switch[s].setReportDescriptor(SWITCH_HID_DESC,
 						sizeof SWITCH_HID_DESC);
-
-		// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
 		g_switch[s].setPollInterval(1);
 		g_switch[s].begin();
 	}

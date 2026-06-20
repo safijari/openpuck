@@ -45,3 +45,12 @@ void loadBonds()
 		}
 	f.close();
 }
+
+int bondedSlotCount()
+{
+	int n = 0;
+	for (int i = 0; i < NSLOT; i++)
+		if (g_slot[i].used)
+			n++;
+	return n;
+}

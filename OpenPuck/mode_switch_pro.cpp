@@ -683,25 +683,25 @@ static jc_setcb_t const JC_SETCB[NSLOT] = { jcSet0, jcSet1, jcSet2, jcSet3 };
 void SwitchProController::begin()
 {
 	USBDevice.setID(0x057E, 0x2009);
-	// bumped from 0x0211 for 1ms poll interval (Windows caches config by VID:PID:bcdDevice). Bumped
-	// 0x0212 -> 0x0213 for the 4-Pro enumeration (3 more HID interfaces vs the original).
-	USBDevice.setDeviceVersion(0x0213);
+	int n = bondedSlotCount();
+	USBDevice.setDeviceVersion(
+		(uint16_t)(0x0220 + (uint16_t)(n > 0 ? n - 1 : 0)));
 	USBDevice.setManufacturerDescriptor("Nintendo Co., Ltd.");
 	USBDevice.setProductDescriptor("Pro Controller");
 	jcBuildStickCal();
 
-	// restore any persisted Switch motion calibration (per-unit IMU bias correction). Per-slot files.
 	loadUserCal();
-	swProLoadCfg(); // restore report-rate + gyro-scale settings
+	swProLoadCfg();
 	initJcMacs();
 	for (int s = 0; s < NSLOT; s++) {
+		if (n > 0 && !g_slot[s].used)
+			continue;
+		if (n == 0 && s > 0)
+			break;
 		g_swPro[s].enableOutEndpoint(true);
-		// answer the Nintendo USB handshake + subcommands (else Steam never binds it)
 		g_swPro[s].setReportCallback(NULL, JC_SETCB[s]);
 		g_swPro[s].setReportDescriptor(SWPRO_HID_DESC,
 					       sizeof SWPRO_HID_DESC);
-
-		// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
 		g_swPro[s].setPollInterval(1);
 		g_swPro[s].begin();
 	}

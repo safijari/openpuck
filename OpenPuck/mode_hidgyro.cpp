@@ -186,19 +186,21 @@ void HidGyroController::begin()
 {
 	USBDevice.setID(0x054C, 0x05C4);
 
-	// Host re-reads config by VID:PID:serial (per-mode suffix); bump invalidates any cached descriptor.
-	// Bumped 0x0104 -> 0x0105 for the 4-DS4 enumeration (3 more HID interfaces vs the original).
-	USBDevice.setDeviceVersion(0x0105);
+	int n = bondedSlotCount();
+	USBDevice.setDeviceVersion(
+		(uint16_t)(0x0120 + (uint16_t)(n > 0 ? n - 1 : 0)));
 	USBDevice.setManufacturerDescriptor("Sony Computer Entertainment");
 	USBDevice.setProductDescriptor("Wireless Controller");
 	initDs4Macs();
 	for (int s = 0; s < NSLOT; s++) {
+		if (n > 0 && !g_slot[s].used)
+			continue;
+		if (n == 0 && s > 0)
+			break;
 		g_hidGyro[s].enableOutEndpoint(true);
 		g_hidGyro[s].setReportCallback(DS4_GETCB[s], DS4_SETCB[s]);
 		g_hidGyro[s].setReportDescriptor(GYRO_HID_DESC,
 						 sizeof GYRO_HID_DESC);
-
-		// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
 		g_hidGyro[s].setPollInterval(1);
 		g_hidGyro[s].begin();
 	}

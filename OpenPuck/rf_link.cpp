@@ -57,7 +57,13 @@ volatile uint8_t g_battery[NSLOT] = { 0 };
 int g_curSlot = -1;
 
 // ---- internal counters / timers ----
-static uint8_t g_e3pid = 0;
+// ESB PID is 2 bits. The controller dequeues a FRESH report only when the poll's PID differs from the
+// last one it saw on that pipe; a repeated PID reads as a retransmit and returns the SAME (stale) report.
+// PER SLOT, because a single shared counter advances by (2 * nWarm) per cycle -- with 2 controllers that's
+// +4 per cycle = 0 mod 4, so each slot's GET PID is constant => the controller never dequeues => ~60 new/s
+// instead of ~400. Each slot's counter increments once per poll-of-that-slot so it cycles 0,1,2,3 cleanly.
+static uint8_t g_pollPid[NSLOT] = {};
+static uint8_t g_relayPid[NSLOT] = {};
 static uint32_t g_stPoll = 0, g_stF1 = 0, g_stF3 = 0;
 static unsigned long g_stMs = 0;
 // Per-slot dedupe seq + per-slot new-report counter (the real puck sends 0x45 per controller; merging all
@@ -66,6 +72,7 @@ static uint8_t g_lastSeq[NSLOT] = { 0 };
 static uint32_t g_stNew = 0;
 static uint32_t g_stCrc = 0, g_stNoRx = 0;
 static uint32_t g_chF1[3] = { 0, 0, 0 };
+// Cycle gate: fires once per g_pollUs; each fire polls every warm slot so all run at ~250 Hz.
 static uint32_t g_lastPollUs = 0;
 static uint32_t g_connRx = 0;
 static unsigned long g_lastSessBeacon = 0, g_lastDisc = 0;
@@ -599,30 +606,33 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 	return rxlen;
 }
 
-// Drive the connected-mode sequence one step per call. Round-robins the used slots, doing ONE slot's worth
-// of E7/relay/E3 per cycle. Per-slot poll rate = g_pollUs * usedSlotCount; with 1 controller 4ms/250Hz, with
-// 4 16ms/62.5Hz (matches the real puck's reported 4-controller pacing). g_curSlot is set before every TX
-// and consumed by the decode (g_in[g_curSlot]) and the haptic flush.
+// Throttle: bonded slots that haven't replied in SLOT_COLD_MS are polled at most every SLOT_COLD_RETRY_MS
+// instead of every cycle. This keeps the online controllers at full 250 Hz while barely touching offline ones.
+#define SLOT_COLD_MS 5000u
+#define SLOT_COLD_RETRY_MS 2000u
+static unsigned long g_slotLastAttemptMs[NSLOT] = {};
+
+// Drive the connected-mode sequence one step per call. Polls ONE bonded slot per call.
+// Gate fires at g_pollUs / nBonded so each warm slot gets ~250 Hz in round-robin order.
+// "Cold" means the slot WAS connected but has been silent for > SLOT_COLD_MS; slots that
+// have never replied stay warm so new controllers can connect at any time after boot.
+// Cold slots retry every SLOT_COLD_RETRY_MS with a full E7+relay+GET sequence.
 static void rfConnStep()
 {
-	// find the next used slot, starting AFTER the previous cycle's slot (round-robin).
-	int start = (g_curSlot < 0) ? 0 : ((g_curSlot + 1) % NSLOT);
-	int slot = -1;
-	for (int k = 0; k < NSLOT; k++) {
-		int s = (start + k) % NSLOT;
-		if (g_slot[s].used) {
-			slot = s;
+	int firstUsed = -1;
+	for (int k = 0; k < NSLOT; k++)
+		if (g_slot[k].used) {
+			firstUsed = k;
 			break;
 		}
-	}
-	if (slot < 0) {
+	if (firstUsed < 0) {
 		g_curSlot = -1;
 		return;
 	}
-	g_curSlot = slot;
+
 	uint8_t ch = g_sessCh;
-	// announce HOST AWAKE: E7 00 00, a few times
 	if (g_connSt == 0) {
+		g_curSlot = firstUsed;
 		uint8_t p[3] = { 0xE7, 0x00, g_e7b };
 		rfConnTx(ch, 0x01, p, 3);
 		if (++g_connStep >= 4) {
@@ -631,58 +641,69 @@ static void rfConnStep()
 			Serial.println(
 				"# CONN: awake announced -> polling GET report 0x45");
 		}
-		// poll loop: E3 + GET report 0x45 every poll; re-assert awake periodically
-	} else {
-		// CONTROLLED CADENCE: poll ~every g_pollUs
-		if ((uint32_t)(micros() - g_lastPollUs) < g_pollUs)
-			return;
-		// FIXED-RATE schedule: advance the deadline by exactly one interval (NOT reset-to-now, which would add
-		// each cycle's ~1ms of poll work + loop jitter to the next interval -- the period drifts to ~5000us
-		// instead of the 4000us target). The resync guard prevents a catch-up burst after a real stall.
-		{
-			uint32_t now = micros();
-			static uint32_t lastFire = 0;
-			// MEASURED actual period
-			if (lastFire) {
-				g_pollDtSum += (uint32_t)(now - lastFire);
-				g_pollDtCnt++;
-			}
-			lastFire = now;
-			g_lastPollUs += g_pollUs;
-			// fell >1 interval behind -> resync
-			if ((uint32_t)(now - g_lastPollUs) >= g_pollUs)
-				g_lastPollUs = now;
+		return;
+	}
+
+	// Cycle gate: fires once per g_pollUs (250 Hz). On each fire we poll EVERY warm slot
+	// back-to-back so all bonded controllers run at full rate -- the real puck services all
+	// controllers per cycle. Polling one-slot-per-call instead tied the per-slot rate to the
+	// loop frequency AND split it across slots, collapsing 2 controllers to ~90 Hz.
+	uint32_t nowUs = micros();
+	if ((uint32_t)(nowUs - g_lastPollUs) < (uint32_t)g_pollUs)
+		return;
+	{
+		// Cycle period stat: time between gate fires (= each slot's poll period, intended g_pollUs).
+		static uint32_t lastCycleUs = 0;
+		if (lastCycleUs) {
+			g_pollDtSum += (uint32_t)(nowUs - lastCycleUs);
+			g_pollDtCnt++;
 		}
+		lastCycleUs = nowUs;
+	}
+	g_lastPollUs += g_pollUs;
+	if ((uint32_t)(nowUs - g_lastPollUs) >= (uint32_t)g_pollUs)
+		g_lastPollUs = nowUs; // catch-up reset when a cycle overran
+
+	unsigned long nowMs = millis();
+
+	// Inline poll helper; emits E7 re-assert (every 32 polls, bounded reply window so a
+	// missed F3 doesn't burn the whole slot budget), queues haptics, flushes relay, sends E3 GET.
+	auto doPoll = [&](int k) {
+		g_slotLastAttemptMs[k] = nowMs;
+		g_curSlot = k;
 		if ((g_connPoll & 0x1F) == 0) {
 			uint8_t pa[3] = { 0xE7, 0x00, g_e7b };
-			rfConnTx(ch, 0x01, pa, 3);
-		} // re-assert awake/version
+			rfConnTx(ch, 0x01, pa, 3, 600);
+		}
 		rfConnQueueHapticRelay();
-		// Relay (if any) gets its OWN cycled PID, then the GET poll gets the NEXT one -- so they're always distinct
-		// and the controller never dedups the GET as a retransmit of the relay (that was dropping ~half the replies
-		// during haptics). Advancing g_e3pid even when no relay is pending just skips a PID value (harmless).
 		{
-			uint8_t rs1 = (uint8_t)((((g_e3pid++) & 3) << 1) | 1);
+			uint8_t rs1 =
+				(uint8_t)((((g_relayPid[k]++) & 3) << 1) | 1);
 			rfConnFlushRelay(ch, rs1);
 		}
-		{
-			// E3 + TLV [len=02][subtype=01 GET][id=0x45][param]
-			uint8_t p[5] = { 0xE3, 0x02, 0x01, 0x45, g_getParam };
-			// cycle PID (S1 1,3,5,7), NO_ACK=1
-			// cycle PID (S1 0,2,4,6), NO_ACK=0
-			// fixed (matches captured puck poll)
-			uint8_t s1 =
-				(g_e3mode == 1) ?
-					(uint8_t)((((g_e3pid++) & 3) << 1) |
-						  1) :
-				(g_e3mode == 2) ?
-					(uint8_t)(((g_e3pid++) & 3) << 1) :
-					0x07;
-			uint8_t rx = rfConnTx(ch, s1, p, 5);
-			if (rx)
-				g_chF1[0]++;
-		}
+		uint8_t p[5] = { 0xE3, 0x02, 0x01, 0x45, g_getParam };
+		uint8_t pidv = g_pollPid[k]++;
+		uint8_t s1 = (g_e3mode == 1) ?
+				     (uint8_t)(((pidv & 3) << 1) | 1) :
+			     (g_e3mode == 2) ? (uint8_t)((pidv & 3) << 1) :
+					       0x07;
+		uint8_t rx = rfConnTx(ch, s1, p, 5);
+		if (rx)
+			g_chF1[0]++;
 		g_connPoll++;
+	};
+
+	// Poll every warm slot this cycle. "Cold" = was connected, now silent > SLOT_COLD_MS;
+	// those are retried only every SLOT_COLD_RETRY_MS. Never-replied slots count as warm so
+	// a controller that connects at any time gets the full poll rate to establish its link.
+	for (int k = 0; k < NSLOT; k++) {
+		if (!g_slot[k].used)
+			continue;
+		bool cold = g_connReplyMs[k] != 0 &&
+			    nowMs - g_connReplyMs[k] > SLOT_COLD_MS;
+		if (cold && nowMs - g_slotLastAttemptMs[k] < SLOT_COLD_RETRY_MS)
+			continue;
+		doPoll(k);
 	}
 }
 
@@ -694,6 +715,16 @@ void rfLinkTask()
 	// that's powering off isn't immediately re-woken/reconnected.
 	if (g_rfHost && millis() - g_connCooldown > 2500) {
 		bool connNow = anySlotLinkUp();
+		// allUp = every BONDED slot currently has a link. Discovery stays aggressive until then so a
+		// controller joining after another is already connected still finds the puck quickly -- throttling
+		// discovery the moment ONE slot links up was starving the late joiner of beacons (it never showed up).
+		bool allUp = true;
+		for (int s = 0; s < NSLOT; s++)
+			if (g_slot[s].used &&
+			    millis() - g_connReplyMs[s] >= 300) {
+				allUp = false;
+				break;
+			}
 		// session keepalive on the clean channel: every loop while connecting (fast), every 25ms once connected
 		// (every-loop beaconing also hammers the session ch and steals reply slots from the poll)
 		if (millis() - g_lastSessBeacon >= (connNow ? 25u : 0u)) {
@@ -702,8 +733,14 @@ void rfLinkTask()
 			for (int s = 0; s < NSLOT; s++)
 				rfHostFrameOnce(s, false);
 		}
-		// discovery beacon on ch2 (where a searching controller looks): every loop when down, occasionally when up
-		if (millis() - g_lastDisc >= (connNow ? 200u : 0u)) {
+		// discovery beacon on ch2 (where a searching controller looks). Cadence:
+		//   nobody connected  -> every loop (fastest cold-boot connect)
+		//   some but not all   -> 40 ms (~25 Hz): a late joiner still connects in ~1 s without the
+		//                          every-loop beacon stealing the connected controller's poll budget --
+		//                          important when a slot is bonded but its controller is left off
+		//   all connected      -> 200 ms (keep the rendezvous warm)
+		uint32_t discEvery = allUp ? 200u : (connNow ? 40u : 0u);
+		if (millis() - g_lastDisc >= discEvery) {
 			g_lastDisc = millis();
 			g_rfCh = 2;
 			for (int s = 0; s < NSLOT; s++)

@@ -195,18 +195,20 @@ void Ps5Controller::begin()
 {
 	USBDevice.setID(0x054C, 0x0CE6);
 
-	// Host re-reads config by VID:PID:serial (per-mode suffix); bump invalidates any cached descriptor.
-	// Bumped 0x0104 -> 0x0105 for the 4-DualSense enumeration (3 more HID interfaces vs the original).
-	USBDevice.setDeviceVersion(0x0105);
+	int n = bondedSlotCount();
+	USBDevice.setDeviceVersion(
+		(uint16_t)(0x0110 + (uint16_t)(n > 0 ? n - 1 : 0)));
 	USBDevice.setManufacturerDescriptor("Sony Interactive Entertainment");
 	USBDevice.setProductDescriptor("DualSense Wireless Controller");
 	initPs5Macs();
 	for (int s = 0; s < NSLOT; s++) {
+		if (n > 0 && !g_slot[s].used)
+			continue;
+		if (n == 0 && s > 0)
+			break;
 		g_ps5[s].enableOutEndpoint(true);
 		g_ps5[s].setReportCallback(PS5_GETCB[s], PS5_SETCB[s]);
 		g_ps5[s].setReportDescriptor(PS5_HID_DESC, sizeof PS5_HID_DESC);
-
-		// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
 		g_ps5[s].setPollInterval(1);
 		g_ps5[s].begin();
 	}

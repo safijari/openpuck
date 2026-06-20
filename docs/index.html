@@ -33,6 +33,20 @@
   .note{color:var(--mut);font-size:12px;margin-top:10px}
   #log{font:12px ui-monospace,Menlo,monospace;color:var(--mut);white-space:pre-wrap;margin-top:8px;max-height:120px;overflow:auto}
   .hide{display:none}
+
+  /* ---- controller slot tabs ---- */
+  .slot-tabs{display:flex;gap:6px;margin:0 0 14px;flex-wrap:wrap}
+  .slot-tab{display:flex;align-items:center;gap:7px;padding:5px 14px;border-radius:8px;font-size:12px;font-weight:600;background:#0e1017;border:1px solid #232a3a;color:var(--mut);cursor:pointer;transition:border-color .15s,color .15s,background .15s}
+  .slot-tab:hover{border-color:var(--acc2);color:var(--fg)}
+  .slot-tab.active{background:#111c2e;border-color:var(--acc2);color:var(--fg)}
+  .slot-tab .dot{width:7px;height:7px;border-radius:50%;background:var(--bad);flex-shrink:0;transition:background .3s}
+  .slot-tab .dot.up{background:var(--acc);animation:pulse-link 2.2s ease-in-out infinite}
+  @keyframes pulse-link{
+    0%,100%{box-shadow:0 0 0 0 rgba(91,214,160,.5)}
+    55%{box-shadow:0 0 0 5px rgba(91,214,160,0)}
+  }
+  @media(prefers-reduced-motion:reduce){.slot-tab .dot.up{animation:none}}
+  .per-slot-grid{margin-bottom:12px}
 </style>
 </head>
 <body>
@@ -59,9 +73,6 @@
         <button data-mode="4" class="modebtn">Switch Pro + gyro</button>
         <button data-mode="5" class="modebtn">PS5 DualSense</button>
         <button data-mode="6" class="modebtn">HID gyro (DS4)</button>
-        <!-- modes 7/8 (PS5/DS4 "game/clean") hidden from the panel for now; still reachable via serial console -->
-        <!-- <button data-mode="7" class="modebtn">PS5 (game/clean)</button> -->
-        <!-- <button data-mode="8" class="modebtn">DS4 (game/clean)</button> -->
       </div>
       <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only.</p>
       <div class="row"><label>Persist last mode</label>
@@ -80,11 +91,19 @@
 
     <div class="card">
       <h2>Link status</h2>
-      <div class="statgrid">
+
+      <!-- Per-controller tabs: visible only when 2+ controllers are bonded -->
+      <div class="slot-tabs" id="slotTabs" style="display:none"></div>
+
+      <!-- Per-slot: RF link / Battery / Signal -->
+      <div class="statgrid per-slot-grid">
         <div class="stat"><div class="k">RF link</div><div class="v" id="stLink">—</div></div>
         <div class="stat"><div class="k">Battery</div><div class="v" id="stBatt">—</div></div>
         <div class="stat"><div class="k">Signal</div><div class="v" id="stRssi">—</div></div>
-        <div class="stat"><div class="k">Slot</div><div class="v" id="stSlot">—</div></div>
+      </div>
+
+      <!-- Global stats -->
+      <div class="statgrid">
         <div class="stat"><div class="k">Delivered</div><div class="v" id="stRate">—</div></div>
         <div class="stat"><div class="k">New reports</div><div class="v" id="stNew">—</div></div>
         <div class="stat logonly"><div class="k">Polls/s</div><div class="v" id="stPolls">—</div></div>
@@ -137,7 +156,6 @@
       <p class="note">Gyro sensitivity multiplier for Switch Pro mode (1.0× = unchanged).</p>
     </div>
 
-
     <div class="card">
       <h2>Button mapping</h2>
       <div class="row"><label>A/B + X/Y swap</label>
@@ -185,18 +203,48 @@ for(const sel of document.querySelectorAll("select.back")){
   for(const [c,n] of BTN_CODES){ if(c===0) continue; const o=document.createElement("option"); o.value=c; o.textContent=n; sel.appendChild(o); }
 }
 for(const sel of document.querySelectorAll("select.chord")){
-  MODE_NAMES.forEach((n,i)=>{ if(i===7||i===8) return;   // hide PS5/DS4 "game/clean" modes from the panel for now
+  MODE_NAMES.forEach((n,i)=>{ if(i===7||i===8) return;
     const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
 }
-// Switch Pro report-rate options (0=66Hz, 1=120Hz default, 2=full ~250Hz)
 { const sel=document.getElementById("swRate");
   for(const [lbl,v] of [["120 Hz (default)",1],["66 Hz (compatibility)",0],["Full rate (~250 Hz)",2]]){
     const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
 }
-// Switch Pro gyro-scale options (value = scale x10, so it fits in one byte)
 { const sel=document.getElementById("swGyro");
   for(const [lbl,v] of [["0.5×",5],["1.0×",10],["1.5×",15],["2.0×",20],["2.5×",25],["3.0×",30]]){
     const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
+}
+
+// ---- per-slot tab state ----
+let g_activeSlot = 0;
+let g_slotData = []; // [{up, battery, rssi}] indexed by slot 0..3, only set for bonded slots
+
+function updateSlotDisplay(slotIdx) {
+  const d = g_slotData[slotIdx];
+  if (!d) { $("#stLink").innerHTML="—"; $("#stBatt").textContent="—"; $("#stRssi").textContent="—"; return; }
+  $("#stLink").innerHTML = d.up ? '<span class="pill up">up</span>' : '<span class="pill dn">down</span>';
+  $("#stBatt").textContent = (d.up && d.battery) ? d.battery+"%" : "—";
+  $("#stRssi").textContent = (d.up && d.rssi) ? ("-"+d.rssi+" dBm") : "—";
+}
+
+function renderSlotTabs(bondedCount) {
+  const bar = $("#slotTabs");
+  if (bondedCount <= 1) { bar.style.display="none"; updateSlotDisplay(g_activeSlot); return; }
+  bar.style.display="flex";
+  bar.innerHTML="";
+  for (let s=0; s<4; s++) {
+    const d = g_slotData[s];
+    if (!d) continue;
+    const btn = document.createElement("button");
+    btn.className = "slot-tab" + (s===g_activeSlot ? " active" : "");
+    const dot = document.createElement("span");
+    dot.className = "dot" + (d.up ? " up" : "");
+    btn.appendChild(dot);
+    btn.appendChild(document.createTextNode("Controller "+(s+1)));
+    btn.onclick = () => { g_activeSlot=s; renderSlotTabs(bondedCount); };
+    bar.appendChild(btn);
+  }
+  updateSlotDisplay(g_activeSlot);
 }
 
 async function connect(){
@@ -204,12 +252,11 @@ async function connect(){
     dev = await navigator.usb.requestDevice({filters:[{vendorId:0x28DE},{vendorId:0x045E},{vendorId:0x057E},{vendorId:0x0F0D},{vendorId:0x054C}]});
     await dev.open();
     if(dev.configuration===null) await dev.selectConfiguration(1);
-    // WebUSB = vendor class 0xFF with bulk IN + bulk OUT (skip XInput 0xFF/5D/01 which uses interrupt only)
     let found=null;
     for(const itf of dev.configuration.interfaces){
       const a=itf.alternate;
       if(a.interfaceClass!==0xFF) continue;
-      if(a.interfaceSubClass===0x5D) continue;   // Xbox XInput vendor
+      if(a.interfaceSubClass===0x5D) continue;
       let bin=0,bout=0;
       for(const e of a.endpoints){ if(e.type==="bulk"){ if(e.direction==="in")bin=e.endpointNumber; else bout=e.endpointNumber; } }
       if(bin&&bout){ found={ifNum:itf.interfaceNumber, epIn:bin, epOut:bout}; break; }
@@ -217,14 +264,11 @@ async function connect(){
     if(!found){ log("no WebUSB bulk vendor interface — reflash firmware with WebUSB enabled, or another app may be holding the device"); return; }
     ifNum=found.ifNum; epIn=found.epIn; epOut=found.epOut;
     await dev.claimInterface(ifNum);
-    // WebUSB "connect" handshake: Adafruit_USBD_WebUSB only enables write() / connected()
-    // after the host sends SET_CONTROL_LINE_STATE (bRequest 0x22, value=1) on this interface.
     await dev.controlTransferOut({requestType:"class", recipient:"interface", request:0x22, value:0x01, index:ifNum});
     $("#connState").textContent="connected"; $("#connState").className="pill up";
     $("#connectBtn").textContent="Reconnect";
     $("#panel").classList.remove("hide");
     log(`connected — VID ${dev.vendorId.toString(16)} iface ${ifNum} epIn ${epIn} epOut ${epOut}`);
-    dev.onUSBConnectionEvent;
     navigator.usb.addEventListener("disconnect", e=>{ if(e.device===dev){ onGone(); }});
     startPolling();
   }catch(e){ log("connect failed: "+e.message); }
@@ -242,10 +286,10 @@ async function send(bytes){
 }
 async function readBlob(){
   try{
-    const r = await dev.transferIn(epIn, 64);
+    // v8 blob is 75 bytes (two USB-FS packets); read 128 to capture both in one call.
+    const r = await dev.transferIn(epIn, 128);
     if(r.status!=="ok"||r.data.byteLength<2) return null;
     const d=new Uint8Array(r.data.buffer);
-    // find 0xA5 frame
     let i=0; while(i<d.length && d[i]!==0xA5) i++;
     if(i+2>d.length) return null;
     const len=d[i+1]; const p=d.slice(i+2, i+2+len);
@@ -253,52 +297,94 @@ async function readBlob(){
   }catch(e){ if(dev) log("read err: "+e.message); return null; }
 }
 function applyBlob(p){
-  // [ver][mode][mDiv][mFric][rsvd][abSwap][b0..b3][slot][up][f1lo][f1hi][pollU100(unused)][newlo][newhi]
-  const mode=p[1], mDiv=p[2], mFric=p[3], qamMap=p[4], abSwap=p[5];   // p[4] = QAM remap code (0 = default)
+  const mode=p[1], mDiv=p[2], mFric=p[3], qamMap=p[4], abSwap=p[5];
   const back=[p[6],p[7],p[8],p[9]], slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
-  const chord=(p.length>25)?[p[23],p[24],p[25]]:[3,1,4];   // v2 blob: chordBtn after qos/persist (Y defaults to Switch Pro=4)
-  const polls=(p.length>27?(p[26]|(p[27]<<8)):0);          // poll TX rate
-  const loopUs=(p.length>29?(p[28]|(p[29]<<8)):0);         // loop diag
+  const chord=(p.length>25)?[p[23],p[24],p[25]]:[3,1,4];
+  const polls=(p.length>27?(p[26]|(p[27]<<8)):0);
+  const loopUs=(p.length>29?(p[28]|(p[29]<<8)):0);
   const worstIdx=(p.length>30?p[30]:0), worstUs=(p.length>32?(p[31]|(p[32]<<8)):0);
   const WORST=["webusb","ctrl.task","serial","rfdiag","rflink","haptic","led"];
-  const pollUs=(p.length>34?(p[33]|(p[34]<<8)):0);         // MEASURED poll period
-  const pollIntended=(p.length>14?p[14]*100:0);            // intended poll interval (g_pollUs)
-  const logEnabled=(p.length>35?p[35]:0);                  // is this a logging build (-DOPK_LOG=1)?
+  const pollUs=(p.length>34?(p[33]|(p[34]<<8)):0);
+  const pollIntended=(p.length>14?p[14]*100:0);
+  const logEnabled=(p.length>35?p[35]:0);
   for(const el of document.querySelectorAll(".logonly")) el.style.display = logEnabled ? "" : "none";
-  // mode buttons
   for(const b of document.querySelectorAll(".modebtn")) b.classList.toggle("active", +b.dataset.mode===mode);
   $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
-  // status
-  const battery=(p.length>36?p[36]:0);                    // controller battery % (report 0x43); 0 = unknown
-  const rumbleScale=(p.length>51?p[51]:200);              // rumble strength % (protocol v5+; older blob -> default)
-  const swProRate=(p.length>52?p[52]:1);                  // Switch Pro report rate 0/1/2 (protocol v6+; default 120Hz)
-  const swGyro10=(p.length>53?p[53]:10);                  // Switch Pro gyro scale x10 (protocol v6+)
-  const rssi=(p.length>37?p[37]:0);                       // RAW signal strength |dBm| (0 = no sample)
-  $("#stLink").innerHTML = up? '<span class="pill up">up</span>' : '<span class="pill dn">down</span>';
-  $("#stBatt").textContent = (up && battery)? battery+"%" : "—";
-  $("#stRssi").textContent = (up && rssi)? ("-"+rssi+" dBm") : "—";
-  $("#stSlot").textContent = slot===0xFF? "—" : slot;
+  const battery=(p.length>36?p[36]:0);
+  const rumbleScale=(p.length>51?p[51]:200);
+  const swProRate=(p.length>52?p[52]:1);
+  const swGyro10=(p.length>53?p[53]:10);
+  const rssi=(p.length>37?p[37]:0);
+
+  // per-slot link status (protocol v8, p.length >= 73)
+  const hasSlotsData = p.length >= 73;
+  if (hasSlotsData) {
+    const bondedN = p[60];
+    g_slotData = [];
+    for (let s=0; s<4; s++) {
+      const base = 61 + s*3;
+      if (p.length >= base+3) {
+        // only include bonded slots (a slot with up=0 could be bonded but offline)
+        // check if the slot appears at all in the bonded map by checking if bondedN covers it;
+        // the firmware only sets non-zero battery/rssi for actually-bonded slots
+        const slotUp = !!p[base];
+        const slotBatt = p[base+1];
+        const slotRssi = p[base+2];
+        // slot is "bonded" if firmware included it in bondedN coverage
+        // we populate slotData for all 4 and renderSlotTabs skips gaps
+        g_slotData[s] = {up: slotUp, battery: slotBatt, rssi: slotRssi};
+      }
+    }
+    // keep only bonded slots by cross-referencing bondedN
+    // firmware sends bondedSlotCount but not a slot bitmask; use battery>0 || rssi>0 || up as presence hint
+    // simpler: just count how many of the 4 slots have any non-zero data OR are marked up
+    // Actually the firmware always writes all 4 slots; we filter by the bond system's "used" flag via presence.
+    // For clean display: we'll show tabs only for slots that have ever had a reply OR are bonded (battery/rssi set).
+    // The firmware sets g_battery[s]=0 and g_linkRssi[s]=0 for unused slots, so 0/0/0 = not bonded.
+    // But a bonded offline slot also has 0/0/0 initially. We rely on bondedN for count and show the first bondedN slots
+    // that have g_slot[s].used — but we can't easily know which slots are used from the blob.
+    // Best heuristic: show all 4 slots if bondedN==4, otherwise use slot indices where battery or rssi != 0 OR up==1,
+    // OR fall back to showing slots 0..bondedN-1 if none have data yet (device just booted).
+    let bondedSlots = [];
+    for (let s=0; s<4; s++) {
+      if (g_slotData[s] && (g_slotData[s].up || g_slotData[s].battery || g_slotData[s].rssi)) bondedSlots.push(s);
+    }
+    // fallback: if no data yet (all offline, just booted), show slots 0..bondedN-1
+    if (bondedSlots.length === 0 && bondedN > 0) {
+      for (let s=0; s<bondedN; s++) bondedSlots.push(s);
+    }
+    // remove slotData for non-bonded slots so tabs don't appear for them
+    const bondedSet = new Set(bondedSlots);
+    for (let s=0; s<4; s++) { if (!bondedSet.has(s)) g_slotData[s] = null; }
+    // clamp active slot to a valid bonded slot
+    if (!g_slotData[g_activeSlot]) g_activeSlot = bondedSlots[0] || 0;
+    renderSlotTabs(bondedN);
+  } else {
+    // old firmware: single-slot display
+    $("#slotTabs").style.display="none";
+    $("#stLink").innerHTML = up? '<span class="pill up">up</span>' : '<span class="pill dn">down</span>';
+    $("#stBatt").textContent = (up && battery)? battery+"%" : "—";
+    $("#stRssi").textContent = (up && rssi)? ("-"+rssi+" dBm") : "—";
+  }
+
+  // global stats
   $("#stRate").textContent = up? f1+" /s" : "—";
   $("#stNew").textContent = up? newps+" /s" : "—";
   $("#stPolls").textContent = up? polls+" /s" : "—";
   $("#stLoop").textContent = loopUs? loopUs+" µs" : "—";
   $("#stWorst").textContent = loopUs? (WORST[worstIdx]||worstIdx)+" "+worstUs+"µs" : "—";
   $("#stPollPer").textContent = up? (pollUs+" / "+pollIntended+" µs") : "—";
-  // build provenance (protocol v4+): dirty flag at p[38], 12-byte NUL-padded git hash at p[39..50]. Independent
-  // of link state. Older firmware sends a shorter blob -> stays "—".
   const gitDirty=(p.length>38?p[38]:0); let gitHash="";
   for(let i=39;i<51 && i<p.length && p[i];i++) gitHash+=String.fromCharCode(p[i]);
   $("#stBuild").innerHTML = gitHash
     ? (gitHash + (gitDirty ? ' <span class="pill dn">dirty</span>' : ' <span class="pill up">clean</span>'))
     : "—";
-  // sliders (only if not being dragged)
   setSlider("mDiv",mDiv); setSlider("mFric",mFric); setSlider("rumble",rumbleScale);
   $("#abSwap").textContent = abSwap? "on":"off"; $("#abSwap").classList.toggle("active",!!abSwap);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
   for(const sel of document.querySelectorAll("select.back")){ if(document.activeElement!==sel) sel.value=back[+sel.dataset.i]; }
   { const sel=$("#qamMap"); if(document.activeElement!==sel) sel.value=qamMap; }
-  // raw accelerometer diagnostic (protocol v7): 3x s16 LE at p[54..59]
   if(p.length>=60){ const s16=(o)=>{ let v=p[o]|(p[o+1]<<8); return v>32767?v-65536:v; };
     const ax=s16(54),ay=s16(56),az=s16(58);
     const amag=Math.round(Math.sqrt(ax*ax+ay*ay+az*az));
@@ -313,7 +399,7 @@ function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ e
 
 let inflight=false;
 async function refresh(){
-  if(!dev||inflight||capturing) return; inflight=true;   // don't let the status poll steal capture frames
+  if(!dev||inflight||capturing) return; inflight=true;
   await send([0x01]); const p=await readBlob(); if(p) applyBlob(p);
   inflight=false;
 }
@@ -322,9 +408,9 @@ async function setField(field,value){
 }
 function fmtCapEntry(e,maxMs){
   const hex=e.bytes.map(x=>x.toString(16).padStart(2,"0")).join(" ");
-  const t = `-${String(maxMs-e.ms).padStart(6," ")}ms  `;   // age vs the newest entry (consistent across drain batches)
+  const t = `-${String(maxMs-e.ms).padStart(6," ")}ms  `;
   if(e.slot===0xFD){ const k=e.bytes[0]; return `${t}════════ ${k===2?"RECONNECT (block+reinit armed)":k===1?"RF LINK UP":"RF LINK DOWN"} ════════`; }
-  const who = (e.slot===0xFE) ? "TX→ctlr " : `if${e.slot}     `;                        // 0xFE = frame WE sent the controller
+  const who = (e.slot===0xFE) ? "TX→ctlr " : `if${e.slot}     `;
   return `${t}${who} cmd=${e.rid.toString(16).padStart(2,"0")}  n=${e.nb}:  ${hex}`;
 }
 function downloadCap(){
@@ -333,11 +419,10 @@ function downloadCap(){
   a.href=URL.createObjectURL(new Blob([t],{type:"text/plain"}));
   a.download="puck-capture.txt"; a.click();
 }
-// ---- live Start/Stop capture: poll the firmware's drain (op 0x06) on a timer and accumulate in the browser ----
-let liveTimer=null, draining=false, capLines=[];   // capLines = array of {ms,slot,rid,nb,bytes}
+let liveTimer=null, draining=false, capLines=[];
 function renderCap(){
   if(!capLines.length){ $("#capOut").textContent="(nothing captured yet)"; window._lastCap=""; return; }
-  const maxMs=capLines[capLines.length-1].ms;       // entries are chronological -> newest is last
+  const maxMs=capLines[capLines.length-1].ms;
   const t=capLines.map(e=>fmtCapEntry(e,maxMs)).join("\n");
   $("#capOut").textContent=t; window._lastCap=t;
 }
@@ -372,15 +457,15 @@ async function drainTick(){
 }
 async function startCapture(){
   if(!dev||capturing) return;
-  capturing=true; capLines=[];                       // capturing=true pauses the status poll so it can't steal frames
+  capturing=true; capLines=[];
   $("#capOut").textContent="(dumping ring from boot, then live — press Stop when done)";
   $("#capStart").disabled=true; $("#capStop").disabled=false;
-  await send([0x05,1]);                               // rewind drain to OLDEST -> dumps the whole ring from boot
+  await send([0x05,1]);
   liveTimer=setInterval(drainTick,100);
 }
 async function stopCapture(){
   if(liveTimer){ clearInterval(liveTimer); liveTimer=null; }
-  await drainTick();                                  // final flush
+  await drainTick();
   try{ await send([0x05,0]); }catch(e){}
   capturing=false;
   $("#capStart").disabled=false; $("#capStop").disabled=true;
@@ -410,12 +495,10 @@ $("#dfuUf2").onclick=async()=>{
 };
 $("#factoryErase").onclick=async()=>{
   if(!dev){ log("not connected"); return; }
-  // Triple gate so this is impossible to fire accidentally: warn, warn harder, then require typing ERASE.
   if(!confirm("Factory erase?\n\nThis wipes ALL persistent storage on the copycat:\n  • the paired-controller bond (you'll have to re-pair)\n  • every saved setting (mode, chords, back paddles, sensitivity)\n\nThe copycat reboots to factory defaults. This CANNOT be undone.")) return;
   if(!confirm("Are you absolutely sure?\n\nThere is no recovery. The controller bond and all settings will be gone.")) return;
   const typed=prompt('Final confirmation — type  ERASE  (all caps) to wipe everything:');
   if(typed!=="ERASE"){ log("factory erase cancelled (confirmation text did not match)"); return; }
-  // op 0x0A + magic "ERS" (0x45,0x52,0x53) -- firmware reformats the FS and reboots; the device drops off USB.
   await send([0x0A,0x45,0x52,0x53]);
   log("FACTORY ERASE sent — copycat is reformatting and rebooting to defaults. Re-pair the controller, then reconnect.");
 };

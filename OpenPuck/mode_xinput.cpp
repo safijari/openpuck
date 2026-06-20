@@ -5,12 +5,9 @@
 // for the right trackpad. Host binds by VID/PID (045E:028E) + the FF/5D/01 interface. The OUT endpoint carries
 // rumble, relayed to the controller as a haptic by task().
 //
-// Multi-controller: 4 XInput interfaces, one per bond slot. The single class driver routes xfer/open callbacks
-// by endpoint address into the per-slot state. The host presents 4 XInput devices, mapped to user slots 1..4.
-// Rumble is per-slot (each XInput has its own OUT endpoint -> the right controller). The right-pad mouse is a
-// single shared interface (the desktop can only consume one mouse): slot 0's right-pad drives it; other slots'
-// right-pad is ignored for the mouse purpose. The right-pad-as-gamepad axis (touch/click) still flows through
-// the per-slot XInput HID so the host sees all four trackpads.
+// Multi-controller: one XInput interface per bonded controller slot. The single class driver routes xfer/open
+// callbacks by endpoint address into the per-slot state. The right-pad mouse is a single shared interface
+// (only slot 0's right-pad drives it). Number of registered interfaces matches bondedSlotCount() at boot.
 #include "mode_xinput.h"
 #include "triton.h"
 #include "gamepad_util.h"
@@ -86,18 +83,19 @@ static void xi_reset(uint8_t rhport)
 		g_xiSlot[s].inUse = false;
 	}
 }
-// TinyUSB calls xi_open once per XInput interface in the config descriptor. We claim the first free slot
-// (round-robin, but begin() fires them in order so the slot index matches the interface index from the
-// host's POV) and remember the endpoint addresses for the xfer_cb dispatch.
+// TinyUSB calls xi_open once per XInput interface in the config descriptor. Claim the first free BONDED
+// slot so the xiSlot index matches the bond-slot index (begin() registers them in ascending bond-slot order).
+// Fallback to any free slot when there are no bonds (fresh device).
 static uint16_t xi_open(uint8_t rhport, tusb_desc_interface_t const *itf,
 			uint16_t max_len)
 {
 	if (!(itf->bInterfaceClass == 0xFF && itf->bInterfaceSubClass == 0x5D &&
 	      itf->bInterfaceProtocol == 0x01))
 		return 0;
+	int nBonds = bondedSlotCount();
 	int slot = -1;
 	for (int s = 0; s < NSLOT; s++) {
-		if (!g_xiSlot[s].inUse) {
+		if (!g_xiSlot[s].inUse && (nBonds == 0 || g_slot[s].used)) {
 			slot = s;
 			break;
 		}
@@ -414,13 +412,17 @@ void XboxController::begin()
 {
 	// 045E:028E -> Windows xusb / SDL / Linux xpad all bind it
 	USBDevice.setID(0x045E, 0x028E);
-	// Windows caches the config descriptor by VID:PID:bcdDevice, so any interface change here MUST bump bcdDevice
-	// or Windows serves a stale descriptor. Bumped 0x0115 -> 0x0116 for the 4-XInput enumeration (4 more IN + 4
-	// more OUT endpoints and 4 more interfaces vs the original single).
-	USBDevice.setDeviceVersion(0x0116);
+	// bcdDevice encodes the bonded count so Windows re-reads the config descriptor when the count changes.
+	int n = bondedSlotCount();
+	USBDevice.setDeviceVersion(
+		(uint16_t)(0x0120 + (uint16_t)(n > 0 ? n - 1 : 0)));
 	USBDevice.setManufacturerDescriptor("Microsoft");
 	USBDevice.setProductDescriptor("Controller");
 	for (int s = 0; s < NSLOT; s++) {
+		if (n > 0 && !g_slot[s].used)
+			continue;
+		if (n == 0 && s > 0)
+			break;
 		g_xinput[s].setStringDescriptor("Controller");
 		g_xinput[s].begin();
 	}

@@ -11,14 +11,15 @@
 
 Adafruit_USBD_WebUSB usb_web;
 
-// blob payload = [ver=2][mode][mDiv][mFric][rsvd=0][abSwap][back0..3][connSlot(0xFF=none)][linkUp]
+// blob payload = [ver=8][mode][mDiv][mFric][rsvd=0][abSwap][back0..3][connSlot(0xFF=none)][linkUp]
 //                [f1ps_lo][f1ps_hi][pollU100][newps_lo][newps_hi][e7b][relayOp][relaySub][fwdNewOnly]
 //                [qos][persistMode][chordBtn B][chordBtn X][chordBtn Y][pollsps_lo][pollsps_hi]
 //                [loopPeriod_lo][loopPeriod_hi][loopWorstIdx][loopWorstUs_lo][loopWorstUs_hi]
 //                [pollPeriod_lo][pollPeriod_hi][logEnabled][battery%][rssi|dBm|]
 //                [gitDirty][gitHash 12B ASCII, NUL-padded][rumbleScale][swPro120][swGyroScale10][raw accel ax ay az 3x s16 LE]
-// keep the blob under 64 bytes total (readBlob reads one 64-byte packet)
-#define WB_PAYLEN 60
+//                [bondedCount][slot0_up][slot0_batt][slot0_rssi]...[slot3_up][slot3_batt][slot3_rssi]
+// v8 extends to 73 bytes (75 total incl header); browser reads with transferIn(128) to span the two USB-FS packets.
+#define WB_PAYLEN 73
 static void webusbSendBlob()
 {
 	if (!usb_web.connected())
@@ -32,8 +33,8 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (7 = +raw accel; 6 = +swPro120/gyroScale; 5 = +rumbleScale)
-	p[2] = 7;
+	// protocol version (8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
+	p[2] = 8;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -99,6 +100,19 @@ static void webusbSendBlob()
 		int16_t a[3] = { g_in[0].ax, g_in[0].ay, g_in[0].az };
 		memcpy(&p[56], a, 6);
 	} // raw accelerometer for scale diagnostics (protocol v7)
+
+	// per-slot link status for all bond slots (protocol v8)
+	p[62] = (uint8_t)bondedSlotCount();
+	{
+		unsigned long nowMs = millis();
+		for (int s = 0; s < NSLOT; s++) {
+			bool sup = g_slot[s].used && g_connReplyMs[s] != 0 &&
+				   (nowMs - g_connReplyMs[s]) < 300u;
+			p[63 + s * 3] = sup ? 1 : 0;
+			p[64 + s * 3] = g_battery[s];
+			p[65 + s * 3] = g_linkRssi[s];
+		}
+	}
 	usb_web.write(p, sizeof p);
 	usb_web.flush();
 }
