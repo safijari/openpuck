@@ -324,23 +324,22 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// in the legacy form  E3 [1+rl][05][rid][data]  the controller mis-parses (reads data[0] as a length) and
 			// ignores them. Actuator reports (rid < 0x87, e.g. 0x82 haptic / 0x81 trigger) ACT in the legacy form.
 			//
-			// Land config/settings (rid >= 0x87) EXCEPT any 0x30 (gyro+haptic subsystem-enable) write, which is
-			// discarded so the controller's DEFAULT-ON state is preserved. Landing Steam's 0x30 verbatim is what the
-			// real dongle does, but it breaks us over the NO-ACK relay: 0x30=0x00 switches the haptic engine OFF
-			// (trackpad haptics stop until Steam re-enables) and would freeze the always-on gyro, and we can't rely
-			// on Steam's later 0x30=0x18 re-enable LANDING (lossy relay). Dropping 0x30 keeps both subsystems at
-			// their default-on state; the rest of the config still lands so triggers are bracketed. (No rewrite/
-			// force of the value -- that was a deviation that didn't fix the buzz. The truly faithful fix for ALL of
-			// this is a reliable ESB-hardware relay; until then, discard 0x30.) [reg][lo][hi] triplets; scan for 0x30.
-			bool has30 = false;
+			// Land ALL config/settings (rid >= 0x87) like the real dongle, but FORCE THE GYRO-ENABLE BIT ON in any
+			// 0x30 subsystem-enable write. 0x30 register = [reg][lo][hi]; lo bit 0x10 = gyro/IMU, bit 0x08 = haptic
+			// engine. We require gyro ALWAYS streaming (default-on; SDL-without-Steam and the emulated modes read it
+			// raw), but we MUST let Steam's haptic enable/DISABLE through: PROVEN from a buzz capture -- Steam's
+			// connect handshake relays an 0x81 haptic TRIGGER then a 0x30=0x00 that DISABLES (stops) the engine; if
+			// we discard 0x30 the stop is lost and the trigger's haptic runs forever = the connect buzz. Forcing
+			// ONLY bit 0x10 on (|= 0x10) passes the haptic bit verbatim while pinning gyro:
+			//   Steam 30=18 -> 30=18 (gyro on, haptic on)   Steam 30=00 -> 30=10 (gyro on, haptic OFF = stop)
+			// (Earlier tries: discard 0x30 -> lost stop -> buzz; land verbatim -> 30=00 freezes gyro; force 0x18
+			// -> haptic bit never clears so the engine never stops -> buzz/no-haptics. |=0x10 is the only correct one.)
 			if (m.rid == 0x87)
 				for (uint8_t i = 0; (uint16_t)i + 3 <= rl;
 				     i += 3)
-					if (m.data[i] == 0x30) {
-						has30 = true;
-						break;
-					}
-			bool land01 = (m.rid >= 0x87) && !has30;
+					if (m.data[i] == 0x30)
+						m.data[i + 1] |= 0x10;
+			bool land01 = (m.rid >= 0x87);
 			uint8_t p[5 + RELAY_MAXP], plen;
 			if (land01) {
 				p[0] = g_relayOp;
