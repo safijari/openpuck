@@ -2,7 +2,8 @@ name: Format
 
 on:
   push:
-  pull_request:
+    branches:
+      - main
 
 jobs:
   clang-format:

@@ -3,9 +3,7 @@ name: Release
 on:
   push:
     branches:
-      - '**'
-    tags:
-      - 'v*'
+      - main
 
 permissions:
   contents: write
@@ -67,11 +65,7 @@ jobs:
           REF="${GITHUB_REF_NAME}"
           SAFE_REF="$(printf '%s' "$REF" | tr -c 'A-Za-z0-9._-' '-')"
           SHA_SHORT="$(git rev-parse --short=8 HEAD)"
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            VERSION="${SAFE_REF}"
-          else
-            VERSION="${SAFE_REF}-${SHA_SHORT}"
-          fi
+          VERSION="${SAFE_REF}-${SHA_SHORT}"
 
           find build/openpuck build/openpuck-recovery \
             -maxdepth 1 -type f \
@@ -92,10 +86,10 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || format('build-{0}', github.sha) }}
+          tag_name: ${{ format('build-{0}', github.sha) }}
           target_commitish: ${{ github.sha }}
-          name: ${{ github.ref_type == 'tag' && github.ref_name || format('Build {0}', github.sha) }}
-          prerelease: ${{ github.ref_type != 'tag' }}
+          name: ${{ format('Build {0}', github.sha) }}
+          prerelease: true
           files: release_assets/*
           body: |
             OpenPuck Firmware Release
