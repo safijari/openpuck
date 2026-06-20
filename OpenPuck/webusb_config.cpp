@@ -160,7 +160,7 @@ void webusbPoll()
 				       (op == 0x03 || op == 0x05) ? 2 :
 				       (op == 0x0A)		  ? 4 :
 								    1;
-			if (op < 0x01 || op > 0x0A) { // resync: drop one byte
+			if (op < 0x01 || op > 0x0C) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
 			}
@@ -200,6 +200,19 @@ void webusbPoll()
 					delay(40);
 					NVIC_SystemReset();
 				}
+
+				// reboot into serial DFU (adafruit-nrfutil)
+			} else if (op == 0x0B) {
+				usb_web.flush();
+				delay(40);
+				enterSerialDfu();
+
+				// reboot into UF2 bootloader (USB mass storage)
+			} else if (op == 0x0C) {
+				usb_web.flush();
+				delay(40);
+				enterUf2Dfu();
+
 			} else if (op == 0x02) {
 				uint8_t f = buf[1], v = buf[2];
 

@@ -102,6 +102,14 @@
       <div class="row" style="margin:10px 0 0"><button id="ctlrOff">Turn off controller</button>
         <span class="note" style="flex:1">Fires the controller power-off (0x9F "off!", x3) — the same path Steam's "turn off controller" and host-suspend use. Watch the link status to see it disconnect.</span>
       </div>
+      <div class="row" style="margin:10px 0 0;border-top:1px solid #272d3d;padding-top:14px">
+        <button id="dfuSerial">Reboot to Serial DFU</button>
+        <span class="note" style="flex:1">Reboots the puck into serial DFU mode (adafruit-nrfutil). The device drops off USB — flash with <code>adafruit-nrfutil dfu serial …</code> then replug.</span>
+      </div>
+      <div class="row" style="margin:10px 0 0">
+        <button id="dfuUf2">Reboot to UF2 Bootloader</button>
+        <span class="note" style="flex:1">Reboots the puck into the UF2 mass-storage bootloader. It mounts as a USB drive — drag the <code>.uf2</code> file onto it to flash, then it reboots automatically.</span>
+      </div>
       <div class="row" style="margin:18px 0 0;border-top:1px solid #4a2030;padding-top:14px">
         <button id="factoryErase" style="background:#3a1420;border-color:#7a2233;color:#ff9bb0;font-weight:600">⚠ Factory erase</button>
         <span class="note" style="flex:1"><strong style="color:#ff9bb0">Danger:</strong> wipes <em>all</em> persistent storage on the copycat — the paired controller bond <em>and</em> every saved setting (mode, chords, back-paddle map, sensitivity). The copycat reboots to factory defaults and you must <strong>re-pair the controller</strong>. This cannot be undone.</span>
@@ -390,6 +398,16 @@ $("#capStart").onclick=startCapture;
 $("#capStop").onclick=stopCapture;
 $("#hapClear").onclick=async()=>{ if(dev){ await send([0x07]); log("haptic re-init sent (clear stuck buzz)"); } };
 $("#ctlrOff").onclick=async()=>{ if(dev){ await send([0x08]); log("controller power-off attempt sent — watch link status"); } };
+$("#dfuSerial").onclick=async()=>{
+  if(!dev){ log("not connected"); return; }
+  if(!confirm("Reboot into serial DFU?\n\nThe puck will disconnect immediately. Flash with adafruit-nrfutil, then replug.")) return;
+  await send([0x0B]); log("serial DFU reboot sent — device disconnecting");
+};
+$("#dfuUf2").onclick=async()=>{
+  if(!dev){ log("not connected"); return; }
+  if(!confirm("Reboot into UF2 bootloader?\n\nThe puck will disconnect and mount as a USB drive. Drag the .uf2 file onto it to flash.")) return;
+  await send([0x0C]); log("UF2 bootloader reboot sent — device disconnecting");
+};
 $("#factoryErase").onclick=async()=>{
   if(!dev){ log("not connected"); return; }
   // Triple gate so this is impossible to fire accidentally: warn, warn harder, then require typing ERASE.
