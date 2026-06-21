@@ -469,13 +469,26 @@ void hapticTask()
 				     0;
 	}
 	// Power-off on host sleep: only when VBUS is present (genuine sleep, not a cable unplug which also
-	// trips the suspend edge briefly). wasSusp=true at boot suppresses a false fire on boot-into-suspended.
+	// trips the suspend edge briefly) AND the suspend has PERSISTED >= SUSPEND_OFF_MS. A brief USB
+	// selective-suspend (host idle power-management) resumes in <1s; firing the power-off on its edge
+	// powered the controllers off ourselves -> random drop/reconnect churn. Arm only on a genuine
+	// resume->suspend edge (wasSusp=true at boot suppresses a false fire on boot-into-suspended).
 	static bool wasSusp = true;
+	static unsigned long suspSinceMs = 0;
+	static bool suspArmed = false;
 	bool susp = USBDevice.suspended();
 	bool vbus = (NRF_POWER->USBREGSTATUS &
 		     POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
-	if (susp && !wasSusp && vbus)
+	if (susp && !wasSusp) {
+		suspSinceMs = millis();
+		suspArmed = true;
+	}
+	if (!susp)
+		suspArmed = false;
+	if (suspArmed && vbus && (millis() - suspSinceMs) >= SUSPEND_OFF_MS) {
 		hapticSendShutdown();
+		suspArmed = false; // fire once per suspend
+	}
 	wasSusp = susp;
 	// Steam-mode quiet timeout: mark 0x82 stream inactive. No synthesized stop -- Steam forwards its own.
 	if (!g_xbox && g_haptic82On &&

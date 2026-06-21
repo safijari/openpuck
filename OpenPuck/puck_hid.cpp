@@ -432,8 +432,18 @@ void SteamPuckController::onAuxReport(int slot, uint8_t rid,
 		return;
 	if (slot < 0 || slot >= NSLOT)
 		return;
-	if (g_slot[slot].used && hid[slot].ready())
-		hid[slot].sendReport(rid, data, n);
+	if (!(g_slot[slot].used && hid[slot].ready()))
+		return;
+	// macOS/Steam DROP an input report shorter than its descriptor-declared length, so pad to it
+	// (zero-filled tail). Declared payload lengths excl. report ID: 0x43 = 14, 0x44 = 5. The
+	// controller often sends a compact 0x43; without this pad Steam never reads battery.
+	uint8_t declared = (rid == 0x43) ? 14u : (rid == 0x44) ? 5u : n;
+	uint8_t buf[16];
+	if (declared > sizeof buf)
+		declared = sizeof buf;
+	memset(buf, 0, declared);
+	memcpy(buf, data, (n < declared) ? n : declared);
+	hid[slot].sendReport(rid, buf, declared);
 }
 
 // wake nudge: a bare USB resume signal is NOT enough to wake some hosts (Windows in particular) -- they only

@@ -111,7 +111,10 @@
         <div class="stat logonly"><div class="k">Slowest stage</div><div class="v" id="stWorst">—</div></div>
         <div class="stat logonly"><div class="k">Poll period act/want</div><div class="v" id="stPollPer">—</div></div>
         <div class="stat"><div class="k">Build (git)</div><div class="v" id="stBuild">—</div></div>
+        <div class="stat"><div class="k">Last reset</div><div class="v" id="stReset">—</div></div>
       </div>
+      <p class="note" style="margin-top:6px"><strong>Reset history</strong> (newest first, persists across power-off): <span id="resetHist" style="font-family:ui-monospace,Menlo,monospace">—</span><br>
+        <em>watchdog</em>/<em>LOCKUP</em> = a fault (loop hang / crash); <em>soft reboot</em> = an intentional reset (mode change); <em>power-on</em> = normal plug-in.</p>
       <p class="note" style="margin-top:8px"><strong>IMU (raw):</strong> <span id="stImu" style="font-family:ui-monospace,Menlo,monospace">—</span><br>
         Raw SC2 accel (before scaling). This controller is a ±2 g sensor (~16384 = 1 g); the Switch report divides it by 4 to present the genuine ±8 g (4096 = 1 g) scale so the console's gravity-correction engages and the gyro stops drifting.</p>
       <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
@@ -375,6 +378,35 @@ function applyBlob(p){
   $("#stLoop").textContent = loopUs? loopUs+" µs" : "—";
   $("#stWorst").textContent = loopUs? (WORST[worstIdx]||worstIdx)+" "+worstUs+"µs" : "—";
   $("#stPollPer").textContent = up? (pollUs+" / "+pollIntended+" µs") : "—";
+  // reset-cause history (protocol v9): JS p[73]=count, p[74..83]=last 10 causes (newest first).
+  // Persisted in puck flash, so a reboot that happened on a Switch is still readable here after replugging.
+  function resetReasonText(rr){
+    if (rr === 0) return "power-on";
+    const r = [];
+    if (rr & 0x02) r.push("watchdog");      // DOG: loop wedge / hang
+    if (rr & 0x08) r.push("LOCKUP");        // CPU lockup = HardFault escalation (real crash)
+    if (rr & 0x04) r.push("soft reboot");   // SREQ: NVIC_SystemReset (mode change etc.)
+    if (rr & 0x01) r.push("reset pin");
+    return r.length ? r.join("+") : ("0x"+rr.toString(16));
+  }
+  if (p.length > 73) {
+    const n = Math.min(p[73], 10);
+    const hist = [];
+    for (let i=0; i<n; i++) hist.push(p[74+i]);
+    const fault = (rr)=>!!(rr & 0x0A); // watchdog or lockup = a real fault
+    if (n === 0) { $("#stReset").textContent = "—"; }
+    else {
+      const newest = hist[0];
+      const head = fault(newest) ? ('<span class="pill dn">'+resetReasonText(newest)+'</span>') : resetReasonText(newest);
+      $("#stReset").innerHTML = head;
+      // full history list under the tile (newest -> oldest)
+      const items = hist.map((rr,i)=>{
+        const t = resetReasonText(rr);
+        return (i===0?'<strong>':'')+ '#'+(n-i)+' '+(fault(rr)?('<span style="color:#ff6b6b">'+t+'</span>'):t) +(i===0?' (latest)</strong>':'');
+      });
+      const el = $("#resetHist"); if (el) el.innerHTML = items.join(' &nbsp;·&nbsp; ');
+    }
+  }
   const gitDirty=(p.length>38?p[38]:0); let gitHash="";
   for(let i=39;i<51 && i<p.length && p[i];i++) gitHash+=String.fromCharCode(p[i]);
   $("#stBuild").innerHTML = gitHash

@@ -101,6 +101,10 @@ void swProSaveCfg();
 #define POLL_US_DEFAULT 4000u
 // host-side HID stream cadence for translated modes (~250 Hz)
 #define USB_STREAM_MS 4u
+// How long a USB suspend must PERSIST before we power the controllers off. A brief selective-suspend
+// (host idle power-management) resumes in <1s and must not trigger a self-inflicted power-off -> the
+// resulting disconnect/reconnect churn looked like random controller drops. Real host sleep persists.
+#define SUSPEND_OFF_MS 4000u
 // RF poll cadence (us). FIXED -- not configurable (see loadCfg).
 extern const uint32_t g_pollUs;
 

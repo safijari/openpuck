@@ -274,9 +274,20 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 			}
 			if (rtype == 0xF1)
 				g_stF1++;
-			// controller disconnecting/powering off -> back off 2.5s
-			if (rtype == 0xF2)
-				g_connCooldown = millis();
+			// controller disconnecting/powering off -> back off 2.5s so we don't immediately re-wake it.
+			// BUT only when no OTHER slot is still live: g_connCooldown is global and gates ALL polling +
+			// beacons, so backing off because ONE controller powered off would drop every other connected
+			// controller for 2.5s (a real multi-controller disconnect). The powering-off slot goes silent
+			// and ages out via SLOT_COLD on its own.
+			if (rtype == 0xF2) {
+				int others = 0;
+				for (int i = 0; i < NSLOT; i++)
+					if (i != g_curSlot && g_slot[i].used &&
+					    millis() - g_connReplyMs[i] < 300)
+						others++;
+				if (others == 0)
+					g_connCooldown = millis();
+			}
 			// F3 = controller status/version reply (reply to E7 handshake, byte[6]=version)
 			if (rtype == 0xF3) {
 				g_stF3++;
@@ -612,11 +623,11 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 #define SLOT_COLD_RETRY_MS 2000u
 static unsigned long g_slotLastAttemptMs[NSLOT] = {};
 
-// Drive the connected-mode sequence one step per call. Polls ONE bonded slot per call.
-// Gate fires at g_pollUs / nBonded so each warm slot gets ~250 Hz in round-robin order.
-// "Cold" means the slot WAS connected but has been silent for > SLOT_COLD_MS; slots that
-// have never replied stay warm so new controllers can connect at any time after boot.
-// Cold slots retry every SLOT_COLD_RETRY_MS with a full E7+relay+GET sequence.
+// Drive the connected-mode sequence. The cycle gate fires once per g_pollUs (250 Hz); each fire
+// polls EVERY warm slot back-to-back so all bonded controllers run at full rate regardless of count.
+// "Cold" means the slot WAS connected but has been silent for > SLOT_COLD_MS; slots that have never
+// replied stay warm so new controllers can connect at any time after boot. Cold slots retry every
+// SLOT_COLD_RETRY_MS.
 static void rfConnStep()
 {
 	int firstUsed = -1;
