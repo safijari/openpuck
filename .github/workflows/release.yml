@@ -61,16 +61,26 @@ jobs:
 
       - name: Generate UF2 images
         run: |
+          UF2_FAMILY_ID=0xADA52840
           CORE_DIR="$(find "${HOME}/.arduino15/packages/adafruit/hardware/nrf52" \
             -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)"
           UF2CONV="${CORE_DIR}/tools/uf2conv/uf2conv.py"
-          test -f "${UF2CONV}"
-          test -f build/openpuck/OpenPuck.ino.hex
-          test -f build/openpuck-recovery/OpenPuck.ino.hex
-          python3 "${UF2CONV}" -f 0xADA52840 -c \
+          if [ ! -f "${UF2CONV}" ]; then
+            echo "UF2 converter not found: ${UF2CONV}"
+            exit 1
+          fi
+          if [ ! -f build/openpuck/OpenPuck.ino.hex ]; then
+            echo "HEX output not found: build/openpuck/OpenPuck.ino.hex"
+            exit 1
+          fi
+          if [ ! -f build/openpuck-recovery/OpenPuck.ino.hex ]; then
+            echo "HEX output not found: build/openpuck-recovery/OpenPuck.ino.hex"
+            exit 1
+          fi
+          python3 "${UF2CONV}" -f "${UF2_FAMILY_ID}" -c \
             -o build/openpuck/OpenPuck.ino.uf2 \
             build/openpuck/OpenPuck.ino.hex
-          python3 "${UF2CONV}" -f 0xADA52840 -c \
+          python3 "${UF2CONV}" -f "${UF2_FAMILY_ID}" -c \
             -o build/openpuck-recovery/OpenPuck.ino.uf2 \
             build/openpuck-recovery/OpenPuck.ino.hex
 
