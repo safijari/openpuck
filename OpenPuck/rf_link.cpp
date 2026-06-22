@@ -20,6 +20,23 @@ uint8_t g_connLen = 0x08;
 uint8_t g_getParam = 0x00;
 // cycling the ESB PID drains the controller's report queue (~400 new/s vs ~60 with a fixed PID). 'e<n>' selects.
 uint8_t g_e3mode = 1;
+
+// ---- real-puck alignment (sniff1.json: a bonded controller RECONNECTING) ----
+// The live air capture of a real puck<->controller reconnect shows the controller streams 0xF1 input in
+// response to a BARE 0xE3 poll (1-byte payload, just the opcode) with NO 0xE7 awake-announce and NO
+// GET-report-0x45 sub-TLV -- 1857 of the puck's 2003 polls were bare E3, and the very first session frame
+// (a bare E3) was answered by F1 immediately. That contradicts the earlier RE "recipe" (rf_link.h) which
+// assumed E7 + GET-0x45 were required. So these now default to the real-puck behavior; flip them at runtime
+// ('d'/'n' console cmds) to fall back to the legacy GET/E7 path for an A/B comparison on hardware.
+bool g_pollGet = false; // false = bare E3 poll (real puck); true = append GET-report-0x45 TLV (legacy)
+bool g_e7announce = false; // false = no E7 awake-announce (real puck); true = announce host-awake (legacy)
+// Session-channel E1 host-frame keepalive. The real puck sends NO E1 on its session channel (the bonded
+// controller already knows the per-bond address and just resumes). OpenPuck still needs E1 because it runs
+// the SHARED "ibex" address, not the (un-reversed) per-bond address -- E1 is how the controller learns this
+// puck's session base/prefix/channel. So this defaults ON; turn it off ('m') to test the real-puck "no
+// session E1" model once per-bond addressing exists. Discovery on ch2 is separate and always runs.
+bool g_e1keepalive = true;
+
 bool g_connVerbose = false;
 // poll RX-window (us); shorter=more polls/s but may miss DELAYED replies. Tunable 'r'.
 uint32_t g_rxWin = 1200;
@@ -529,17 +546,24 @@ static void rfConnStep()
 	if (g_connSlot < 0)
 		return;
 	uint8_t ch = g_sessCh;
-	// announce HOST AWAKE: E7 00 00, a few times
+	// announce HOST AWAKE: E7 00 00, a few times. The real puck does NOT do this (the controller streams F1 to a
+	// bare E3 with no E7) -- skipped unless g_e7announce ('n') re-enables the legacy handshake.
 	if (g_connSt == 0) {
-		uint8_t p[3] = { 0xE7, 0x00, g_e7b };
-		rfConnTx(ch, 0x01, p, 3);
-		if (++g_connStep >= 4) {
+		if (g_e7announce) {
+			uint8_t p[3] = { 0xE7, 0x00, g_e7b };
+			rfConnTx(ch, 0x01, p, 3);
+			if (++g_connStep >= 4) {
+				g_connSt = 1;
+				g_connStep = 0;
+				Serial.println(
+					"# CONN: awake announced -> polling");
+			}
+		} else {
+			// real-puck path: straight to the bare-E3 poll loop, no E7
 			g_connSt = 1;
 			g_connStep = 0;
-			Serial.println(
-				"# CONN: awake announced -> polling GET report 0x45");
 		}
-		// poll loop: E3 + GET report 0x45 every poll; re-assert awake periodically
+		// poll loop: E3 (bare, or +GET report 0x45) every poll; re-assert awake periodically if g_e7announce
 	} else {
 		// CONTROLLED CADENCE: poll ~every g_pollUs
 		if ((uint32_t)(micros() - g_lastPollUs) < g_pollUs)
@@ -561,10 +585,10 @@ static void rfConnStep()
 			if ((uint32_t)(now - g_lastPollUs) >= g_pollUs)
 				g_lastPollUs = now;
 		}
-		if ((g_connPoll & 0x1F) == 0) {
+		if (g_e7announce && (g_connPoll & 0x1F) == 0) {
 			uint8_t pa[3] = { 0xE7, 0x00, g_e7b };
 			rfConnTx(ch, 0x01, pa, 3);
-		} // re-assert awake/version
+		} // re-assert awake/version (legacy; real puck never sends E7)
 		rfConnQueueHapticRelay();
 		// Relay (if any) gets its OWN cycled PID, then the GET poll gets the NEXT one -- so they're always distinct
 		// and the controller never dedups the GET as a retransmit of the relay (that was dropping ~half the replies
@@ -574,8 +598,6 @@ static void rfConnStep()
 			rfConnFlushRelay(ch, rs1);
 		}
 		{
-			// E3 + TLV [len=02][subtype=01 GET][id=0x45][param]
-			uint8_t p[5] = { 0xE3, 0x02, 0x01, 0x45, g_getParam };
 			// cycle PID (S1 1,3,5,7), NO_ACK=1
 			// cycle PID (S1 0,2,4,6), NO_ACK=0
 			// fixed (matches captured puck poll)
@@ -586,7 +608,17 @@ static void rfConnStep()
 				(g_e3mode == 2) ?
 					(uint8_t)(((g_e3pid++) & 3) << 1) :
 					0x07;
-			uint8_t rx = rfConnTx(ch, s1, p, 5);
+			uint8_t rx;
+			if (g_pollGet) {
+				// legacy: E3 + TLV [len=02][subtype=01 GET][id=0x45][param]
+				uint8_t p[5] = { 0xE3, 0x02, 0x01, 0x45,
+						 g_getParam };
+				rx = rfConnTx(ch, s1, p, 5);
+			} else {
+				// real puck: BARE E3 (just the opcode) -- the controller streams F1 to any E3 ack
+				uint8_t p[1] = { 0xE3 };
+				rx = rfConnTx(ch, s1, p, 1);
+			}
 			if (rx)
 				g_chF1[0]++;
 		}
@@ -604,8 +636,11 @@ void rfLinkTask()
 		bool connNow =
 			(g_connSlot >= 0 && millis() - g_connReplyMs < 300);
 		// session keepalive on the clean channel: every loop while connecting (fast), every 25ms once connected
-		// (every-loop beaconing also hammers the session ch and steals reply slots from the poll)
-		if (millis() - g_lastSessBeacon >= (connNow ? 25u : 0u)) {
+		// (every-loop beaconing also hammers the session ch and steals reply slots from the poll). The real puck
+		// sends NO E1 on its session channel; gated by g_e1keepalive ('m') so this can be A/B'd on hardware --
+		// but it stays ON by default because OpenPuck's shared-address model relies on E1 to advertise the session.
+		if (g_e1keepalive &&
+		    millis() - g_lastSessBeacon >= (connNow ? 25u : 0u)) {
 			g_lastSessBeacon = millis();
 			g_rfCh = g_sessCh;
 			for (int s = 0; s < NSLOT; s++)

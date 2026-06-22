@@ -7,9 +7,14 @@
 // mode-switch chord, USB remote-wakeup on a Steam short-press, adaptive channel hopping (QoS), and the
 // host-frame keepalive beacons. RE/calibration scaffolding lives separately in rf_diag.cpp.
 //
-// RECIPE (IBEX disasm @0x18d80): the controller streams 0xF1 ONLY when (a) connstate==3 [host frame E1
-// establishes it], (b) we mark host-awake via E7 [00][00], and (c) each E3 poll carries a GET-report-0x45
-// sub-TLV. F1 reply = type 0xF1 then TLV type4(analog/buttons)+type6(per-module gyro/accel/sticks).
+// RECIPE: a live air capture of a real puck<->controller RECONNECT (sniff1.json) shows the controller streams
+// 0xF1 input in response to a BARE 0xE3 poll -- with NO 0xE7 awake-announce and NO GET-report-0x45 sub-TLV.
+// So the only thing OpenPuck genuinely needs to (re)establish the stream is connstate==3, which the host frame
+// (0xE1) sets up; once connected, bare E3 polls keep F1 flowing. (The earlier RE hypothesis that E7+GET-0x45
+// were required is contradicted by the capture -- see g_pollGet/g_e7announce.) The real puck also sends no E1
+// on its session channel (its bonded controller resumes on the known per-bond address); OpenPuck still beacons
+// E1 only because it runs the SHARED "ibex" address, not the per-bond one (g_e1keepalive).
+// F1 reply = type 0xF1 then TLV type4(analog/buttons)+type6(per-module gyro/accel/sticks).
 #pragma once
 #include <stdint.h>
 
@@ -26,6 +31,11 @@ extern uint8_t g_getParam; // GET report 0x45 param byte
 
 // E3-poll PID/S1 mode (0=fixed07, 1=cyclePID+noack1, 2=cyclePID+noack0)
 extern uint8_t g_e3mode;
+
+// Real-puck alignment toggles (default to the captured real-puck behavior; flip on the CDC console to A/B):
+extern bool g_pollGet; // 'd': false=bare E3 poll (real puck), true=append GET-report-0x45 TLV (legacy)
+extern bool g_e7announce; // 'n': false=no E7 awake-announce (real puck), true=announce host-awake (legacy)
+extern bool g_e1keepalive; // 'm': session-channel E1 host-frame keepalive (ON by default; needed for shared addr)
 
 // full multi-line debug dump vs compact "I45 <hex>" stream
 extern bool g_connVerbose;

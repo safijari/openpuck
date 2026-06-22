@@ -175,9 +175,13 @@ void serialConsolePoll()
 					g_connF1 = 0;
 				}
 				Serial.printf(
-					"# CONN mode %s: E7-awake[00 00] -> E3+GET-report-0x45 poll on ch%u (param=%02X). F1 seen=%lu\n",
-					g_connOn ? "ON" : "off", g_rfCh,
-					g_getParam, (unsigned long)g_connF1);
+					"# CONN mode %s: %s%s poll on ch%u (param=%02X). F1 seen=%lu\n",
+					g_connOn ? "ON" : "off",
+					g_e7announce ? "E7-awake[00 00] -> " : "",
+					g_pollGet ? "E3+GET-report-0x45" :
+						    "bare E3",
+					g_rfCh, g_getParam,
+					(unsigned long)g_connF1);
 			} else if (line[0] == 'q') {
 				g_getParam = g_getParam ? 0x00 : 0x2D;
 				Serial.printf("# GET-0x45 param=%02X\n",
@@ -308,6 +312,22 @@ void serialConsolePoll()
 				Serial.printf(
 					"# E3 poll PID mode=%u (0=fixed07, 1=cyclePID+noack1, 2=cyclePID+noack0) - watch new=/s\n",
 					g_e3mode);
+			} else if (line[0] == 'd') {
+				g_pollGet = !g_pollGet;
+				Serial.printf(
+					"# poll = %s (real puck sends BARE E3) - watch F1=/s new=/s\n",
+					g_pollGet ? "E3 + GET-report-0x45 TLV (legacy)" :
+						    "bare E3");
+			} else if (line[0] == 'n') {
+				g_e7announce = !g_e7announce;
+				Serial.printf(
+					"# E7 awake-announce %s (real puck never sends E7) - watch F1=/s\n",
+					g_e7announce ? "ON (legacy)" : "off");
+			} else if (line[0] == 'm') {
+				g_e1keepalive = !g_e1keepalive;
+				Serial.printf(
+					"# session-channel E1 keepalive %s (real puck sends none; needed for shared addr) - watch F1=/s\n",
+					g_e1keepalive ? "ON" : "off");
 			} else if (line[0] == 't') {
 				// inject n test haptics (output 0x82 [01 01 F7]) over the relay
 				uint8_t n = line[1] ? strtoul(line + 1, 0, 10) :
