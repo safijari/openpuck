@@ -36,28 +36,60 @@ static uint8_t mountedMask()
 	return m;
 }
 
-// Rebuild the map from a bitmask of bond slots, in ascending bond-slot order (deterministic). Capped at the
-// mode's HID budget so we never register more interfaces than CFG_TUD_HID allows.
-static void buildMapFromMask(uint8_t mask)
+// Compute the order-preserving, budget-capped mount list for `mask` into out[], returning the count. Ordering
+// follows WHEN each controller was mounted: controllers already mounted keep their current USB-slot order (a
+// departure compacts the rest down but never reorders survivors), and newly-connected controllers are appended
+// at the end (ascending bond order among simultaneous joiners). Does NOT mutate the live map.
+static uint8_t computeOrder(uint8_t mask, int8_t out[NSLOT])
+{
+	uint8_t n = 0;
+	// 1. keep currently-mounted controllers that are still connected, in their existing order
+	for (uint8_t u = 0; u < g_usbMountCount && n < g_maxSlots; u++) {
+		int8_t b = g_usbToBond[u];
+		if (b >= 0 && (mask & (1u << b)))
+			out[n++] = b;
+	}
+	// 2. append newly-connected controllers (not already mounted)
+	for (int s = 0; s < NSLOT && n < g_maxSlots; s++) {
+		if (!(mask & (1u << s)))
+			continue;
+		bool have = false;
+		for (uint8_t i = 0; i < n; i++)
+			if (out[i] == (int8_t)s) {
+				have = true;
+				break;
+			}
+		if (!have)
+			out[n++] = (int8_t)s;
+	}
+	return n;
+}
+static uint8_t maskOfList(const int8_t *list, uint8_t n)
+{
+	uint8_t m = 0;
+	for (uint8_t i = 0; i < n; i++)
+		if (list[i] >= 0)
+			m |= (uint8_t)(1u << list[i]);
+	return m;
+}
+static void commitOrder(const int8_t *list, uint8_t n)
 {
 	for (int i = 0; i < NSLOT; i++) {
 		g_usbToBond[i] = -1;
 		g_bondToUsb[i] = -1;
 	}
-	uint8_t u = 0;
-	for (int s = 0; s < NSLOT && u < g_maxSlots; s++) {
-		if (mask & (1u << s)) {
-			g_usbToBond[u] = (int8_t)s;
-			g_bondToUsb[s] = (int8_t)u;
-			u++;
-		}
+	for (uint8_t u = 0; u < n; u++) {
+		g_usbToBond[u] = list[u];
+		g_bondToUsb[list[u]] = (int8_t)u;
 	}
-	g_usbMountCount = u;
+	g_usbMountCount = n;
 }
 
 void usbMountRebuildMap()
 {
-	buildMapFromMask(connectedMask());
+	int8_t tmp[NSLOT];
+	uint8_t n = computeOrder(connectedMask(), tmp);
+	commitOrder(tmp, n);
 }
 
 void usbMountEnable(bool on, uint8_t maxSlots)
@@ -82,19 +114,14 @@ void usbMountTask()
 		stableSince = now;
 		return;
 	}
-	// `want` has been steady since stableSince. Re-enumerate once it has held long enough AND differs from
-	// what is mounted (compare capped: a mask bit beyond g_maxSlots can't be mounted, so mask off the excess).
+	// `want` has been steady since stableSince. Re-enumerate once it has held long enough AND the resulting
+	// (order-preserving, capped) mount SET differs from what is currently mounted.
 	if ((now - stableSince) < MOUNT_DEBOUNCE_MS)
 		return;
-	// cap `want` to the first g_maxSlots set bits so the comparison matches what we can actually mount
-	uint8_t capped = 0, cnt = 0;
-	for (int s = 0; s < NSLOT && cnt < g_maxSlots; s++)
-		if (want & (1u << s)) {
-			capped |= (uint8_t)(1u << s);
-			cnt++;
-		}
-	if (capped == mountedMask())
-		return; // already mounted exactly this set
-	buildMapFromMask(want);
+	int8_t tmp[NSLOT];
+	uint8_t n = computeOrder(want, tmp);
+	if (maskOfList(tmp, n) == mountedMask())
+		return; // same set already mounted (order is preserved across joins/leaves)
+	commitOrder(tmp, n);
 	usbReenumerate(g_usbMountCount);
 }
