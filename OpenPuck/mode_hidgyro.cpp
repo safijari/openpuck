@@ -4,6 +4,7 @@
 #include "config.h"
 #include "haptics.h"
 #include "bonds.h"
+#include "usb_mount.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -84,7 +85,6 @@ static uint16_t hidGyroGetCommon(uint8_t slot, uint8_t rid,
 static void hidGyroSetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 			     uint8_t const *b, uint16_t n)
 {
-	(void)slot;
 	if (type != HID_REPORT_TYPE_OUTPUT || n < 1)
 		return;
 	uint8_t id;
@@ -102,8 +102,12 @@ static void hidGyroSetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 	// DS4 USB effects: report 0x05, magic at byte 0, effects block starts at byte 3.
 	if (id != 0x05 || pn < 5)
 		return;
+	// `slot` is the USB slot the report arrived on -> route rumble to its mapped bond slot.
+	int bond = (slot < NSLOT) ? g_usbToBond[slot] : -1;
+	if (bond < 0)
+		return;
 	hapticSteamRumble((uint16_t)p[4] * 257u, (uint16_t)p[3] * 257u,
-			  slot); // DS4: left=low, right=high
+			  (uint8_t)bond); // DS4: left=low, right=high
 }
 // Per-slot callback trampolines -- the Adafruit HID class has ONE _get/_set pair shared across instances,
 // and the lib's tud_hid_*_cb doesn't pass the interface index to the user callback. Generate a
@@ -134,7 +138,8 @@ static ds4_getcb_t const DS4_GETCB[NSLOT] = { hidGyroGet0, hidGyroGet1,
 static ds4_setcb_t const DS4_SETCB[NSLOT] = { hidGyroSet0, hidGyroSet1,
 					      hidGyroSet2, hidGyroSet3 };
 
-static void hidGyroBuild(uint8_t slot, uint8_t out[63])
+// usbSlot drives the per-HID counters; slot (bond) is the controller whose decoded input feeds the report.
+static void hidGyroBuild(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 {
 	uint32_t b = psButtonsFromSteam(g_in[slot].buttons);
 	bool lTouch = (b & TB_LPADT) || (b & TB_LPADC),
@@ -147,7 +152,7 @@ static void hidGyroBuild(uint8_t slot, uint8_t out[63])
 	out[4] = psHatNibble(b) | psFaceNibble(b);
 	out[5] = psShouldersByte(b, g_in[slot].lt, g_in[slot].rt);
 	static uint8_t ctr[NSLOT] = { 0 };
-	out[6] = ((ctr[slot]++ & 0x0F) << 4) |
+	out[6] = ((ctr[usbSlot]++ & 0x0F) << 4) |
 		 ((b & TB_TOUCH || b & TB_LPADC || b & TB_RPADC) ? 0x02 : 0) |
 		 ((b & TB_STEAM) ? 0x01 : 0);
 	out[7] = g_in[slot].lt;
@@ -172,7 +177,7 @@ static void hidGyroBuild(uint8_t slot, uint8_t out[63])
 				 &ry);
 		static uint8_t tstamp[NSLOT] = { 0 };
 		out[32] = 1;
-		out[33] = tstamp[slot]++;
+		out[33] = tstamp[usbSlot]++;
 		touchPackPads(out + 34, lTouch, rTouch, lx, ly, rx, ry);
 	} else {
 		out[32] = 0;
@@ -182,21 +187,29 @@ static void hidGyroBuild(uint8_t slot, uint8_t out[63])
 	}
 }
 
+// Dynamic-mount mode: begin() is unused (setup() calls beginPool()+usbReenumerate instead).
 void HidGyroController::begin()
 {
+}
+// HID budget: clean DS4 (MODE_DS4_GAME) has no wake mouse; normal HIDGYRO keeps it (1 HID).
+uint8_t HidGyroController::maxSlots() const
+{
+	uint8_t cap = modeIsCleanPS(g_usbMode) ? (uint8_t)CFG_TUD_HID :
+						 (uint8_t)(CFG_TUD_HID - 1);
+	return cap < NSLOT ? cap : (uint8_t)NSLOT;
+}
+void HidGyroController::usbIdentity()
+{
 	USBDevice.setID(0x054C, 0x05C4);
-
-	int n = bondedSlotCount();
-	USBDevice.setDeviceVersion(
-		(uint16_t)(0x0120 + (uint16_t)(n > 0 ? n - 1 : 0)));
+	USBDevice.setDeviceVersion(0x0120);
 	USBDevice.setManufacturerDescriptor("Sony Computer Entertainment");
 	USBDevice.setProductDescriptor("Wireless Controller");
+}
+void HidGyroController::beginPool()
+{
 	initDs4Macs();
-	for (int s = 0; s < NSLOT; s++) {
-		if (n > 0 && !g_slot[s].used)
-			continue;
-		if (n == 0 && s > 0)
-			break;
+	uint8_t pool = maxSlots();
+	for (uint8_t s = 0; s < pool; s++) {
 		g_hidGyro[s].enableOutEndpoint(true);
 		g_hidGyro[s].setReportCallback(DS4_GETCB[s], DS4_SETCB[s]);
 		g_hidGyro[s].setReportDescriptor(GYRO_HID_DESC,
@@ -205,16 +218,24 @@ void HidGyroController::begin()
 		g_hidGyro[s].begin();
 	}
 }
+void HidGyroController::mountSlots(uint8_t k)
+{
+	for (uint8_t u = 0; u < k; u++)
+		USBDevice.addInterface(g_hidGyro[u]);
+}
 void HidGyroController::task()
 {
-	for (int s = 0; s < NSLOT; s++) {
-		if (!g_hidGyro[s].ready())
+	for (uint8_t u = 0; u < g_usbMountCount; u++) {
+		if (!g_hidGyro[u].ready())
 			continue;
-		if (millis() - g_gyroLastMs[s] < USB_STREAM_MS)
+		if (millis() - g_gyroLastMs[u] < USB_STREAM_MS)
 			continue;
-		g_gyroLastMs[s] = millis();
+		int bond = g_usbToBond[u];
+		if (bond < 0)
+			continue;
+		g_gyroLastMs[u] = millis();
 		uint8_t p[63];
-		hidGyroBuild((uint8_t)s, p);
-		g_hidGyro[s].sendReport(0x01, p, sizeof p);
+		hidGyroBuild(u, (uint8_t)bond, p);
+		g_hidGyro[u].sendReport(0x01, p, sizeof p);
 	}
 }

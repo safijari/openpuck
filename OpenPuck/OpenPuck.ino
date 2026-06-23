@@ -34,6 +34,9 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "serial_console.h"
 #include "wake_hid.h"
 #include "status_led.h"
+#include "usb_mount.h"
+#include "identity.h"
+#include <stdio.h>
 
 #if CFG_TUD_HID < 4
 #error "build with -DCFG_TUD_HID=4 (extra_flags): up to 4 HID interfaces per mode"
@@ -41,6 +44,37 @@ using namespace Adafruit_LittleFS_Namespace;
 
 // puck composite (4 HID + WebUSB) exceeds the default 256 B config buffer
 static uint8_t g_usbCfgDesc[512];
+
+// Per-mode USB serial suffix (modes 1..8: X=xbox N=hori L=lizard P=swpro S=ps5 G=hidgyro Q=ps5game D=ds4game).
+static const char MODE_SUFFIX[] = { 'X', 'N', 'L', 'P', 'S', 'G', 'Q', 'D' };
+// Fixed-interface flags captured at boot so usbReenumerate (dynamic mount, no reboot) replays them.
+static bool s_dynWantWebusb = false, s_dynWantWakeMouse = false;
+
+// Dynamic re-enumeration (NO MCU reboot): tear down + rebuild the config descriptor presenting `k` connected-
+// controller slots, replaying the fixed interfaces in locked HID-instance order (wake mouse = instance 0,
+// before the slot pool; WebUSB is vendor-class so order-free), then re-attach. RF/firmware state survives.
+// g_usbToBond must already be built for k connected controllers. Called at boot and by usb_mount's watcher.
+void usbReenumerate(uint8_t k)
+{
+	USBDevice.detach();
+	delay(20);
+	USBDevice.clearConfiguration();
+	USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);
+	g_active->usbIdentity(); // clearConfiguration reset VID/PID/strings -- restore them
+	// serial carries the mounted count so the host invalidates its cached config descriptor on a change
+	snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c%u", g_unit,
+		 MODE_SUFFIX[(g_usbMode >= 1 && g_usbMode <= 8) ? g_usbMode - 1 :
+							         0],
+		 (unsigned)k);
+	USBDevice.setSerialDescriptor(g_usbSerial);
+	if (s_dynWantWakeMouse)
+		wakeHidAddInterface(); // HID instance 0
+	g_active->mountSlots(k); // mode's fixed HIDs (if any) + k slot interfaces
+	if (s_dynWantWebusb)
+		USBDevice.addInterface(usb_web);
+	USBDevice.setConfigurationAttribute(0x80 | 0x20);
+	USBDevice.attach();
+}
 
 void setup()
 {
@@ -81,59 +115,79 @@ void setup()
 	// clean-PS modes skip BOTH the wake mouse and WebUSB -- no config panel / host-wake; chord back to Steam
 	// (back-paddle 4 + A) to reach the panel. Normal MODE_PS5 / MODE_HIDGYRO keep wake + panel.
 	const bool psClean = modeIsCleanPS(g_usbMode);
-	USBDevice.detach();
-	delay(30);
-	if (keepCdc) {
-		USBDevice.setConfigurationBuffer(g_usbCfgDesc,
-						 sizeof g_usbCfgDesc);
-	} else {
+	const bool dynamic = g_active->dynamicMount();
+
+	if (dynamic) {
+		// Dynamic mount: present only ACTIVELY-CONNECTED controllers; usbReenumerate re-attaches (no reboot)
+		// as the set changes. Emulated modes are never puck; clean-PS drops the wake mouse + WebUSB.
+		s_dynWantWakeMouse = !psClean;
+		s_dynWantWebusb = !psClean;
+		USBDevice.detach();
+		delay(30);
 		USBDevice.clearConfiguration();
-
-		// headroom over the default 256 B cap
 		USBDevice.setConfigurationBuffer(g_usbCfgDesc,
 						 sizeof g_usbCfgDesc);
-	}
-
-	// Distinct USB serial PER MODE (must be set AFTER clearConfiguration, which nulls it). Hosts cache USB
-	// identity by VID:PID:serial; reusing one serial under a changing VID:PID can make a host refuse the new
-	// identity. Steam keeps the exact unit serial (its pairing identity); the others get a 1-char suffix.
-	static const char MODE_SUFFIX[] = {
-		'X', 'N', 'L', 'P', 'S', 'G', 'Q', 'D'
-	}; // modes 1..8 (Q=PS5 game, D=DS4 game)
-	if (puckMode) {
-		USBDevice.setSerialDescriptor(g_unit);
+		// Lock TinyUSB HID instance indices ONCE, canonical order: wake mouse (HID 0) then the mode's pool.
+		if (s_dynWantWakeMouse)
+			wakeHidBegin();
+		g_active->beginPool();
+		if (s_dynWantWebusb)
+			usb_web.begin();
+		usbMountEnable(true, g_active->maxSlots());
+		usbMountRebuildMap(); // initial connected set (usually empty at cold boot)
+		usbReenumerate(g_usbMountCount); // build the live descriptor + attach
 	} else {
-		// Bond count in serial so Windows invalidates its cached config descriptor if the count changes.
-		snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c%d", g_unit,
-			 MODE_SUFFIX[g_usbMode - 1],
-			 bondedSlotCount() > 0 ? bondedSlotCount() : 1);
-		USBDevice.setSerialDescriptor(g_usbSerial);
+		USBDevice.detach();
+		delay(30);
+		if (keepCdc) {
+			USBDevice.setConfigurationBuffer(g_usbCfgDesc,
+							 sizeof g_usbCfgDesc);
+		} else {
+			USBDevice.clearConfiguration();
+
+			// headroom over the default 256 B cap
+			USBDevice.setConfigurationBuffer(g_usbCfgDesc,
+							 sizeof g_usbCfgDesc);
+		}
+
+		// Distinct USB serial PER MODE (must be set AFTER clearConfiguration, which nulls it). Hosts cache USB
+		// identity by VID:PID:serial; reusing one serial under a changing VID:PID can make a host refuse the new
+		// identity. Steam keeps the exact unit serial (its pairing identity); the others get a 1-char suffix.
+		if (puckMode) {
+			USBDevice.setSerialDescriptor(g_unit);
+		} else {
+			// Bond count in serial so Windows invalidates its cached config descriptor if the count changes.
+			snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c%d",
+				 g_unit, MODE_SUFFIX[g_usbMode - 1],
+				 bondedSlotCount() > 0 ? bondedSlotCount() : 1);
+			USBDevice.setSerialDescriptor(g_usbSerial);
+		}
+
+		// SDL3's Proteus/Triton HIDAPI driver only binds slot HIDs on USB interfaces 2..5. Register WebUSB (IF 0)
+		// and the wake mouse (IF 1) before the four puck slots so hid[0..3] land on IF 2..5 like the real puck.
+		if (puckMode)
+			usb_web.begin();
+		if (puckMode && !keepCdc)
+			wakeHidBegin();
+
+		g_active->begin();
+
+		// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
+		// no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS
+		// modes so the device stays a single clean HID gamepad (see psClean above).
+		if (!puckMode && !keepCdc && !psClean)
+			wakeHidBegin();
+
+		// WebUSB config panel -- every mode EXCEPT the PlayStation modes. Puck: registered above (IF 0) before wake +
+		// slots; other clean modes after controller. PS modes omit it to present a genuine single-HID PS controller.
+		if (!puckMode && !psClean)
+			usb_web.begin();
+		// bmAttributes: required(0x80) | remote_wakeup(0x20). Remote Wakeup lets us signal wake-from-sleep.
+		USBDevice.setConfigurationAttribute(0x80 | 0x20);
+
+		// re-attach with the final descriptor (host re-reads it fresh -> deterministic enumeration)
+		USBDevice.attach();
 	}
-
-	// SDL3's Proteus/Triton HIDAPI driver only binds slot HIDs on USB interfaces 2..5. Register WebUSB (IF 0)
-	// and the wake mouse (IF 1) before the four puck slots so hid[0..3] land on IF 2..5 like the real puck.
-	if (puckMode)
-		usb_web.begin();
-	if (puckMode && !keepCdc)
-		wakeHidBegin();
-
-	g_active->begin();
-
-	// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
-	// no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS
-	// modes so the device stays a single clean HID gamepad (see psClean above).
-	if (!puckMode && !keepCdc && !psClean)
-		wakeHidBegin();
-
-	// WebUSB config panel -- every mode EXCEPT the PlayStation modes. Puck: registered above (IF 0) before wake +
-	// slots; other clean modes after controller. PS modes omit it to present a genuine single-HID PS controller.
-	if (!puckMode && !psClean)
-		usb_web.begin();
-	// bmAttributes: required(0x80) | remote_wakeup(0x20). Remote Wakeup lets us signal wake-from-sleep.
-	USBDevice.setConfigurationAttribute(0x80 | 0x20);
-
-	// re-attach with the final descriptor (host re-reads it fresh -> deterministic enumeration)
-	USBDevice.attach();
 	Serial.begin(115200);
 	for (int i = 0; i < 300 && !USBDevice.mounted(); i++)
 		delay(10); // wait up to 3s for USB mount, but NEVER hang
@@ -230,6 +284,7 @@ void loop()
 	t = micros();
 	ledTask();
 	acc[6] += (uint32_t)(micros() - t);
+	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
 	loops++;
 	if (millis() - secMs >= 1000) {
 		g_loopPeriodUs = loops ? (uint16_t)(1000000UL / loops) : 0;
@@ -256,5 +311,6 @@ void loop()
 	rfLinkTask();
 	hapticTask();
 	ledTask();
+	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
 #endif
 }

@@ -55,6 +55,36 @@ class IController {
 	{
 		return false;
 	}
+
+	// ---- Dynamic USB mounting (see usb_mount.h). Emulated modes that present only CONNECTED controllers
+	//      override these; the defaults keep the legacy "begin() mounts everything" behavior for puck/lizard
+	//      and any not-yet-converted mode. ----
+	// true => this mode uses the dynamic mount/unmount path (usbReenumerate driven by the connectivity watcher)
+	// rather than registering its slot interfaces in begin(). maxSlots() then caps the mounted count.
+	virtual bool dynamicMount() const
+	{
+		return false;
+	}
+	// HID-instance budget for slot interfaces (CFG_TUD_HID minus any fixed HID like the wake mouse).
+	virtual uint8_t maxSlots() const
+	{
+		return 0;
+	}
+	// Re-apply this mode's USB identity (VID/PID, manufacturer/product strings, bcdDevice). Called by
+	// usbReenumerate after clearConfiguration (which resets them). begin() also calls it.
+	virtual void usbIdentity()
+	{
+	}
+	// One-time at boot: create the slot interface/HID object pool and lock their TinyUSB instance indices
+	// (begin() each). Adds them to the throwaway descriptor; usbReenumerate then presents the live prefix.
+	virtual void beginPool()
+	{
+	}
+	// (Re)add the first k slot interfaces (a dense prefix of the pool) to the freshly-cleared config descriptor.
+	virtual void mountSlots(uint8_t k)
+	{
+		(void)k;
+	}
 };
 
 // The singleton for a given mode (nullptr if the mode is unknown). Defined in controllers.cpp.

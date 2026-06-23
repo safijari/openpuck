@@ -369,7 +369,7 @@ void webusbPoll()
 
 				// Switch Pro report rate (0=66Hz,1=120Hz,2=full)
 				case 23:
-					g_swProRate = (v <= 2) ? v : 1;
+					g_swProRate = (v <= 2) ? v : 2;
 					swProSaveCfg();
 					persist = false;
 					break;

@@ -16,3 +16,8 @@ void wakeHidBegin()
 	g_wakeHid.setPollInterval(10);
 	g_wakeHid.begin();
 }
+
+void wakeHidAddInterface()
+{
+	TinyUSBDevice.addInterface(g_wakeHid);
+}

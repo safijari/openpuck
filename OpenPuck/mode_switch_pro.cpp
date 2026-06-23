@@ -4,6 +4,7 @@
 #include "config.h"
 #include "haptics.h"
 #include "bonds.h"
+#include "usb_mount.h"
 #include <Adafruit_TinyUSB.h>
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
@@ -22,7 +23,7 @@ SwitchProController g_switchPro;
 #define SW_ACCEL_DIV 4
 
 uint8_t g_swProRate =
-	1; // 0 = 66Hz, 1 = 120Hz (default), 2 = full (~250Hz / USB_STREAM_MS)
+	2; // 0 = 66Hz, 1 = 120Hz, 2 = full (~250Hz / USB_STREAM_MS, default)
 uint8_t g_swGyroScale10 = 10; // gyro sensitivity x10 (10 = 1.0x)
 
 // Persist the two Switch Pro motion settings in their own tiny file so they never trigger a global-Cfg reset.
@@ -44,8 +45,8 @@ static void swProLoadCfg()
 	uint8_t b[3];
 	if (f.open(SWPRO_CFG_FILE, FILE_O_READ)) {
 		if (f.read(b, 3) == 3 && b[0] == 0x01) {
-			// 0=66Hz, 1=120Hz, 2=full; bad value -> default 120Hz
-			g_swProRate = (b[1] <= 2) ? b[1] : 1;
+			// 0=66Hz, 1=120Hz, 2=full; bad value -> default full
+			g_swProRate = (b[1] <= 2) ? b[1] : 2;
 			g_swGyroScale10 =
 				(b[2] >= 5 && b[2] <= 30) ?
 					b[2] :
@@ -167,6 +168,14 @@ static void initJcMacs()
 	}
 	g_jcMacInit = true;
 }
+// Dynamic mount: the handshake/state arrays are keyed by USB slot, but the controller INPUT (and rumble target)
+// belongs to the bond slot the USB slot is mapped to. This resolves usbSlot -> bondSlot (identity fallback if
+// somehow unmapped, e.g. legacy paths).
+static inline uint8_t jcBondOf(uint8_t usbSlot)
+{
+	int b = (usbSlot < NSLOT) ? g_usbToBond[usbSlot] : -1;
+	return (b >= 0) ? (uint8_t)b : usbSlot;
+}
 static uint16_t jcRumbleAmp(const uint8_t r[4])
 {
 	// Nintendo packs a high band (r[0],r[1]) and low band (r[2],r[3]) of frequency+amplitude. We only need a
@@ -192,7 +201,7 @@ static void jcRumble(uint8_t slot, const uint8_t *p, uint16_t pn)
 		return;
 	g_jcLastLo[slot] = lo;
 	g_jcLastHi[slot] = hi;
-	hapticSteamRumble(lo, hi, slot);
+	hapticSteamRumble(lo, hi, jcBondOf(slot)); // route to the mapped controller
 }
 static int jcStick12(int16_t v, bool inv)
 { // steam int16 (center 0) -> 12-bit (center 0x800), clamped
@@ -211,7 +220,8 @@ static void jcPackStick(uint8_t s[3], int16_t x, int16_t y)
 // shared by the streamed 0x30 report and the 0x21 subcommand-reply reports the host reads during init.
 static void jcInputPrefix(uint8_t slot, uint8_t *out)
 {
-	uint32_t b = g_in[slot].buttons;
+	uint8_t bond = jcBondOf(slot); // input data comes from the mapped controller; timer/state stay per USB slot
+	uint32_t b = g_in[bond].buttons;
 	// QAM (3 dots) remap -> applied via codeToJc below like a back paddle (so Capture(18)/any target work).
 	bool qam = g_qamMap && (b & TB_QAM);
 	if ((b & CHORD_BACK4) == CHORD_BACK4)
@@ -233,9 +243,9 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 		jc |= JC_BTN_L;
 	if (b & TB_RB)
 		jc |= JC_BTN_R;
-	if ((g_in[slot].lt >= SW_TRIG_ON) || (b & 0x8000000u))
+	if ((g_in[bond].lt >= SW_TRIG_ON) || (b & 0x8000000u))
 		jc |= JC_BTN_ZL;
-	if ((g_in[slot].rt >= SW_TRIG_ON) || (b & 0x800000u))
+	if ((g_in[bond].rt >= SW_TRIG_ON) || (b & 0x800000u))
 		jc |= JC_BTN_ZR;
 	if (b & TB_VIEW)
 		jc |= JC_BTN_PLUS;
@@ -277,13 +287,14 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 	// charging_grip bit (button "common" byte, bit7): genuine Pro Controller always sets it on USB; real
 	// Switch uses it to recognise a wired controller. Not a button, so hid-nintendo ignores it.
 	out[3] |= 0x80;
-	jcPackStick(out + 5, g_in[slot].lx, g_in[slot].ly);
-	jcPackStick(out + 8, g_in[slot].rx, g_in[slot].ry);
+	jcPackStick(out + 5, g_in[bond].lx, g_in[bond].ly);
+	jcPackStick(out + 8, g_in[bond].rx, g_in[bond].ry);
 	// rumble_input_report echo: genuine pad emits 0x09..0x0C; some Switch firmware expects this nonzero.
 	out[11] = 0x09;
 }
 static void switchProBuild(uint8_t slot, uint8_t out[63])
 {
+	uint8_t bond = jcBondOf(slot); // IMU data comes from the mapped controller
 	memset(out, 0, 63);
 	jcInputPrefix(slot, out);
 	// Gyro slot order follows hid-nintendo: raw+6 = ROLL, raw+8 = PITCH, raw+10 = YAW. Source routing (a proper
@@ -299,14 +310,14 @@ static void switchProBuild(uint8_t slot, uint8_t out[63])
 	// ~1g. Without this the console reads gravity as ~4g, REJECTS the accel for drift correction (it must be linear
 	// accel, not gravity), and gyro roll error accumulates into a slow ~45deg lean. Gyro is left at native scale.
 	// accel X <- +ay, accel Y <- -ax, accel Z <- +az (signs match gyro)
-	int16_t aX = (int16_t)(g_in[slot].ay / SW_ACCEL_DIV);
-	int16_t aY = (int16_t)((-(int16_t)g_in[slot].ax) / SW_ACCEL_DIV);
-	int16_t aZ = (int16_t)(g_in[slot].az / SW_ACCEL_DIV);
+	int16_t aX = (int16_t)(g_in[bond].ay / SW_ACCEL_DIV);
+	int16_t aY = (int16_t)((-(int16_t)g_in[bond].ax) / SW_ACCEL_DIV);
+	int16_t aZ = (int16_t)(g_in[bond].az / SW_ACCEL_DIV);
 
 	// gyro outputs scaled by the user sensitivity factor
-	int16_t groll = gscale((int16_t)g_in[slot].gy);
-	int16_t gpitch = gscale((int16_t)(-(int16_t)g_in[slot].gx));
-	int16_t gyaw = gscale((int16_t)g_in[slot].gz);
+	int16_t groll = gscale((int16_t)g_in[bond].gy);
+	int16_t gpitch = gscale((int16_t)(-(int16_t)g_in[bond].gx));
+	int16_t gyaw = gscale((int16_t)g_in[bond].gz);
 	for (int k = 0; k < 3; k++) {
 		int o = 12 + k * 12;
 		out[o + 0] = aX & 0xFF;
@@ -683,24 +694,31 @@ typedef void (*jc_setcb_t)(uint8_t, hid_report_type_t, uint8_t const *,
 			   uint16_t);
 static jc_setcb_t const JC_SETCB[NSLOT] = { jcSet0, jcSet1, jcSet2, jcSet3 };
 
+// Dynamic-mount mode: begin() is unused (setup() calls beginPool()+usbReenumerate instead).
 void SwitchProController::begin()
 {
+}
+// Wake mouse (1 HID) is present in Switch mode, leaving CFG_TUD_HID-1 for the Pro Controller pool.
+uint8_t SwitchProController::maxSlots() const
+{
+	uint8_t cap = (uint8_t)(CFG_TUD_HID - 1);
+	return cap < NSLOT ? cap : (uint8_t)NSLOT;
+}
+void SwitchProController::usbIdentity()
+{
 	USBDevice.setID(0x057E, 0x2009);
-	int n = bondedSlotCount();
-	USBDevice.setDeviceVersion(
-		(uint16_t)(0x0220 + (uint16_t)(n > 0 ? n - 1 : 0)));
+	USBDevice.setDeviceVersion(0x0220);
 	USBDevice.setManufacturerDescriptor("Nintendo Co., Ltd.");
 	USBDevice.setProductDescriptor("Pro Controller");
+}
+void SwitchProController::beginPool()
+{
 	jcBuildStickCal();
-
 	loadUserCal();
 	swProLoadCfg();
 	initJcMacs();
-	for (int s = 0; s < NSLOT; s++) {
-		if (n > 0 && !g_slot[s].used)
-			continue;
-		if (n == 0 && s > 0)
-			break;
+	uint8_t pool = maxSlots();
+	for (uint8_t s = 0; s < pool; s++) {
 		g_swPro[s].enableOutEndpoint(true);
 		g_swPro[s].setReportCallback(NULL, JC_SETCB[s]);
 		g_swPro[s].setReportDescriptor(SWPRO_HID_DESC,
@@ -709,9 +727,19 @@ void SwitchProController::begin()
 		g_swPro[s].begin();
 	}
 }
+void SwitchProController::mountSlots(uint8_t k)
+{
+	for (uint8_t u = 0; u < k; u++) {
+		// Each re-enumeration restarts the host handshake -- clear this USB slot's gate + reply FIFO so we
+		// don't stream 0x30 before the (new) host has re-selected report mode.
+		g_swProReportMode[u] = 0;
+		g_jcQh[u] = g_jcQt[u] = 0;
+		USBDevice.addInterface(g_swPro[u]);
+	}
+}
 void SwitchProController::task()
 {
-	for (int s = 0; s < NSLOT; s++) {
+	for (uint8_t s = 0; s < g_usbMountCount; s++) {
 		if (!g_swPro[s].ready())
 			continue;
 		// Deferred user-cal flash write (queued by the USB ISR; debounced so a calibration write-burst

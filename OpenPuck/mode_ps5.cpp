@@ -4,6 +4,7 @@
 #include "config.h"
 #include "haptics.h"
 #include "bonds.h"
+#include "usb_mount.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -124,7 +125,12 @@ static void ps5SetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 	}
 	if (id != 0x02 || pn < 4)
 		return;
-	hapticSteamRumble((uint16_t)p[3] * 257u, (uint16_t)p[2] * 257u, slot);
+	// `slot` here is the USB slot the report arrived on -> route rumble to the bond slot it's mapped to.
+	int bond = (slot < NSLOT) ? g_usbToBond[slot] : -1;
+	if (bond < 0)
+		return;
+	hapticSteamRumble((uint16_t)p[3] * 257u, (uint16_t)p[2] * 257u,
+			  (uint8_t)bond);
 	// DualSense: left=low, right=high
 }
 #define PS5CB(N)                                                               \
@@ -153,7 +159,8 @@ static ps5_getcb_t const PS5_GETCB[NSLOT] = { ps5Get0, ps5Get1, ps5Get2,
 static ps5_setcb_t const PS5_SETCB[NSLOT] = { ps5Set0, ps5Set1, ps5Set2,
 					      ps5Set3 };
 
-static void ps5Build(uint8_t slot, uint8_t out[63])
+// usbSlot drives the per-HID sequence counter; bond is the controller whose decoded input feeds the report.
+static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 {
 	uint32_t b = psButtonsFromSteam(g_in[slot].buttons);
 	bool lTouch = (b & TB_LPADT) || (b & TB_LPADC),
@@ -166,7 +173,7 @@ static void ps5Build(uint8_t slot, uint8_t out[63])
 	out[4] = g_in[slot].lt;
 	out[5] = g_in[slot].rt;
 	static uint8_t seq[NSLOT] = { 0 };
-	out[6] = seq[slot]++;
+	out[6] = seq[usbSlot]++;
 	out[7] = psHatNibble(b) | psFaceNibble(b);
 	out[8] = psShouldersByte(b, g_in[slot].lt, g_in[slot].rt);
 	out[9] = ((b & TB_STEAM) ? 0x01 : 0) |
@@ -191,21 +198,30 @@ static void ps5Build(uint8_t slot, uint8_t out[63])
 	out[52] = PS5_STATUS_USB;
 }
 
+// Dynamic-mount mode: begin() is unused (setup() calls beginPool()+usbReenumerate instead).
 void Ps5Controller::begin()
 {
+}
+// HID budget: clean PS modes have no wake mouse (CFG_TUD_HID slots); normal PS5 keeps the wake mouse (1 HID).
+uint8_t Ps5Controller::maxSlots() const
+{
+	uint8_t cap = modeIsCleanPS(g_usbMode) ? (uint8_t)CFG_TUD_HID :
+						 (uint8_t)(CFG_TUD_HID - 1);
+	return cap < NSLOT ? cap : (uint8_t)NSLOT;
+}
+void Ps5Controller::usbIdentity()
+{
 	USBDevice.setID(0x054C, 0x0CE6);
-
-	int n = bondedSlotCount();
-	USBDevice.setDeviceVersion(
-		(uint16_t)(0x0110 + (uint16_t)(n > 0 ? n - 1 : 0)));
+	USBDevice.setDeviceVersion(0x0110);
 	USBDevice.setManufacturerDescriptor("Sony Interactive Entertainment");
 	USBDevice.setProductDescriptor("DualSense Wireless Controller");
+}
+// One-time: create the DualSense HID pool and lock instance indices (wake mouse, if any, was begun first).
+void Ps5Controller::beginPool()
+{
 	initPs5Macs();
-	for (int s = 0; s < NSLOT; s++) {
-		if (n > 0 && !g_slot[s].used)
-			continue;
-		if (n == 0 && s > 0)
-			break;
+	uint8_t pool = maxSlots();
+	for (uint8_t s = 0; s < pool; s++) {
 		g_ps5[s].enableOutEndpoint(true);
 		g_ps5[s].setReportCallback(PS5_GETCB[s], PS5_SETCB[s]);
 		g_ps5[s].setReportDescriptor(PS5_HID_DESC, sizeof PS5_HID_DESC);
@@ -213,16 +229,24 @@ void Ps5Controller::begin()
 		g_ps5[s].begin();
 	}
 }
+void Ps5Controller::mountSlots(uint8_t k)
+{
+	for (uint8_t u = 0; u < k; u++)
+		USBDevice.addInterface(g_ps5[u]);
+}
 void Ps5Controller::task()
 {
-	for (int s = 0; s < NSLOT; s++) {
-		if (!g_ps5[s].ready())
+	for (uint8_t u = 0; u < g_usbMountCount; u++) {
+		if (!g_ps5[u].ready())
 			continue;
-		if (millis() - g_ps5LastMs[s] < USB_STREAM_MS)
+		if (millis() - g_ps5LastMs[u] < USB_STREAM_MS)
 			continue;
-		g_ps5LastMs[s] = millis();
+		int bond = g_usbToBond[u];
+		if (bond < 0)
+			continue;
+		g_ps5LastMs[u] = millis();
 		uint8_t p[63];
-		ps5Build((uint8_t)s, p);
-		g_ps5[s].sendReport(0x01, p, sizeof p);
+		ps5Build(u, (uint8_t)bond, p);
+		g_ps5[u].sendReport(0x01, p, sizeof p);
 	}
 }

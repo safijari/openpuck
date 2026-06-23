@@ -5,15 +5,17 @@
 // for the right trackpad. Host binds by VID/PID (045E:028E) + the FF/5D/01 interface. The OUT endpoint carries
 // rumble, relayed to the controller as a haptic by task().
 //
-// Multi-controller: one XInput interface per bonded controller slot. The single class driver routes xfer/open
-// callbacks by endpoint address into the per-slot state. The right-pad mouse is a single shared interface
-// (only slot 0's right-pad drives it). Number of registered interfaces matches bondedSlotCount() at boot.
+// Multi-controller: one XInput interface per CONNECTED controller (dynamic mount -- see usb_mount.h; the device
+// re-enumerates without rebooting as controllers connect/disconnect). The single class driver routes xfer/open
+// callbacks by endpoint address into the per-bond-slot state; xi_open claims slots in connection order. The
+// right-pad mouse is a single shared interface (only bond slot 0's right-pad drives it).
 #include "mode_xinput.h"
 #include "triton.h"
 #include "gamepad_util.h"
 #include "config.h"
 #include "haptics.h"
 #include "bonds.h"
+#include "usb_mount.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -62,6 +64,9 @@ struct XiSlot {
 	volatile bool inUse;
 };
 static XiSlot g_xiSlot[NSLOT];
+// Dynamic mount: xi_open is called once per XInput interface in descriptor order; this counts them so the
+// u-th interface claims the u-th connected controller (g_usbToBond[u]). Reset on every (re)enumeration.
+static uint8_t g_xiOpenU = 0;
 // release a held rumble if no OUT packet refreshes it for this long (covers a lost stop)
 #define RUMBLE_STUCK_MS 2500u
 
@@ -77,6 +82,7 @@ static bool xi_deinit(void)
 static void xi_reset(uint8_t rhport)
 {
 	(void)rhport;
+	g_xiOpenU = 0; // restart per-interface claim ordering for this enumeration
 	for (int s = 0; s < NSLOT; s++) {
 		g_xiSlot[s].itf = 0;
 		g_xiSlot[s].epIn = g_xiSlot[s].epOut = 0;
@@ -92,15 +98,18 @@ static uint16_t xi_open(uint8_t rhport, tusb_desc_interface_t const *itf,
 	if (!(itf->bInterfaceClass == 0xFF && itf->bInterfaceSubClass == 0x5D &&
 	      itf->bInterfaceProtocol == 0x01))
 		return 0;
-	int nBonds = bondedSlotCount();
-	int slot = -1;
-	for (int s = 0; s < NSLOT; s++) {
-		if (!g_xiSlot[s].inUse && (nBonds == 0 || g_slot[s].used)) {
-			slot = s;
-			break;
-		}
+	// The u-th XInput interface in the descriptor serves the u-th connected controller. g_xiSlot is keyed by
+	// BOND slot so onReport45(bond)/rumble route straight through; only connected bonds get an interface.
+	uint8_t u = g_xiOpenU++;
+	int slot = (u < g_usbMountCount) ? g_usbToBond[u] : -1;
+	if (slot < 0) { // fallback (e.g. map not built): first free slot
+		for (int s = 0; s < NSLOT; s++)
+			if (!g_xiSlot[s].inUse) {
+				slot = s;
+				break;
+			}
 	}
-	if (slot < 0)
+	if (slot < 0 || slot >= NSLOT || g_xiSlot[slot].inUse)
 		return 0;
 	XiSlot &S = g_xiSlot[slot];
 	S.itf = itf->bInterfaceNumber;
@@ -408,29 +417,42 @@ static void rfXboxMouse(const uint8_t *r)
 }
 
 // ===================== IController =====================
+// Dynamic-mount mode: begin() is unused (setup() calls beginPool()+usbReenumerate instead).
 void XboxController::begin()
+{
+}
+// XInput slot interfaces are a custom (non-HID) class, so they don't draw on the CFG_TUD_HID budget (only the
+// wake mouse + right-pad mouse do). Slots are limited by NSLOT / USB endpoints, not HID instances.
+uint8_t XboxController::maxSlots() const
+{
+	return (uint8_t)NSLOT;
+}
+void XboxController::usbIdentity()
 {
 	// 045E:028E -> Windows xusb / SDL / Linux xpad all bind it
 	USBDevice.setID(0x045E, 0x028E);
-	// bcdDevice encodes the bonded count so Windows re-reads the config descriptor when the count changes.
-	int n = bondedSlotCount();
-	USBDevice.setDeviceVersion(
-		(uint16_t)(0x0120 + (uint16_t)(n > 0 ? n - 1 : 0)));
+	USBDevice.setDeviceVersion(0x0120);
 	USBDevice.setManufacturerDescriptor("Microsoft");
 	USBDevice.setProductDescriptor("Controller");
-	for (int s = 0; s < NSLOT; s++) {
-		if (n > 0 && !g_slot[s].used)
-			continue;
-		if (n == 0 && s > 0)
-			break;
-		g_xinput[s].setStringDescriptor("Controller");
-		g_xinput[s].begin();
-	}
+}
+void XboxController::beginPool()
+{
+	// Lock the right-pad mouse HID instance (wake mouse was begun first by setup -> this is HID instance 1).
 	g_mouse.setStringDescriptor("OpenPuck Mouse");
 	g_mouse.setBootProtocol(HID_ITF_PROTOCOL_MOUSE);
 	g_mouse.setReportDescriptor(MOUSE_HID_DESC, sizeof MOUSE_HID_DESC);
 	g_mouse.setPollInterval(1);
 	g_mouse.begin();
+	for (int s = 0; s < NSLOT; s++)
+		g_xinput[s].setStringDescriptor("Controller");
+}
+void XboxController::mountSlots(uint8_t k)
+{
+	// Right-pad mouse first (fixed HID), then one XInput interface per connected controller (claimed in
+	// order by xi_open). The wake mouse + WebUSB are added around this by usbReenumerate.
+	USBDevice.addInterface(g_mouse);
+	for (uint8_t u = 0; u < k; u++)
+		USBDevice.addInterface(g_xinput[u]);
 }
 void XboxController::onReport45(int slot, const uint8_t *rep, bool fresh,
 				uint8_t bodyTlen)

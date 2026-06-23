@@ -154,7 +154,7 @@
     <div class="card">
       <h2>Switch Pro motion</h2>
       <div class="row"><label>Report rate</label><select id="swRate"></select></div>
-      <p class="note" style="margin:0 0 6px">120 Hz (default) is low-latency and drift-free. 66 Hz is a genuine-cadence compatibility fallback. Full rate (~250 Hz) is lowest-latency but non-genuine — use only if your console tolerates it.</p>
+      <p class="note" style="margin:0 0 6px">Full rate (~250 Hz, default) is lowest-latency. 120 Hz is low-latency and drift-free. 66 Hz is a genuine-cadence compatibility fallback — drop to it only if your console rejects the faster rates.</p>
       <div class="row"><label>Gyro scale</label><select id="swGyro"></select></div>
       <p class="note">Gyro sensitivity multiplier for Switch Pro mode (1.0× = unchanged).</p>
     </div>
@@ -210,14 +210,26 @@ function mkSelect(def, includeNone){
     const o=document.createElement("option"); o.value=c; o.textContent=def.labels[c]; sel.appendChild(o); }
   return sel;
 }
+let curTab=0, tabInited=false;
+function setTab(et){
+  curTab=et;
+  typeEls.forEach((rec,i)=>{
+    rec.sec.style.display = (i===et) ? "" : "none";
+    rec.tab.classList.toggle("active", i===et);
+  });
+}
 (function buildTypeCfgs(){
   const host=document.getElementById("typeCfgs");
+  const bar=document.createElement("div"); bar.style.cssText="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px";
+  host.appendChild(bar);
   TYPE_DEFS.forEach((def,et)=>{
-    const sec=document.createElement("div"); sec.className="card"; sec.style.cssText="background:#0e1017;margin:0 0 12px;padding:12px 14px";
-    const h=document.createElement("div"); h.style.cssText="font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px";
-    h.innerHTML='<span>'+def.name+'</span><span class="active-tag" style="display:none;font-size:11px;color:var(--acc)">● current mode</span>';
-    sec.appendChild(h);
-    const rec={sec,activeTag:h.querySelector(".active-tag"),back:[],qam:null,abSwap:null,pad:null};
+    // tab button
+    const tab=document.createElement("button"); tab.className="slot-tab"; tab.style.cursor="pointer";
+    tab.innerHTML='<span>'+def.name+'</span><span class="active-dot" style="display:none;font-size:11px;color:var(--acc)"> ●</span>';
+    tab.onclick=()=>setTab(et); bar.appendChild(tab);
+    // panel
+    const sec=document.createElement("div"); sec.style.cssText="background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:12px 14px;display:none";
+    const rec={sec,tab,activeDot:tab.querySelector(".active-dot"),back:[],qam:null,abSwap:null,pad:null};
     // A/B swap + trackpad haptics toggles
     const tog=document.createElement("div"); tog.className="row";
     tog.innerHTML='<label>A/B + X/Y swap</label>';
@@ -244,13 +256,14 @@ function mkSelect(def, includeNone){
       rec.qam=sel; }
     host.appendChild(sec); typeEls.push(rec);
   });
+  setTab(0);
 })();
 for(const sel of document.querySelectorAll("select.chord")){
   MODE_NAMES.forEach((n,i)=>{ if(i===7||i===8) return;
     const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
 }
 { const sel=document.getElementById("swRate");
-  for(const [lbl,v] of [["120 Hz (default)",1],["66 Hz (compatibility)",0],["Full rate (~250 Hz)",2]]){
+  for(const [lbl,v] of [["Full rate (~250 Hz, default)",2],["120 Hz",1],["66 Hz (compatibility)",0]]){
     const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
 }
 { const sel=document.getElementById("swGyro");
@@ -317,7 +330,7 @@ async function connect(){
   }catch(e){ log("connect failed: "+e.message); }
 }
 function onGone(){
-  polling=false; dev=null;
+  polling=false; dev=null; tabInited=false; // re-default the config tab to the mode on next connect
   $("#connState").textContent="disconnected"; $("#connState").className="pill dn";
   $("#panel").classList.add("hide");
   log("device disconnected (likely a mode-switch reboot — reconnect)");
@@ -356,7 +369,7 @@ function applyBlob(p){
   $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
   const battery=(p.length>36?p[36]:0);
   const rumbleScale=(p.length>51?p[51]:200);
-  const swProRate=(p.length>52?p[52]:1);
+  const swProRate=(p.length>52?p[52]:2);
   const swGyro10=(p.length>53?p[53]:10);
   const rssi=(p.length>37?p[37]:0);
 
@@ -464,9 +477,11 @@ function applyBlob(p){
       if(document.activeElement!==rec.qam) rec.qam.value=qam;
       rec.abSwap.textContent=ab?"on":"off"; rec.abSwap.classList.toggle("active",!!ab);
       rec.pad.textContent=pad?"on":"off"; rec.pad.classList.toggle("active",!!pad);
-      rec.activeTag.style.display = (et===activeEt) ? "" : "none";
-      rec.sec.style.borderColor = (et===activeEt) ? "var(--acc2)" : "#272d3d";
+      // dot marks the type matching the current puck mode
+      rec.activeDot.style.display = (et===activeEt) ? "" : "none";
     });
+    // open the tab for the current mode's type on first load (then leave the user's choice alone)
+    if(!tabInited){ tabInited=true; setTab(activeEt>=0?activeEt:0); }
   }
   if(p.length>=60){ const s16=(o)=>{ let v=p[o]|(p[o+1]<<8); return v>32767?v-65536:v; };
     const ax=s16(54),ay=s16(56),az=s16(58);

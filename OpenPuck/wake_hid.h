@@ -14,5 +14,9 @@
 // CDC and skips this interface (no endpoint room for both) -- see config.h (g_debugCdcThisBoot).
 #pragma once
 
-// register the boot-keyboard wake interface (call from setup() for clean modes)
+// register the boot-keyboard wake interface (call from setup() for clean modes). Locks its TinyUSB HID
+// instance index -- for dynamic-mount modes call this BEFORE the slot pool so the wake mouse is HID instance 0.
 void wakeHidBegin();
+// Re-add the (already-begun) wake-mouse interface to a freshly-cleared config descriptor, for a dynamic
+// re-enumeration that doesn't reboot. begin() is once-only; this re-emits the interface descriptor.
+void wakeHidAddInterface();

@@ -3,6 +3,7 @@
 #include "gamepad_util.h"
 #include "config.h"
 #include "bonds.h"
+#include "usb_mount.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 
@@ -170,20 +171,27 @@ static void switchBuildHoripad(uint8_t slot, uint8_t out[8])
 	out[7] = 0;
 }
 
+// Dynamic-mount mode: begin() is unused (setup() calls beginPool()+usbReenumerate instead).
 void SwitchHoriController::begin()
 {
+}
+// Wake mouse (1 HID) is present in Switch mode, leaving CFG_TUD_HID-1 for the HORIPAD pool.
+uint8_t SwitchHoriController::maxSlots() const
+{
+	uint8_t cap = (uint8_t)(CFG_TUD_HID - 1);
+	return cap < NSLOT ? cap : (uint8_t)NSLOT;
+}
+void SwitchHoriController::usbIdentity()
+{
 	USBDevice.setID(0x0F0D, 0x0092);
-
-	int n = bondedSlotCount();
-	USBDevice.setDeviceVersion(
-		(uint16_t)(0x0210 + (uint16_t)(n > 0 ? n - 1 : 0)));
+	USBDevice.setDeviceVersion(0x0210);
 	USBDevice.setManufacturerDescriptor("HORI CO.,LTD.");
 	USBDevice.setProductDescriptor("POKKEN CONTROLLER");
-	for (int s = 0; s < NSLOT; s++) {
-		if (n > 0 && !g_slot[s].used)
-			continue;
-		if (n == 0 && s > 0)
-			break;
+}
+void SwitchHoriController::beginPool()
+{
+	uint8_t pool = maxSlots();
+	for (uint8_t s = 0; s < pool; s++) {
 		g_switch[s].enableOutEndpoint(true);
 		g_switch[s].setReportDescriptor(SWITCH_HID_DESC,
 						sizeof SWITCH_HID_DESC);
@@ -191,20 +199,27 @@ void SwitchHoriController::begin()
 		g_switch[s].begin();
 	}
 }
+void SwitchHoriController::mountSlots(uint8_t k)
+{
+	for (uint8_t u = 0; u < k; u++)
+		USBDevice.addInterface(g_switch[u]);
+}
 void SwitchHoriController::task()
 {
-	// stream the 8-byte HORIPAD report at ~250Hz per controller. Per-slot last-ms so each HID is paced
-	// independently (same as the single-controller case); sending all 4 back-to-back in one loop keeps the
-	// 4ms target per controller while running at the full loop rate.
-	for (int s = 0; s < NSLOT; s++) {
-		if (!g_switch[s].ready())
+	// stream the 8-byte HORIPAD report at ~250Hz per CONNECTED controller. usbSlot u -> bond slot for input;
+	// switchBuildHoripad reads g_in[bond] (no per-USB-slot state in the HORIPAD report).
+	for (uint8_t u = 0; u < g_usbMountCount; u++) {
+		if (!g_switch[u].ready())
 			continue;
-		if (millis() - g_swLastMs[s] < USB_STREAM_MS)
+		if (millis() - g_swLastMs[u] < USB_STREAM_MS)
 			continue;
-		g_swLastMs[s] = millis();
+		int bond = g_usbToBond[u];
+		if (bond < 0)
+			continue;
+		g_swLastMs[u] = millis();
 		uint8_t p[8];
-		switchBuildHoripad((uint8_t)s, p);
-		g_switch[s].sendReport(0, p,
+		switchBuildHoripad((uint8_t)bond, p);
+		g_switch[u].sendReport(0, p,
 				       sizeof p); // report-id-less descriptor
 	}
 }
