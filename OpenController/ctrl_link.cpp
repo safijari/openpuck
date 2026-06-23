@@ -41,6 +41,8 @@ static unsigned long g_huntStepMs = 0;
 
 // connected-mode frame-type diagnostics (reset + printed each second in the status line)
 static uint16_t g_cntE2, g_cntE3, g_cntE7, g_cntE4, g_cntOut, g_cntOther;
+// E4 hops we actually ADOPTED this second (followed the puck's commanded channel)
+static uint16_t g_cntE4follow;
 // of the E3 polls: how many were bare/0x45 INPUT polls vs feature/identity GETs (0x83/0xAE/0x87). Tells
 // us whether the puck is actually polling for input or stuck looping enumeration GETs.
 static uint16_t g_cntE3in, g_cntE3get;
@@ -74,22 +76,45 @@ static void buildF1()
 	}
 }
 
-// Build an F1 carrying a feature/command RESPONSE (type-6 TLV value = [cmd][len][payload], the
-// command-channel form a real controller returns -- WITH the inner length byte, unlike the 0x45 input
-// report) for when the puck relays one of Steam's enumeration GETs (0x83 attrs / 0xAE serial / 0x87
-// settings) over RF. The puck relays this value straight back to Steam as the feature response.
+// Build an F1 carrying a feature/command RESPONSE. The CORRECT on-wire form (sniff1.json idx 2932/2946)
+// is a TWO-TLV F1: a type-4 feature TLV FOLLOWED BY the type-6 report-0x45 input TLV. BUT that 78-byte
+// frame destabilizes OUR link because the real puck puts our session into an aggressive E4 hop storm
+// (the captured real-controller session was calm single-channel, no E4) and the long frame overruns the
+// tight per-hop window -> e3in collapses 245->60. Until the hop storm is calmed (the real blocker), use
+// the SHORTER single type-6 TLV (keeps the link stable; Steam won't accept it for enumeration, but
+// nothing enumerates on an unstable link anyway). Flip TWO_TLV_FEATURE to 1 once the link is calm.
+#define TWO_TLV_FEATURE 1
 static void buildFeatureF1(uint8_t reqid, const uint8_t *param, uint8_t plen)
 {
 	rftx[1] = (uint8_t)((((g_pid++) & 3) << 1) | 1);
 	rftx[2] = 0xF1;
-	rftx[4] = 6; // TLV type 6
 	uint8_t v[64];
 	uint8_t vlen = ctrlFeatureResp(reqid, param, plen, v);
 	if (vlen > 60)
 		vlen = 60;
-	rftx[3] = vlen; // TLV len
+#if TWO_TLV_FEATURE
+	rftx[3] = vlen; // TLV1 len
+	rftx[4] = 0x04; // TLV1 type (feature/bulk)
 	memcpy(rftx + 5, v, vlen);
-	rftx[0] = (uint8_t)(3 + vlen); // LENGTH (payload byte count)
+	uint8_t *t2 =
+		rftx + 5 + vlen; // TLV2: report-0x45 input (the link heartbeat)
+	t2[0] = REPORT45_LEN;
+	t2[1] = 6;
+	bool fresh = deckForwarding() && (millis() - deckLastInputMs() < 200u);
+	if (fresh)
+		buildReport45(t2 + 2, g_seq++);
+	else {
+		memset(t2 + 2, 0, REPORT45_LEN);
+		t2[2] = 0x45;
+		t2[3] = g_seq++;
+	}
+	rftx[0] = (uint8_t)(1 + 2 + vlen + 2 + REPORT45_LEN);
+#else
+	rftx[3] = vlen; // TLV len
+	rftx[4] = 6; // type 6 (single-TLV, stable baseline)
+	memcpy(rftx + 5, v, vlen);
+	rftx[0] = (uint8_t)(3 + vlen);
+#endif
 }
 
 static void buildF3()
@@ -126,18 +151,60 @@ static void txStaged()
 	NRF_RADIO->PACKETPTR = (uint32_t)rfrx;
 }
 
-// One RX->maybe-reply transaction on (base,prefix,ch). Returns the received type byte (rfrx[2]) or 0.
-// `reply` selects whether we answer polls (true once connected) or just listen (discovery).
-static uint8_t rxOnce(const uint8_t *base, uint8_t prefix, uint8_t ch,
-		      uint16_t winUs, bool reply)
+// CAMPED continuous RX. The radio stays armed in RX across ctrlLinkTask calls (END_START auto-re-arm) so
+// it keeps listening during the loop's CDC servicing instead of being torn down each call. This raises
+// the puck-poll catch rate: the real puck AFH-hops AWAY from a channel where our replies look unreliable,
+// and the gap-misses (radio off between calls) were making the link look bad. We only (re)configure the
+// radio when the address/channel changes or after a reply; otherwise we just poll EVENTS_END.
+static bool g_rxArmed = false;
+static uint8_t g_rxArmedCh = 0;
+static const uint8_t *g_rxArmedBase = nullptr;
+static uint8_t g_rxArmedPrefix = 0;
+
+static void armRx(const uint8_t *base, uint8_t prefix, uint8_t ch)
 {
+	NRF_RADIO->TASKS_DISABLE = 1;
+	RWAIT_DISABLED();
+	NRF_RADIO->EVENTS_DISABLED = 0;
 	rfConfig(ch);
 	rfSetAddr(base, prefix);
 	NRF_RADIO->PACKETPTR = (uint32_t)rfrx;
 	rfrx[0] = 0;
-	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk;
+	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
+			    RADIO_SHORTS_END_START_Msk;
 	NRF_RADIO->EVENTS_END = 0;
 	NRF_RADIO->TASKS_RXEN = 1;
+	g_rxArmed = true;
+	g_rxArmedCh = ch;
+	g_rxArmedBase = base;
+	g_rxArmedPrefix = prefix;
+}
+
+// One RX->maybe-reply transaction on (base,prefix,ch). Returns the received type byte (rfrx[2]) or 0.
+// `reply` selects whether we answer polls (true once connected) or just listen (discovery). The radio is
+// kept CAMPED between calls (see armRx); only re-armed on an address/channel change or after a packet.
+static uint8_t rxOnce(const uint8_t *base, uint8_t prefix, uint8_t ch,
+		      uint16_t winUs, bool reply)
+{
+	if (reply) {
+		// CONNECTED: camp the radio (END_START) so it keeps listening between calls. The dispatch reads
+		// rfrx + replies INSIDE this function (before re-arm), and the connected caller never reads rfrx
+		// afterward, so clobbering rfrx on re-arm is safe.
+		if (!g_rxArmed || g_rxArmedCh != ch || g_rxArmedBase != base ||
+		    g_rxArmedPrefix != prefix)
+			armRx(base, prefix, ch);
+	} else {
+		// DISCOVERY: fresh, NON-camped RX. discoveryScan reads rfrx AFTER we return, so it must not be
+		// clobbered by an END_START auto-re-arm -- plain READY_START (radio idles after the packet).
+		g_rxArmed = false;
+		rfConfig(ch);
+		rfSetAddr(base, prefix);
+		NRF_RADIO->PACKETPTR = (uint32_t)rfrx;
+		rfrx[0] = 0;
+		NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk;
+		NRF_RADIO->EVENTS_END = 0;
+		NRF_RADIO->TASKS_RXEN = 1;
+	}
 	uint32_t t0 = micros();
 	while (!NRF_RADIO->EVENTS_END && (uint32_t)(micros() - t0) < winUs) {
 	}
@@ -198,19 +265,59 @@ static uint8_t rxOnce(const uint8_t *base, uint8_t prefix, uint8_t ch,
 					if (newCh && newCh != g_sessCh)
 						g_sessCh = newCh;
 				} else if (type == 0xE4) {
-					// channel-map update [E4][ch][02][50]. Once we report connected (F3), the
-					// real puck switches to SYNCHRONIZED freq+ADDRESS hopping: per RF_CONNECTED.md
-					// it rotates (base,prefix) AND channel each timeslot from a sequence seeded by
-					// the session address -- the channel-map generator the RE never cracked. E4's
-					// [ch] is only the channel; we'd also need to rotate the prefix in lockstep, so
-					// jumping to E4's channel alone lands us on the WRONG ADDRESS -> rx=0 -> flap.
-					// So DON'T chase it -- just record it; the hunt/park logic re-finds the puck.
-					// (Real-puck connected mode needs that hop generator; use an OpenPuck for a
-					// working single-channel link.)
+					// channel-map update [E4][ch][02][50]. The real puck floods this ~80/s on ONE
+					// channel right after we report connected (F3) and will NOT advance to E3 input
+					// polls until it is ACKED -- so reply F3 on the channel we received it (turnaround,
+					// like E7), THEN adopt <ch> for subsequent polls (keeping the session base/prefix;
+					// the per-timeslot base/prefix hop generator FUN_000491e0 is NOT required to
+					// interop -- IBEX_REIMPL_SPEC §5). Earlier we replied nothing here -> the puck
+					// retransmitted E4 forever -> 4s timeout -> reconnect w/ incremented counter (flap).
 					uint8_t nc = rfrx[3];
-					if (rxlen >= 2 && nc >= 1 && nc <= 80)
+					if (rxlen >= 2 && nc >= 1 && nc <= 80) {
 						g_e4set[nc >> 3] |=
 							(1 << (nc & 7));
+						g_cntE4follow++;
+						if (deckForwarding()) {
+							// ACK the channel map (F3) on the RX channel
+							buildF3();
+							txStaged();
+							if (!(g_seenDump[0xE4 >>
+									 3] &
+							      (1 << (0xE4 &
+								     7))) &&
+							    Serial.availableForWrite() >
+								    90) {
+								g_seenDump[0xE4 >>
+									   3] |=
+									(1
+									 << (0xE4 &
+									     7));
+								Serial.printf(
+									"# E4 ack ch=%u poll[%02X%02X%02X%02X%02X%02X] f3[%02X%02X%02X%02X%02X%02X%02X]\n",
+									nc,
+									rfrx[0],
+									rfrx[1],
+									rfrx[2],
+									rfrx[3],
+									rfrx[4],
+									rfrx[5],
+									rftx[0],
+									rftx[1],
+									rftx[2],
+									rftx[3],
+									rftx[4],
+									rftx[5],
+									rftx[6]);
+							}
+						}
+						if (nc != g_sessCh) {
+							g_sessCh = nc;
+							g_parkCh = nc;
+							g_huntStepMs = millis();
+						}
+						g_linkAliveMs = g_sessRxMs =
+							millis();
+					}
 				} else if (!deckForwarding()) {
 					// NOT forwarding -> stay SILENT (no F3/F1). We still hear the puck's polls
 					// (so the UI shows the puck "available"), but we never answer, so the puck
@@ -238,7 +345,10 @@ static uint8_t rxOnce(const uint8_t *base, uint8_t prefix, uint8_t ch,
 								  &rfrx[6], rl);
 					} else if (type == 0xE3 && rxlen >= 4 &&
 						   rfrx[4] == 0x01 &&
-						   rfrx[5] != 0x45) {
+						   (rfrx[5] == 0x83 ||
+						    rfrx[5] == 0xAE)) {
+						// only 0x83/0xAE get a feature TLV (matches the real controller,
+						// sniff1.json); 0x87 / bare / 0x45 -> plain input below.
 						uint8_t plen =
 							(rxlen >= 5) ?
 								(uint8_t)(rxlen -
@@ -285,12 +395,34 @@ static uint8_t rxOnce(const uint8_t *base, uint8_t prefix, uint8_t ch,
 					txStaged();
 				}
 			}
+			// connected: re-camp on the channel the session is NOW on. CRITICAL for hop-following:
+			// an E4 we just processed set g_parkCh to the puck's NEW channel -- re-arm there
+			// IMMEDIATELY (not on `ch`, the channel we received the E4 on), else we sit a full loop
+			// iteration behind and fall off the puck's hop sequence (e3in collapses 144->0 in ~1s).
+			// discovery: freeze rfrx.
+			if (reply)
+				armRx(base, prefix, g_parkCh ? g_parkCh : ch);
+			else {
+				NRF_RADIO->TASKS_DISABLE = 1;
+				RWAIT_DISABLED();
+				NRF_RADIO->EVENTS_DISABLED = 0;
+			}
 			return type;
 		}
+		// CRC fail. connected: END_START already re-armed -> stay camped. discovery: stop.
+		if (!reply) {
+			NRF_RADIO->TASKS_DISABLE = 1;
+			RWAIT_DISABLED();
+			NRF_RADIO->EVENTS_DISABLED = 0;
+		}
+		return type;
 	}
-	NRF_RADIO->TASKS_DISABLE = 1;
-	RWAIT_DISABLED();
-	NRF_RADIO->EVENTS_DISABLED = 0;
+	// timeout, no packet. connected: stay camped (END_START keeps RX live). discovery: stop.
+	if (!reply) {
+		NRF_RADIO->TASKS_DISABLE = 1;
+		RWAIT_DISABLED();
+		NRF_RADIO->EVENTS_DISABLED = 0;
+	}
 	return type;
 }
 
@@ -382,9 +514,10 @@ void ctrlLinkTask()
 			// If e3in stays ~0 while e3get is high, the puck is stuck enumerating and never asks for
 			// input -> the controller can't show as active no matter what we send.
 			Serial.printf(
-				"# polls e3in=%u e3get=%u e2=%u e7=%u e4=%u out=%u oth=%u getReq=%02X\n",
+				"# polls e3in=%u e3get=%u e2=%u e7=%u e4=%u(follow=%u) out=%u oth=%u getReq=%02X\n",
 				g_cntE3in, g_cntE3get, g_cntE2, g_cntE7,
-				g_cntE4, g_cntOut, g_cntOther, g_getReq);
+				g_cntE4, g_cntE4follow, g_cntOut, g_cntOther,
+				g_getReq);
 			// if the puck flooded E4 this second, list the distinct channels it commanded
 			if (g_cntE4) {
 				char cb[160];
@@ -400,7 +533,8 @@ void ctrlLinkTask()
 			}
 			memset(g_e4set, 0, sizeof g_e4set);
 			g_cntE2 = g_cntE3 = g_cntE7 = g_cntE4 = g_cntOut =
-				g_cntOther = g_cntE3in = g_cntE3get = 0;
+				g_cntOther = g_cntE3in = g_cntE3get =
+					g_cntE4follow = 0;
 			lastRx = g_rfRxCount;
 			// re-arm the one-shot frame/GET dumps every ~8s so they stay capturable in the app log
 			static uint8_t reArm = 0;
@@ -443,6 +577,9 @@ void ctrlLinkTask()
 		// keepalive beacon on the session base: refreshes the advertised primary channel (rxOnce already
 		// copied it into g_sessCh) + proves the puck is present, but it is NOT a poll -> keep hunting.
 		g_linkAliveMs = millis();
+	} else if (t == 0xE4) {
+		// E4 already adopted ITS commanded channel inside rxOnce (g_parkCh/g_sessCh = nc). Do NOT
+		// re-park on the receive channel here -- that would undo the hop-follow. Aliveness already set.
 	} else if (t >= 0xE0 && t <= 0xEF) {
 		// a real poll (E2/E3/E7) -> the session lives on THIS channel; PARK and answer it from here.
 		bool wasUp = (millis() - g_sessRxMs) < LINK_ALIVE_MS;
