@@ -4,8 +4,7 @@
 using namespace Adafruit_LittleFS_Namespace;
 
 Slot g_slot[NSLOT];
-int g_connSlot = -1;
-unsigned long g_connReplyMs = 0;
+unsigned long g_connReplyMs[NSLOT] = { 0 };
 volatile bool g_dirty = false;
 bool g_pairing = false;
 
@@ -45,4 +44,13 @@ void loadBonds()
 			}
 		}
 	f.close();
+}
+
+int bondedSlotCount()
+{
+	int n = 0;
+	for (int i = 0; i < NSLOT; i++)
+		if (g_slot[i].used)
+			n++;
+	return n;
 }

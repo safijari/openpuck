@@ -250,7 +250,8 @@ void serialConsolePoll()
 				uint16_t val = sp ? strtoul(sp, 0, 0) : 0;
 				uint8_t pl[3] = { id, (uint8_t)(val & 0xFF),
 						  (uint8_t)(val >> 8) };
-				relayEnqueue(0x87, pl, 3);
+				// console-injected writes go to all connected controllers (no specific slot in scope)
+				relayEnqueue(0x87, pl, 3, 0xFF);
 				Serial.printf(
 					"# queued SET-SETTINGS id=0x%02X val=%u (relay 0x87) — watch new=/s\n",
 					id, val);
@@ -299,6 +300,54 @@ void serialConsolePoll()
 				Serial.printf(
 					"# QoS adaptive channel hopping %s (candidates 18,46,76,22,68)\n",
 					g_qos ? "ON" : "off");
+			} else if (line[0] == 'U') {
+				// Per-slot debug dump: which controllers are connected, their RSSI, haptic-block
+				// state, and session address. Quick at-a-glance view for multi-controller testing.
+				Serial.printf("# session ch%u, curSlot=%d\n",
+					      g_sessCh, g_curSlot);
+				for (int s = 0; s < NSLOT; s++) {
+					bool live = g_slot[s].used &&
+						    g_connReplyMs[s] != 0;
+					unsigned long age =
+						live ? (unsigned long)(millis() -
+								       g_connReplyMs
+									       [s]) :
+						       0;
+					int rssi =
+						g_linkRssi[s] ?
+							(int)g_linkRssi[s] -
+								RSSI_DBM_OFFSET :
+							0;
+					unsigned long now_ms = millis();
+					unsigned long blk =
+						(g_hapticBlockUntil[s] &&
+						 (int32_t)(g_hapticBlockUntil[s] -
+							   now_ms) > 0) ?
+							(g_hapticBlockUntil[s] -
+							 now_ms) :
+							0;
+					Serial.printf(
+						"# slot %d: %s addr %02X%02X%02X%02X/%02X rssi=%ddBm conn=%lums ago batt=%u%% haptic-block=%lums uuid %02X%02X%02X%02X %02X%02X%02X%02X\n",
+						s,
+						g_slot[s].used ?
+							(live ? "LIVE" :
+								"BONDED") :
+							"empty",
+						g_sessBase[s][0],
+						g_sessBase[s][1],
+						g_sessBase[s][2],
+						g_sessBase[s][3],
+						g_sessPrefix[s], rssi, age,
+						g_battery[s], blk,
+						g_slot[s].rec[0],
+						g_slot[s].rec[1],
+						g_slot[s].rec[2],
+						g_slot[s].rec[3],
+						g_slot[s].rec[4],
+						g_slot[s].rec[5],
+						g_slot[s].rec[6],
+						g_slot[s].rec[7]);
+				}
 			} else if (line[0] == 'r') {
 				g_rxWin = strtoul(line + 1, 0, 10);
 				if (g_rxWin < 150)

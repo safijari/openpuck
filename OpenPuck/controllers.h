@@ -5,9 +5,11 @@
 //   begin()       -- called once from setup(): set the USB VID/PID/strings and register this mode's
 //                    interface(s). Shared USB lifecycle (detach, clear/keep CDC, serial suffix, WebUSB,
 //                    attach) stays in setup(); begin() only adds what's specific to this controller.
-//   onReport45()  -- called from rf_link.cpp each time a controller input report 0x45 is decoded. PUSH-style
-//                    modes (Xbox, puck/lizard) build + send their host report here. STREAM-style modes ignore
-//                    it and emit at a fixed cadence from task(); they read the decoded g_in directly.
+//   onReport45()  -- called from rf_link.cpp each time a controller input report 0x45 is decoded. The `slot`
+//                    argument is the bond slot the report arrived on (0..NSLOT-1, or -1 for the pre-bond
+//                    catch-all). PUSH-style modes (Xbox, puck/lizard) build + send their host report here;
+//                    the puck/lizard mode uses `slot` to fan out to hid[slot]. STREAM-style modes ignore
+//                    `slot`; STREAM-style modes emit at a fixed cadence from task() reading g_in[s].
 //   task()        -- called every loop(): streaming emit, handshake/subcommand draining, mode-specific upkeep.
 //   isPuck()      -- true for Steam/Lizard (keep the boot CDC composite; different USB lifecycle in setup()).
 //
@@ -22,9 +24,10 @@ class IController {
 	{
 	}
 	virtual void begin() = 0;
-	virtual void onReport45(const uint8_t *rep, bool fresh,
+	virtual void onReport45(int slot, const uint8_t *rep, bool fresh,
 				uint8_t bodyTlen)
 	{
+		(void)slot;
 		(void)rep;
 		(void)fresh;
 		(void)bodyTlen;
@@ -32,8 +35,10 @@ class IController {
 	// Other controller->host input reports decoded from the F1 reply (NOT 0x45): power/battery status report
 	// 0x43, status event 0x44. The real puck forwards these to Steam verbatim -- that's how Steam reads battery.
 	// rid = report id, data/n = body after the id. Default no-op (clean modes don't expose these reports).
-	virtual void onAuxReport(uint8_t rid, const uint8_t *data, uint8_t n)
+	virtual void onAuxReport(int slot, uint8_t rid, const uint8_t *data,
+				 uint8_t n)
 	{
+		(void)slot;
 		(void)rid;
 		(void)data;
 		(void)n;

@@ -86,6 +86,8 @@ static inline uint32_t tritonFromCode(uint8_t c)
 // PlayStation-layout button packing (shared by mode_ps5 + mode_hidgyro).
 uint32_t psButtonsFromSteam(
 	uint32_t raw); // apply back-paddle + chord-guard + QAM remapping
-uint8_t psShouldersByte(uint32_t b); // L1..R3 + Create/Options byte
+// L1..R3 + Create/Options byte. lt/rt are the per-slot analog trigger values so the digital ZL/ZR trip
+// doesn't leak across slots when several slots are active.
+uint8_t psShouldersByte(uint32_t b, uint8_t lt, uint8_t rt);
 uint8_t psHatNibble(uint32_t b); // d-pad -> 8-way hat (8 = neutral)
 uint8_t psFaceNibble(uint32_t b); // face buttons (with A/B + X/Y swap)

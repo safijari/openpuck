@@ -11,25 +11,30 @@
 
 Adafruit_USBD_WebUSB usb_web;
 
-// blob payload = [ver=2][mode][mDiv][mFric][rsvd=0][abSwap][back0..3][connSlot(0xFF=none)][linkUp]
+// blob payload = [ver=8][mode][mDiv][mFric][rsvd=0][abSwap][back0..3][connSlot(0xFF=none)][linkUp]
 //                [f1ps_lo][f1ps_hi][pollU100][newps_lo][newps_hi][e7b][relayOp][relaySub][fwdNewOnly]
 //                [qos][persistMode][chordBtn B][chordBtn X][chordBtn Y][pollsps_lo][pollsps_hi]
 //                [loopPeriod_lo][loopPeriod_hi][loopWorstIdx][loopWorstUs_lo][loopWorstUs_hi]
 //                [pollPeriod_lo][pollPeriod_hi][logEnabled][battery%][rssi|dBm|]
 //                [gitDirty][gitHash 12B ASCII, NUL-padded][rumbleScale][swPro120][swGyroScale10][raw accel ax ay az 3x s16 LE]
-// keep the blob under 64 bytes total (readBlob reads one 64-byte packet)
-#define WB_PAYLEN 60
+//                [bondedCount][slot0_up][slot0_batt][slot0_rssi]...[slot3_up][slot3_batt][slot3_rssi]
+// v8 extends to 73 bytes (75 total incl header); browser reads with transferIn(128) to span the two USB-FS packets.
+#define WB_PAYLEN 73
 static void webusbSendBlob()
 {
 	if (!usb_web.connected())
 		return;
-	bool up = (g_connSlot >= 0 && (millis() - g_connReplyMs) < 300);
+	// "connected" = the most recent poll cycle's slot had a fresh F-reply (matches what the firmware
+	// presents to Steam on 0x79). The blob is sent on the panel's poll, so the slot + up flag change
+	// every ~250ms in normal use.
+	int cs = (g_curSlot >= 0 && g_curSlot < NSLOT) ? g_curSlot : 0;
+	bool up = (g_curSlot >= 0 && (millis() - g_connReplyMs[cs]) < 300);
 	uint8_t p[2 + WB_PAYLEN];
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (7 = +raw accel; 6 = +swPro120/gyroScale; 5 = +rumbleScale)
-	p[2] = 7;
+	// protocol version (8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
+	p[2] = 8;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -39,7 +44,7 @@ static void webusbSendBlob()
 	p[9] = g_back[1];
 	p[10] = g_back[2];
 	p[11] = g_back[3];
-	p[12] = (g_connSlot >= 0) ? (uint8_t)g_connSlot : 0xFF;
+	p[12] = (g_curSlot >= 0) ? (uint8_t)g_curSlot : 0xFF;
 	p[13] = up ? 1 : 0;
 	p[14] = (uint8_t)g_f1ps;
 	p[15] = (uint8_t)(g_f1ps >> 8);
@@ -68,8 +73,13 @@ static void webusbSendBlob()
 	p[36] = (uint8_t)(g_pollPeriodUs >>
 			  8); // measured poll period (intended 4000)
 	p[37] = OPK_LOG; // logging build? panel shows/hides its log UI
-	p[38] = g_battery; // controller battery % (report 0x43); 0=unknown
-	p[39] = g_linkRssi; // RAW signal strength |dBm| (0=no sample)
+	p[38] = g_battery
+		[g_curSlot >= 0 && g_curSlot < NSLOT ?
+			 g_curSlot :
+			 0]; // controller battery % (report 0x43); 0=unknown
+	p[39] = g_linkRssi[g_curSlot >= 0 && g_curSlot < NSLOT ?
+				   g_curSlot :
+				   0]; // RAW signal strength |dBm| (0=no sample)
 	// git commit this firmware was built from + dirty flag; injected at build time
 	// (build_info.h / gen_version.sh); "unknown" if the version header wasn't generated.
 	p[40] = OPK_GIT_DIRTY ? 1 : 0;
@@ -87,9 +97,22 @@ static void webusbSendBlob()
 	// Switch Pro gyro sensitivity x10 (protocol v6)
 	p[55] = g_swGyroScale10;
 	{
-		int16_t a[3] = { g_in.ax, g_in.ay, g_in.az };
+		int16_t a[3] = { g_in[0].ax, g_in[0].ay, g_in[0].az };
 		memcpy(&p[56], a, 6);
 	} // raw accelerometer for scale diagnostics (protocol v7)
+
+	// per-slot link status for all bond slots (protocol v8)
+	p[62] = (uint8_t)bondedSlotCount();
+	{
+		unsigned long nowMs = millis();
+		for (int s = 0; s < NSLOT; s++) {
+			bool sup = g_slot[s].used && g_connReplyMs[s] != 0 &&
+				   (nowMs - g_connReplyMs[s]) < 300u;
+			p[63 + s * 3] = sup ? 1 : 0;
+			p[64 + s * 3] = g_battery[s];
+			p[65 + s * 3] = g_linkRssi[s];
+		}
+	}
 	usb_web.write(p, sizeof p);
 	usb_web.flush();
 }

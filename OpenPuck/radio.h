@@ -27,16 +27,19 @@ extern const uint8_t PAIR_BASE[4]; // "ibex"
 extern uint8_t g_rfPrefix; // discovery prefix (rodata byte @0x56f98)
 extern uint8_t g_rfCh; // current TX/RX channel (hopped during beacon/poll)
 extern uint8_t g_rfBase[4]; // "ibex"
-// connected-session channel: a CLEAN data channel off the congested adv ch2
+// connected-session channel: a CLEAN data channel off the congested adv ch2 (shared by all slots on a puck)
 extern uint8_t g_sessCh;
 
-// Per-device SESSION address (base+prefix). Discovery stays on the SHARED "ibex" address (g_rfBase) so any
-// controller can find us; the host frame advertises THIS unique address and the controller adopts it for the
-// session. Two OpenPucks therefore never share an on-air session address -> no crosstalk, no cross-wake.
-// Derived from the FICR DEVICEID (stable per chip, unique across chips).
-extern uint8_t g_sessBase[4];
-extern uint8_t g_sessPrefix;
-void rfGenSessionAddr();
+// Per-bond SESSION address (base+prefix). Discovery stays on the SHARED "ibex" address (g_rfBase) so any
+// controller can find us; the host frame advertises THIS slot's unique address and the controller adopts it
+// for the session. Two OpenPucks never share an on-air session address, and two slots on the SAME puck have
+// distinct addresses so each controller only hears its own polls -> no crosstalk, no cross-wake, no per-slot
+// relay broadcast. Derived from the bond UUID (8 bytes) + FICR DEVICEID (8 bytes) so the address is
+// deterministic per (puck, controller) pair and stable across reboots without a bonds.bin schema bump.
+#include "bonds.h" // NSLOT
+extern uint8_t g_sessBase[NSLOT][4];
+extern uint8_t g_sessPrefix[NSLOT];
+void rfGenSessionAddr(int slot);
 
 // RADIO DMA buffers (>= MAXLEN+2; the controller's 0x43-augmented F1 is ~66B)
 extern uint8_t rfrx[100], rftx[100];

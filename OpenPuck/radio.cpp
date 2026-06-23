@@ -1,4 +1,5 @@
 #include "radio.h"
+#include "bonds.h" // g_slot[]
 
 // Pairing rendezvous bytes from IBEX rodata. The 0x91A2A793 key preceding "ibex" is a DIFFERENT key,
 // NOT the discovery address.
@@ -10,32 +11,66 @@ uint8_t g_rfBase[4] = { 0x69, 0x62, 0x65, 0x78 }; // "ibex"
 // data bursts -> reply-rate crash. Tunable 'C'.
 uint8_t g_sessCh = 18;
 
-// Safe default; rfGenSessionAddr() overwrites with the per-device value at boot.
-uint8_t g_sessBase[4] = { 0x69, 0x62, 0x65, 0x78 };
-uint8_t g_sessPrefix = 0x10;
-
-void rfGenSessionAddr()
+// Safe defaults; rfGenSessionAddr(slot) overwrites each used slot at boot. Discovery base "ibex" as a
+// degenerate starting point means an UN-bonded slot (and a not-yet-initialized one) won't accidentally
+// cross-talk with itself before the real address is set.
+uint8_t g_sessBase[NSLOT][4];
+uint8_t g_sessPrefix[NSLOT];
+static void sessSetDefault(int slot)
 {
-	// Mix the 64-bit FICR DEVICEID into a 4-byte base + prefix: deterministic per chip, unique across chips
-	// -> two OpenPucks never collide on the connected session. Avoid degenerate address bytes (0x00/0xFF) for
-	// clean preamble correlation, and never reproduce the shared discovery base "ibex" (else isolation is lost).
-	uint32_t h = NRF_FICR->DEVICEID[0] * 0x9E3779B1u ^
+	for (int i = 0; i < 4; i++)
+		g_sessBase[slot][i] = g_rfBase[i];
+	g_sessPrefix[slot] = g_rfPrefix;
+}
+void rfGenSessionAddr(int slot)
+{
+	if (slot < 0 || slot >= NSLOT) {
+		sessSetDefault(0);
+		return;
+	}
+	sessSetDefault(slot);
+	// Per-bond UUID (rec[0..8]) + FICR DEVICEID (8 bytes) -> 5-byte on-air address. Mixing the bond UUID in
+	// makes the address deterministic per (puck, controller) pair: a slot's address is stable across reboots
+	// without storing anything new in bonds.bin, and the same controller bonded to two OpenPucks gets two
+	// different session addresses (DEVICEID differs) so the two pucks never collide on-air. The original
+	// generator (UUID-free) is preserved as the no-UUID fallback for an empty/zero bond record.
+	const uint8_t *uuid = g_slot[slot].rec;
+	bool uuidLive = false;
+	for (int i = 0; i < 8; i++)
+		if (uuid[i]) {
+			uuidLive = true;
+			break;
+		}
+	uint32_t h, h2;
+	if (uuidLive) {
+		h = (uint32_t)uuid[0] * 0x9E3779B1u ^ (uint32_t)uuid[2] * 0x85EBCA6Bu ^
+		    (uint32_t)uuid[4] * 0xC2B2AE35u ^ (uint32_t)uuid[6] ^
+		    NRF_FICR->DEVICEID[0];
+		h2 = (uint32_t)uuid[1] * 0x27D4EB2Fu ^ (uint32_t)uuid[3] * 0x165667B1u ^
+		     (uint32_t)uuid[5] ^ (uint32_t)uuid[7] * 0x9E3779B1u ^
 		     NRF_FICR->DEVICEID[1];
-	uint32_t h2 = NRF_FICR->DEVICEID[1] * 0x85EBCA6Bu ^
-		      NRF_FICR->DEVICEID[0];
+	} else {
+		h = NRF_FICR->DEVICEID[0] * 0x9E3779B1u ^ NRF_FICR->DEVICEID[1];
+		h2 = NRF_FICR->DEVICEID[1] * 0x85EBCA6Bu ^ NRF_FICR->DEVICEID[0];
+	}
+	// Scrub degenerate bytes (0x00/0xFF) for clean preamble correlation.
 	for (int i = 0; i < 4; i++) {
 		uint8_t b = (uint8_t)(h >> (i * 8));
 		if (b == 0x00 || b == 0xFF)
 			b ^= 0x5A;
-		g_sessBase[i] = b;
+		g_sessBase[slot][i] = b;
 	}
 	uint8_t p = (uint8_t)(h2 >> 16);
 	if (p == 0x00 || p == 0xFF)
 		p = 0x5C;
-	g_sessPrefix = p;
-	if (g_sessBase[0] == g_rfBase[0] && g_sessBase[1] == g_rfBase[1] &&
-	    g_sessBase[2] == g_rfBase[2] && g_sessBase[3] == g_rfBase[3])
-		g_sessBase[0] ^= 0x80; // collided with discovery base "ibex"
+	g_sessPrefix[slot] = p;
+	// Never reproduce the shared discovery base "ibex" (else the on-air address is shared with every other
+	// controller scanning the rendezvous -> isolation is lost).
+	if (g_sessBase[slot][0] == g_rfBase[0] &&
+	    g_sessBase[slot][1] == g_rfBase[1] &&
+	    g_sessBase[slot][2] == g_rfBase[2] &&
+	    g_sessBase[slot][3] == g_rfBase[3])
+		g_sessBase[slot][0] ^= 0x80;
 }
 
 uint8_t rfrx[100], rftx[100];

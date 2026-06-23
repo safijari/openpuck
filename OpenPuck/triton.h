@@ -73,6 +73,9 @@ void imuFrom45(const uint8_t *r, int16_t *ax, int16_t *ay, int16_t *az,
 	       int16_t *gx, int16_t *gy, int16_t *gz);
 
 // ---- shared decoded input (filled by rf_link.cpp once per fresh report 0x45, read by every mode) ----
+// One PuckInput per bond slot: each controller in a multi-slot puck has its own decoded input. The stream
+// modes (Switch, PS5, DS4) read g_in[s] for each active slot in their task() loop; the puck/lizard mode reads
+// g_in[slot] inside onReport45/onAuxReport to forward to hid[slot].
 struct PuckInput {
 	// raw Triton buttons (TB_*); per-mode builders apply their own chord masking
 	uint32_t buttons;
@@ -82,4 +85,5 @@ struct PuckInput {
 	int16_t ax, ay, az; // accelerometer
 	int16_t gx, gy, gz; // gyroscope
 };
-extern PuckInput g_in;
+#include "bonds.h" // NSLOT
+extern PuckInput g_in[NSLOT];

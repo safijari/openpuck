@@ -17,6 +17,7 @@
 // F1 reply = type 0xF1 then TLV type4(analog/buttons)+type6(per-module gyro/accel/sticks).
 #pragma once
 #include <stdint.h>
+#include "bonds.h" // NSLOT
 
 // ---- operational toggles + tunables (set from the CDC console / WebUSB; read here + by webusb status) ----
 // auto-start host beacon on boot (resumes puck role after a USB replug)
@@ -47,10 +48,18 @@ extern unsigned long g_connCooldown;
 // connected-mode state (reset by the 'k' console toggle)
 extern uint8_t g_connSt, g_connStep;
 extern uint16_t g_connPoll;
-extern uint32_t g_connF1; // count of 0xF1 input reports seen
+extern uint32_t g_connF1; // count of 0xF1 input reports seen (aggregate across all slots)
 
-// last protocol version the controller reported in an F3 reply (0xFF=none)
+// last protocol version the controller reported in an F3 reply (0xFF=none) -- aggregate (last writer wins)
 extern uint8_t g_connF3v;
+
+// Slot the poll loop is currently driving (set by rfConnStep before each E7/relay/E3). -1 = idle. Used by
+// the decode path (g_in[g_curSlot]), the haptic flush (per-slot session address), the wake detect, and the
+// stat dump.
+extern int g_curSlot;
+// True if ANY bonded slot is currently link-up (heard an F-reply within 300 ms). Used by the haptic
+// re-init gating (we only re-init on a real link) and the beacon pacing.
+bool anySlotLinkUp();
 
 // QoS adaptive channel hopping
 extern uint8_t g_qos; // 0=off (static g_sessCh), 1=auto-hop on degradation
@@ -70,15 +79,18 @@ extern uint16_t g_pollsps;
 extern uint16_t g_pollPeriodUs;
 
 // Smoothed controller->puck signal strength, sampled by the radio (RSSISAMPLE) on each CRC-good controller
-// reply during the poll. Stored as the dBm MAGNITUDE (35 = -35dBm); 0 = no sample yet. puck_hid reports it
-// to Steam in status report 0x7B byte 8 (signed dBm), after subtracting RSSI_DBM_OFFSET.
-extern volatile uint8_t g_linkRssi;
+// reply during the poll. Stored as the dBm MAGNITUDE (35 = -35dBm); 0 = no sample yet. Per-slot: each
+// controller's RSSI is reported on its own 0x7B byte 8 (puck_hid reports it to Steam, after subtracting
+// RSSI_DBM_OFFSET).
+extern volatile uint8_t g_linkRssi[NSLOT];
 // dB to subtract from our raw RSSI magnitude before reporting, to match the real puck's close-range -35dBm
 // (compensates the Pro Micro antenna vs Valve's front-end). Tune against one known-distance reading.
 #define RSSI_DBM_OFFSET 20
-// Battery percent from the controller's periodic report 0x43 (body[1]); 0 = none yet. Surfaced in the WebUSB
-// panel; the raw 0x43 report is also forwarded to Steam verbatim (puck_hid onAuxReport) so Steam reads it itself.
-extern volatile uint8_t g_battery;
+// Battery percent from the controller's periodic report 0x43 (body[1]); 0 = none yet. Per-slot: each
+// controller's battery is read on its own 0x43 reply and stored against its slot index. The WebUSB panel
+// reads g_battery[g_curSlot] (the most recently active one). The raw 0x43 report is also forwarded to
+// Steam verbatim (puck_hid onAuxReport) so Steam reads it itself.
+extern volatile uint8_t g_battery[NSLOT];
 
 // TX one connected packet [LEN][S1][payload] on channel ch, then RX the reply into rfrx; decodes 0xF1.
 // rxWinUs overrides the reply-wait window (0 = use g_rxWin). Pass a tiny value for NO-ACK relays that expect

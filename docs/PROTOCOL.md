@@ -189,6 +189,9 @@ Semantics:
 - `proteus_uuid` is the first 4 bytes of the bond record.
 - `ibex_uuid` is the next 4 bytes of the bond record.
 - The host chooses the connected-session channel and address and advertises them here.
+- The session base/prefix are PER-BOND (one address per controller, derived from the bond UUID + the
+  puck's FICR DEVICEID so two pucks that bond the same controller still isolate). The real puck
+  supports up to four simultaneous controllers on the same channel; OpenPuck mirrors that.
 
 ## 7. Connected session
 

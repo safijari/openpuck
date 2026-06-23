@@ -4,11 +4,9 @@
 // a SET sub-TLV inside the E3 poll. We do the same: handleSet()/the console enqueue with relayEnqueue(), and
 // rfConnFlushRelay() emits ONE entry per poll cycle (rf_link.cpp), never at raw loop rate.
 //
-// The queue is a small ring, NOT a single buffer: producers run in USB-ISR context while the consumer may be
-// mid-flush in loop context, and Steam writes settings/calibration as bursts of back-to-back feature reports.
-// A single buffer LOSES reports arriving before the previous flush and can be TORN mid-copy by the ISR.
-// Entries carry up to RELAY_MAXP payload bytes (the RF frame fits 60: [E3][len][05][rid] + payload <= MAXLEN
-// 64); a smaller cap chops multi-register 0x87 settings blocks (LED brightness) and calibration writes.
+// One ring per bond slot: the consumer (rfConnFlushRelay) only drains the current slot's queue, so commands
+// addressed to other slots are never consumed out of turn. ISR producers write under PRIMASK; the consumer
+// runs in loop context and never races the same slot's head pointer.
 //
 // The controller's haptic LATCHES until told to stop. If the host's stop is lost over RF (or the link drops
 // mid-buzz) the actuator whines forever -- so we send 0x82-zero stop bursts on reconnect, but ONLY when a
@@ -18,6 +16,7 @@
 #pragma once
 #include <stdint.h>
 #include "config.h" // OPK_LOG
+#include "bonds.h" // NSLOT
 
 // after this much host silence, consider the current 0x82 haptic stream inactive
 #define HAPTIC_QUIET_MS 300u
@@ -42,9 +41,10 @@
 #define HAPTIC_SHUTDOWN_SHOTS 3u
 
 // ---- relay queue (written by puck_hid.cpp, mode_*.cpp, serial_console.cpp; drained by rf_link.cpp) ----
-// Enqueue one host->controller report: rid = report/command id, payload = the bytes AFTER [cmd][len] (what
-// goes on the air). ISR-safe (brief PRIMASK critical section). Returns false (dropped) when the ring is full.
-bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen);
+// Enqueue one host->controller report. `slot` = bond slot (0..NSLOT-1) or 0xFF to broadcast to every
+// connected controller (used by hapticSendShutdown / hapticReinit / test haptics). ISR-safe (PRIMASK).
+bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
+		  uint8_t slot = 0xFF);
 
 // anything still queued (xinput uses it to pace rumble re-queues)
 bool relayPending();
@@ -53,7 +53,8 @@ extern uint8_t g_relaySub; // relay sub-TLV type byte = SET
 extern volatile uint8_t g_testHaptic; // 't<n>' injects n test haptics
 // pending haptic-STOP frames to relay (kill a latched whine)
 extern volatile uint8_t g_hapticStop;
-extern unsigned long g_hapticBlockUntil;
+// Per-slot block: arm after a (re)connect, drop haptics aimed at the slot for HAPTIC_RECONNECT_BLOCK_MS.
+extern unsigned long g_hapticBlockUntil[NSLOT];
 
 // relay the controller power-off (0x9F "off!"), burst x3 (Steam 0x9F / host-suspend / test button)
 void hapticSendShutdown();
@@ -85,13 +86,14 @@ static inline bool hapLogPull(uint32_t *, uint8_t *, uint8_t *, uint8_t *,
 }
 #endif
 
-bool hapticLinkUp();
-bool haptic82Blocked();
+bool hapticLinkUp(int slot = -1);
+bool haptic82Blocked(int slot = -1);
 bool hapticRelaySlotOk(int slot);
 void haptic82HostReport(const uint8_t *p, uint16_t n);
-bool hapticSteamRumble(
-	uint16_t lowFreq,
-	uint16_t highFreq); // queue Steam/Triton output report 0x80 rumble
+// queue a Steam/Triton 0x80 rumble frame. `slot` = bond slot of the originating controller (0..NSLOT-1);
+// defaults to 0 for the legacy single-controller callers. Per-slot so each connected controller can have its
+// own active rumble stream when the host presents multiple gamepads (e.g. 4 XInput devices).
+bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot = 0);
 
 // queue + flush the pending host/test/stop relay inside the poll cadence (called from rf_link).
 // rfConnFlushRelay's s1 must carry a PID distinct from the GET poll that follows it (rf_link cycles the shared
@@ -105,9 +107,12 @@ void hapticInit();
 // per-loop upkeep: link-edge markers + steam 0x82 quiet timeout + fires the scheduled re-init
 void hapticTask();
 
-// replay Steam's haptic-subsystem re-init to the controller -> clears a latched/stuck buzz
-void hapticReinit();
+// replay Steam's haptic-subsystem re-init to the controller -> clears a latched/stuck buzz.
+// `slot` defaults to 0xFF (broadcast to all connected) -- the re-init is a settings-only reset and is
+// harmless on healthy controllers, so it's worth re-initializing every slot the firmware knows about.
+void hapticReinit(uint8_t slot = 0xFF);
 // Called from rf_link the instant a controller (re)connect is detected (an F-reply after a gap): blocks haptic
 // relays for HAPTIC_RECONNECT_BLOCK_MS and schedules a re-init just after, to keep the freshly-booted
 // controller out of the degraded/latched haptic state. Reliable -- independent of hapticTask's link heuristic.
-void hapticOnReconnect();
+// Per-slot: only the slot that just reconnected is blocked, the others keep relaying.
+void hapticOnReconnect(int slot);

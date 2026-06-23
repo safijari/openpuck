@@ -68,13 +68,13 @@ A webusb based configuration UI is available [here](https://safijari.github.io/o
 
 # Future work
 - Find a way to make Xinput mode and mouse work together on all platforms
-- Ensure multiple controllers can function correctly (if I can ever buy one)
+- Multi-controller support is now working in Steam/Lizard mode (up to 4 controllers, see the `U` CDC command for a per-slot status dump). Non-puck modes (Xbox, Switch, PS5, DS4) remain single-controller by design — the user can pair one controller and use the appropriate mode.
 - Design the charging portion (and make it short proof)
 
 # Contributions
 The firmware is split into small, single-responsibility modules under `OpenPuck/` (one file per emulated controller, plus the RF, config, and host-interface layers). Start with [ARCHITECTURE.md](./ARCHITECTURE.md) for the map of how it all fits together and how to add a new USB personality.
 
-I have tested this software fairly extensively but I have limited resources. I only have one controller so I actually don't know if multiple controllers even work correctly (in fact I'm almost sure they will not). Please submit issues with any issues you find. PRs also welcome of course.
+I have tested this software fairly extensively but I have limited resources. I only have one controller so I've been unable to do full end-to-end multi-controller hardware testing — the per-slot session address, per-slot USB fanout, and per-slot haptic demux are in place and the design is sound, but the `U` CDC command exists specifically so anyone with a second controller can verify the per-slot state at a glance. Please submit issues with any issues you find. PRs also welcome of course.
 
 # Acknowledgements
 - Valve for putting out the amazing controller

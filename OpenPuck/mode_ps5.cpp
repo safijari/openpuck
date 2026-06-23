@@ -3,6 +3,7 @@
 #include "gamepad_util.h"
 #include "config.h"
 #include "haptics.h"
+#include "bonds.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -36,18 +37,33 @@ static const uint8_t PS5_HID_DESC[] = {
 };
 #define PS5_TOUCH_H 1080
 #define PS5_STATUS_USB 0x1A // charging + level 10 (~100%)
-static unsigned long g_ps5LastMs = 0;
-static Adafruit_USBD_HID g_ps5;
-static const uint8_t PS5_MAC[6] = { 0x00, 0x1B, 0xDC, 0x4F, 0x55, 0x54 };
+static unsigned long g_ps5LastMs[NSLOT] = { 0 };
+// NSLOT DualSense HID instances, one per bond slot. The host enumerates each as a separate DualSense
+// (hid-playstation on Linux/SteamOS, SDL on Windows).
+static Adafruit_USBD_HID g_ps5[NSLOT];
 
-// GET_FEATURE handler. SteamOS's hid-playstation reads calibration (0x05), pairing/MAC (0x09) and firmware
-// (0x20) during probe and ABORTS the bind unless each returns its EXACT size with the report id as the first
-// byte; CRC is checked only over Bluetooth. macOS/SDL are lenient, so the DualSense shows up there but not on a
-// Deck. TinyUSB writes the report id itself and hands us the buffer PAST it, so we fill only the PAYLOAD and
-// return size-1. Sizes per drivers/hid/hid-playstation.c: 0x05=41, 0x09=20, 0x20=64.
-static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t *buf,
-		       uint16_t reqlen)
+// Per-slot MAC base: 4 distinct NICs. OUI 0x001BDC is Sony's; vary the last byte per slot.
+static const uint8_t PS5_MAC_BASE[5] = { 0x00, 0x1B, 0xDC, 0x4F, 0x55 };
+static uint8_t g_ps5Mac[NSLOT][6];
+static bool g_ps5MacInit = false;
+static void initPs5Macs()
 {
+	if (g_ps5MacInit)
+		return;
+	for (int s = 0; s < NSLOT; s++) {
+		memcpy(g_ps5Mac[s], PS5_MAC_BASE, 5);
+		g_ps5Mac[s][5] = (uint8_t)(0x60 + s); // 0x60, 0x61, 0x62, 0x63
+	}
+	g_ps5MacInit = true;
+}
+
+// GET_FEATURE handler. Per-slot dispatch via per-instance callback. Sizes per drivers/hid/hid-playstation.c:
+// 0x05=41, 0x09=20, 0x20=64. TinyUSB writes the report id itself and hands us the buffer PAST it, so we
+// fill only the PAYLOAD and return size-1.
+static uint16_t ps5GetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
+			     uint8_t *buf, uint16_t reqlen)
+{
+	(void)slot;
 	if (type != HID_REPORT_TYPE_FEATURE || !buf || reqlen == 0)
 		return 0;
 	memset(buf, 0, reqlen);
@@ -72,7 +88,7 @@ static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 		if (reqlen < 19)
 			return 0;
 		// MAC at kernel buf[1..6] = payload[0..5]
-		memcpy(buf, PS5_MAC, 6);
+		memcpy(buf, g_ps5Mac[slot], 6);
 		return 19;
 	case 0x20: // firmware info (64 incl id)
 		if (reqlen < 63)
@@ -84,8 +100,8 @@ static uint16_t ps5Get(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 		return 0;
 	}
 }
-static void ps5Set(uint8_t rid, hid_report_type_t type, uint8_t const *b,
-		   uint16_t n)
+static void ps5SetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
+			 uint8_t const *b, uint16_t n)
 {
 	if (type != HID_REPORT_TYPE_OUTPUT || n < 1)
 		return;
@@ -108,45 +124,69 @@ static void ps5Set(uint8_t rid, hid_report_type_t type, uint8_t const *b,
 	}
 	if (id != 0x02 || pn < 4)
 		return;
-	hapticSteamRumble((uint16_t)p[3] * 257u,
-			  (uint16_t)p[2] *
-				  257u); // DualSense: left=low, right=high
+	hapticSteamRumble((uint16_t)p[3] * 257u, (uint16_t)p[2] * 257u, slot);
+	// DualSense: left=low, right=high
 }
+#define PS5CB(N)                                                               \
+	static uint16_t ps5Get##N(uint8_t r, hid_report_type_t t, uint8_t *bf, \
+				  uint16_t rl)                                 \
+	{                                                                      \
+		return ps5GetCommon(N, r, t, bf, rl);                          \
+	}                                                                      \
+	static void ps5Set##N(uint8_t r, hid_report_type_t t,                  \
+			      uint8_t const *b, uint16_t n)                    \
+	{                                                                      \
+		ps5SetCommon(N, r, t, b, n);                                   \
+	}
+// clang-format off
+PS5CB(0)
+PS5CB(1)
+PS5CB(2)
+PS5CB(3)
+// clang-format on
+typedef uint16_t (*ps5_getcb_t)(uint8_t, hid_report_type_t, uint8_t *,
+				uint16_t);
+typedef void (*ps5_setcb_t)(uint8_t, hid_report_type_t, uint8_t const *,
+			    uint16_t);
+static ps5_getcb_t const PS5_GETCB[NSLOT] = { ps5Get0, ps5Get1, ps5Get2,
+					      ps5Get3 };
+static ps5_setcb_t const PS5_SETCB[NSLOT] = { ps5Set0, ps5Set1, ps5Set2,
+					      ps5Set3 };
 
-static void ps5Build(uint8_t out[63])
+static void ps5Build(uint8_t slot, uint8_t out[63])
 {
-	uint32_t b = psButtonsFromSteam(g_in.buttons);
+	uint32_t b = psButtonsFromSteam(g_in[slot].buttons);
 	bool lTouch = (b & TB_LPADT) || (b & TB_LPADC),
 	     rTouch = (b & TB_RPADT) || (b & TB_RPADC);
 	memset(out, 0, 63);
-	out[0] = swStick(g_in.lx, false);
-	out[1] = swStick(g_in.ly, true);
-	out[2] = swStick(g_in.rx, false);
-	out[3] = swStick(g_in.ry, true);
-	out[4] = g_in.lt;
-	out[5] = g_in.rt;
-	static uint8_t seq = 0;
-	out[6] = seq++;
+	out[0] = swStick(g_in[slot].lx, false);
+	out[1] = swStick(g_in[slot].ly, true);
+	out[2] = swStick(g_in[slot].rx, false);
+	out[3] = swStick(g_in[slot].ry, true);
+	out[4] = g_in[slot].lt;
+	out[5] = g_in[slot].rt;
+	static uint8_t seq[NSLOT] = { 0 };
+	out[6] = seq[slot]++;
 	out[7] = psHatNibble(b) | psFaceNibble(b);
-	out[8] = psShouldersByte(b);
+	out[8] = psShouldersByte(b, g_in[slot].lt, g_in[slot].rt);
 	out[9] = ((b & TB_STEAM) ? 0x01 : 0) |
 		 ((b & TB_TOUCH || b & TB_LPADC || b & TB_RPADC) ? 0x02 : 0) |
 		 ((b & TB_MUTE) ? 0x04 : 0);
-	out[15] = g_in.gx & 0xFF;
-	out[16] = g_in.gx >> 8;
-	out[17] = g_in.gz & 0xFF;
-	out[18] = g_in.gz >> 8;
-	out[19] = (-g_in.gy) & 0xFF;
-	out[20] = (-g_in.gy) >> 8;
-	out[21] = g_in.ax & 0xFF;
-	out[22] = g_in.ax >> 8;
-	out[23] = g_in.ay & 0xFF;
-	out[24] = g_in.ay >> 8;
-	out[25] = g_in.az & 0xFF;
-	out[26] = g_in.az >> 8;
+	out[15] = g_in[slot].gx & 0xFF;
+	out[16] = g_in[slot].gx >> 8;
+	out[17] = g_in[slot].gz & 0xFF;
+	out[18] = g_in[slot].gz >> 8;
+	out[19] = (-g_in[slot].gy) & 0xFF;
+	out[20] = (-g_in[slot].gy) >> 8;
+	out[21] = g_in[slot].ax & 0xFF;
+	out[22] = g_in[slot].ax >> 8;
+	out[23] = g_in[slot].ay & 0xFF;
+	out[24] = g_in[slot].ay >> 8;
+	out[25] = g_in[slot].az & 0xFF;
+	out[26] = g_in[slot].az >> 8;
 	uint16_t lx, ly, rx, ry;
-	steamPadsToTouch(b, PS5_TOUCH_H, g_in.lpx, g_in.lpy, g_in.rpx, g_in.rpy,
-			 &lx, &ly, &rx, &ry);
+	steamPadsToTouch(b, PS5_TOUCH_H, g_in[slot].lpx, g_in[slot].lpy,
+			 g_in[slot].rpx, g_in[slot].rpy, &lx, &ly, &rx, &ry);
 	touchPackPads(out + 32, lTouch, rTouch, lx, ly, rx, ry);
 	out[52] = PS5_STATUS_USB;
 }
@@ -155,26 +195,34 @@ void Ps5Controller::begin()
 {
 	USBDevice.setID(0x054C, 0x0CE6);
 
-	// Host re-reads config by VID:PID:serial (per-mode suffix); bump invalidates any cached descriptor
-	USBDevice.setDeviceVersion(0x0104);
+	int n = bondedSlotCount();
+	USBDevice.setDeviceVersion(
+		(uint16_t)(0x0110 + (uint16_t)(n > 0 ? n - 1 : 0)));
 	USBDevice.setManufacturerDescriptor("Sony Interactive Entertainment");
 	USBDevice.setProductDescriptor("DualSense Wireless Controller");
-	g_ps5.enableOutEndpoint(true);
-	g_ps5.setReportCallback(ps5Get, ps5Set);
-	g_ps5.setReportDescriptor(PS5_HID_DESC, sizeof PS5_HID_DESC);
-
-	// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
-	g_ps5.setPollInterval(1);
-	g_ps5.begin();
+	initPs5Macs();
+	for (int s = 0; s < NSLOT; s++) {
+		if (n > 0 && !g_slot[s].used)
+			continue;
+		if (n == 0 && s > 0)
+			break;
+		g_ps5[s].enableOutEndpoint(true);
+		g_ps5[s].setReportCallback(PS5_GETCB[s], PS5_SETCB[s]);
+		g_ps5[s].setReportDescriptor(PS5_HID_DESC, sizeof PS5_HID_DESC);
+		g_ps5[s].setPollInterval(1);
+		g_ps5[s].begin();
+	}
 }
 void Ps5Controller::task()
 {
-	if (!g_ps5.ready())
-		return;
-	if (millis() - g_ps5LastMs < USB_STREAM_MS)
-		return;
-	g_ps5LastMs = millis();
-	uint8_t p[63];
-	ps5Build(p);
-	g_ps5.sendReport(0x01, p, sizeof p);
+	for (int s = 0; s < NSLOT; s++) {
+		if (!g_ps5[s].ready())
+			continue;
+		if (millis() - g_ps5LastMs[s] < USB_STREAM_MS)
+			continue;
+		g_ps5LastMs[s] = millis();
+		uint8_t p[63];
+		ps5Build((uint8_t)s, p);
+		g_ps5[s].sendReport(0x01, p, sizeof p);
+	}
 }

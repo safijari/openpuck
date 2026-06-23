@@ -153,11 +153,12 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			     millis() - g_resumeMs < POST_RESUME_MUTE_MS;
 		if (rid >= 0x80 && rid <= 0x86 && n >= 1 &&
 		    hapticRelaySlotOk(slot) && !lizardActive() && !muted) {
-			if (!haptic82Blocked()) {
+			if (!haptic82Blocked(slot)) {
 				relayEnqueue(rid, b,
 					     (uint8_t)(n > RELAY_MAXP ?
 							       RELAY_MAXP :
-							       n));
+							       n),
+					     (uint8_t)slot);
 				// Track on/off from what was actually RELAYED (= the controller's believed state): a
 				// BLOCKED stop must leave "on" set (controller may be latched -> reconnect stop-burst),
 				// a blocked ON must not set it (nothing reached the controller -> no spurious clicks).
@@ -204,7 +205,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop)
 		bool relayOk = hapticRelaySlotOk(slot) &&
 			       !(haptic82 && (lizardActive() || muted));
-		if (relayOk && (!haptic82 || !haptic82Blocked())) {
+		if (relayOk && (!haptic82 || !haptic82Blocked(slot))) {
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
 			// 18B cap, and the chopped frames were why those settings never landed on the controller.
@@ -213,7 +214,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				Serial.printf(
 					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
 					cmd, len, (unsigned)RELAY_MAXP);
-			relayEnqueue(cmd, pl, rl);
+			relayEnqueue(cmd, pl, rl, (uint8_t)slot);
 
 			// track from RELAYED frames only (see the OUTPUT path)
 			if (haptic82)
@@ -256,8 +257,9 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		hostStampAlive();
 		S.resp[0] = 0xB4;
 		S.resp[1] = 0x01;
-		S.resp[2] = (slot == g_connSlot && !g_xbox &&
-			     (millis() - g_connReplyMs < 500)) ?
+		S.resp[2] = (slot >= 0 && slot < NSLOT && !g_xbox &&
+			     g_slot[slot].used &&
+			     (millis() - g_connReplyMs[slot] < 500)) ?
 				    0x02 :
 				    0x01;
 		S.resp_len = 63;
@@ -376,10 +378,15 @@ void SteamPuckController::begin()
 }
 
 // Forward the controller's report 0x45 to Steam, or drive lizard kb/mouse when Steam is closed. PURELY a
-// USB-side decision -- changes nothing about the RF poll or the host->controller relay.
-void SteamPuckController::onReport45(const uint8_t *rep, bool fresh,
+// USB-side decision -- changes nothing about the RF poll or the host->controller relay. Per-slot: each
+// controller's 0x45 goes to its OWN hid[slot], so Steam sees four independent inputs. Lizard remains
+// single-controller (slot 0); the other slots stay quiet in lizard mode -- one mouse + one keyboard is
+// the only thing a desktop can consume, and the comment in mode_lizard.h documents this.
+void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 				     uint8_t bodyTlen)
 {
+	(void)fresh;
+	(void)bodyTlen;
 	// Host asleep -> forward NOTHING. While suspended, every sendReport attempt can translate into a host wake,
 	// making the PC wake on any controller movement. Waking is an explicit gesture only (Steam-button short
 	// press / controller connect), handled in rf_link.cpp via the device-level USB resume signal.
@@ -389,10 +396,15 @@ void SteamPuckController::onReport45(const uint8_t *rep, bool fresh,
 	// the freshly-woken desktop.
 	if (g_resumeMs && millis() - g_resumeMs < POST_RESUME_MUTE_MS)
 		return;
-	if (g_connSlot < 0 || g_connSlot >= NSLOT)
+	if (slot < 0 || slot >= NSLOT)
+		return;
+	if (!g_slot[slot].used)
 		return;
 	if (lizardActive()) {
-		rfLizard(rep, &hid[g_connSlot], &hid[g_connSlot], 0x40, 0x41);
+		// Lizard single-controller: only slot 0's interface drives the mouse/keyboard. Other slots
+		// stay quiet in lizard mode.
+		if (slot == 0)
+			rfLizard(rep, &hid[0], &hid[0], 0x40, 0x41);
 	} else {
 		uint8_t blen = bodyTlen - 1;
 		if (blen > 45)
@@ -400,9 +412,8 @@ void SteamPuckController::onReport45(const uint8_t *rep, bool fresh,
 		// forward the puck's raw pad coords untouched (Steam does its own interpolation/smoothing). Forward
 		// only FRESH reports: the real puck dedupes, so stale repeats make Steam's velocity/smoothing
 		// stair-step. g_fwdNewOnly toggles for A/B.
-		if ((fresh || !g_fwdNewOnly) && g_slot[g_connSlot].used &&
-		    hid[g_connSlot].ready())
-			hid[g_connSlot].sendReport(
+		if ((fresh || !g_fwdNewOnly) && hid[slot].ready())
+			hid[slot].sendReport(
 				0x45, rep + 1,
 				blen); // Steam/SDL Triton: input report 0x45
 	}
@@ -410,58 +421,73 @@ void SteamPuckController::onReport45(const uint8_t *rep, bool fresh,
 
 // Forward the controller's NON-input status reports (0x43 power/battery, 0x44) to Steam verbatim -- the real
 // puck does this and it's how Steam reads battery. Same host-asleep / post-resume gating as 0x45; no lizard
-// path (status reports aren't input, so they forward regardless of the lizard decision).
-void SteamPuckController::onAuxReport(uint8_t rid, const uint8_t *data,
-				      uint8_t n)
+// path (status reports aren't input, so they forward regardless of the lizard decision). Per-slot: each
+// controller's status goes to its own hid[slot].
+void SteamPuckController::onAuxReport(int slot, uint8_t rid,
+				      const uint8_t *data, uint8_t n)
 {
 	if (USBDevice.suspended())
 		return;
 	if (g_resumeMs && millis() - g_resumeMs < POST_RESUME_MUTE_MS)
 		return;
-	if (g_connSlot < 0 || g_connSlot >= NSLOT)
+	if (slot < 0 || slot >= NSLOT)
 		return;
-	if (g_slot[g_connSlot].used && hid[g_connSlot].ready())
-		hid[g_connSlot].sendReport(rid, data, n);
+	// Forward the controller's status report VERBATIM (the real puck does this; it's how the host reads
+	// battery). Padding the report to the descriptor-declared length broke battery in both lizard and
+	// Steam, so it's reverted -- send exactly what the controller sent.
+	if (g_slot[slot].used && hid[slot].ready())
+		hid[slot].sendReport(rid, data, n);
 }
 
 // wake nudge: a bare USB resume signal is NOT enough to wake some hosts (Windows in particular) -- they only
 // wake when actual mouse/keyboard input follows. So on a deliberate wake gesture we play a HARMLESS mouse
 // JIGGLE (move a few px right, then back -- NET ZERO cursor, NO button): real mouse activity wakes the host
 // but clicks/activates nothing (an open Start menu stays open). Queued by wakeEvent() (rf_link, on a Steam
-// short press / controller connect while suspended); delivered once the suspended bus has resumed.
-static uint8_t g_nudgeStep = 0; // 0=idle; 1=jiggle+, 2=jiggle-
-static unsigned long g_nudgeMs = 0;
+// short press / controller connect while suspended); delivered once the suspended bus has resumed. Per-slot
+// so every connected interface gets the jiggle (Windows can credit any of them with the wake).
+static uint8_t g_nudgeStep[NSLOT] = { 0 }; // 0=idle; 1=jiggle+, 2=jiggle-
+static unsigned long g_nudgeMs[NSLOT] = { 0 };
 #define NUDGE_JIGGLE_PX 10
 void SteamPuckController::wakeEvent()
 {
-	g_nudgeStep = 1;
-	g_nudgeMs = millis();
+	// arm the jiggle on every connected slot -- any one of them is enough to wake Windows
+	for (int s = 0; s < NSLOT; s++) {
+		if (g_slot[s].used) {
+			g_nudgeStep[s] = 1;
+			g_nudgeMs[s] = millis();
+		}
+	}
 }
 static void wakeNudgeTask()
 {
-	if (!g_nudgeStep)
-		return;
-	if (millis() - g_nudgeMs > 5000) {
-		g_nudgeStep = 0;
-		return;
-	} // bus never resumed -> drop the nudge
 	if (USBDevice.suspended())
 		return; // wait for resume; reports can't cross a suspended bus
-	if (g_connSlot < 0 || g_connSlot >= NSLOT || !hid[g_connSlot].ready())
-		return;
-	static unsigned long stepMs = 0;
-	if (millis() - stepMs < 15)
-		return; // pace the edges
-	stepMs = millis();
-	hid_mouse_report_t m;
-	m.buttons = 0;
-	m.x = (g_nudgeStep == 1) ? NUDGE_JIGGLE_PX : -NUDGE_JIGGLE_PX;
-	m.y = 0;
-	m.wheel = 0;
-	m.pan = 0;
-	hid[g_connSlot].sendReport(0x40, &m,
-				   sizeof m); // jiggle right, then back
-	g_nudgeStep = (g_nudgeStep >= 2) ? 0 : (uint8_t)(g_nudgeStep + 1);
+	static unsigned long stepMs[NSLOT] = { 0 };
+	for (int s = 0; s < NSLOT; s++) {
+		if (!g_nudgeStep[s])
+			continue;
+		if (millis() - g_nudgeMs[s] > 5000) {
+			g_nudgeStep[s] = 0;
+			continue;
+		} // bus never resumed -> drop the nudge
+		if (!hid[s].ready())
+			continue;
+		if (millis() - stepMs[s] < 15)
+			continue; // pace the edges
+		stepMs[s] = millis();
+		hid_mouse_report_t m;
+		m.buttons = 0;
+		m.x = (g_nudgeStep[s] == 1) ? NUDGE_JIGGLE_PX :
+					      -NUDGE_JIGGLE_PX;
+		m.y = 0;
+		m.wheel = 0;
+		m.pan = 0;
+		hid[s].sendReport(0x40, &m,
+				  sizeof m); // jiggle right, then back
+		g_nudgeStep[s] = (g_nudgeStep[s] >= 2) ?
+					 0 :
+					 (uint8_t)(g_nudgeStep[s] + 1);
+	}
 }
 
 // USB connection presentation (like the real dongle): report 0x79 = connection state (01=disc, 02=conn),
@@ -483,26 +509,33 @@ void SteamPuckController::task()
 	// no periodic 0x79/0x7B while the host sleeps -- those sends can wake it too
 	if (USBDevice.suspended())
 		return;
-	static bool usbConn = false;
-	static unsigned long last79 = 0, last7B = 0, connEdgeMs = 0;
-	bool conn = (g_connSlot >= 0 && millis() - g_connReplyMs < 300);
-	if (g_connSlot >= 0 && g_connSlot < NSLOT && hid[g_connSlot].ready()) {
+	// Per-slot 0x79/0x7B: each connected slot reports its OWN edge and its OWN status. State arrays are
+	// per-slot so each controller's "connected" edge fires once and is re-sent only until Steam acks THAT
+	// slot. The real puck's per-slot edge-triggered 0x79 prevents re-triggering Steam's connect-chime loop.
+	static bool usbConn[NSLOT] = { 0 };
+	static unsigned long last79[NSLOT] = { 0 }, last7B[NSLOT] = { 0 },
+			     connEdgeMs[NSLOT] = { 0 };
+	for (int s = 0; s < NSLOT; s++) {
+		if (!g_slot[s].used || !hid[s].ready())
+			continue;
+		bool conn = (millis() - g_connReplyMs[s] < 300);
 		// 0x79 connection state: on edge, then repeated every 750ms ONLY until Steam reacts (its first OUTPUT/
 		// settings write after the edge -- g_steamAliveMs). The real puck sends 0x79 ONCE, edge-triggered; an
 		// unconditional forever-resend re-triggers Steam's connect handling (connect chime) every 750ms before
 		// Steam consumes 0x45 -> a loop of connect-time haptic buzzes. Resending until acked still covers
 		// "Steam missed the edge".
 		bool steamAcked = g_steamAliveMs &&
-				  (int32_t)(g_steamAliveMs - connEdgeMs) >= 0;
-		if (conn != usbConn ||
-		    (conn && !steamAcked && millis() - last79 >= 750)) {
-			if (conn && !usbConn)
-				connEdgeMs = millis();
+				  (int32_t)(g_steamAliveMs - connEdgeMs[s]) >=
+					  0;
+		if (conn != usbConn[s] ||
+		    (conn && !steamAcked && millis() - last79[s] >= 750)) {
+			if (conn && !usbConn[s])
+				connEdgeMs[s] = millis();
 			uint8_t st = conn ? 0x02 : 0x01;
-			hid[g_connSlot].sendReport(0x79, &st, 1);
-			usbConn = conn;
-			last79 = millis();
-		} else if (conn && millis() - last7B >= 2000) {
+			hid[s].sendReport(0x79, &st, 1);
+			usbConn[s] = conn;
+			last79[s] = millis();
+		} else if (conn && millis() - last7B[s] >= 2000) {
 			// 0x7B status, live-captured template. Byte 8 is the controller->puck signal strength as signed
 			// dBm (capture showed 0xDD = -35) -- patch in the smoothed RSSI the radio samples on each
 			// controller reply (rf_link). 0 = no sample yet -> keep the capture value rather than garbage.
@@ -514,17 +547,20 @@ void SteamPuckController::task()
 			// so the bar tracks usable range, not antenna gain. Clamp keeps it in a sane window.
 			uint8_t s7b[12] = { 0xF7, 0x01, 0x89, 0x00, 0x00, 0x00,
 					    0x03, 0x00, 0xDD, 0x00, 0x3A, 0x02 };
-			if (g_linkRssi) {
-				int mag = (int)g_linkRssi - RSSI_DBM_OFFSET;
+			if (g_linkRssi[s]) {
+				int mag = (int)g_linkRssi[s] - RSSI_DBM_OFFSET;
 				if (mag < 25)
 					mag = 25;
 				else if (mag > 95)
 					mag = 95;
 				s7b[8] = (uint8_t)(0u - (uint8_t)mag);
 			}
-			hid[g_connSlot].sendReport(0x7B, s7b, 12);
-			last7B = millis();
+			hid[s].sendReport(0x7B, s7b, 12);
+			last7B[s] = millis();
 		}
-	} else if (!conn)
-		usbConn = false;
+	}
+	// Reset edge state for slots that are no longer used/ready (so a re-bond sees a fresh edge).
+	for (int s = 0; s < NSLOT; s++)
+		if (!g_slot[s].used || !hid[s].ready())
+			usbConn[s] = false;
 }

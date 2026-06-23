@@ -21,9 +21,9 @@ extern uint8_t g_fwdNewOnly;
 class SteamPuckController : public IController {
     public:
 	void begin() override;
-	void onReport45(const uint8_t *rep, bool fresh,
+	void onReport45(int slot, const uint8_t *rep, bool fresh,
 			uint8_t bodyTlen) override;
-	void onAuxReport(uint8_t rid, const uint8_t *data, uint8_t n)
+	void onAuxReport(int slot, uint8_t rid, const uint8_t *data, uint8_t n)
 		override; // forward controller 0x43/0x44 status to Steam
 	void task() override;
 

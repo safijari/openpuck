@@ -2,6 +2,7 @@
 #include "triton.h"
 #include "gamepad_util.h"
 #include "config.h"
+#include "bonds.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 
@@ -26,8 +27,9 @@ static const uint8_t SWITCH_HID_DESC[] = {
 	// vendor (output, 8 bytes; unused)
 	0x0A, 0x21, 0x26, 0x95, 0x08, 0x91, 0x02, 0xC0
 };
-static Adafruit_USBD_HID g_switch; // HORIPAD gamepad HID interface
-static unsigned long g_swLastMs = 0;
+// NSLOT HORIPAD HID instances -- one per bond slot. The Switch console binds each as a separate gamepad.
+static Adafruit_USBD_HID g_switch[NSLOT];
+static unsigned long g_swLastMs[NSLOT] = { 0 };
 
 // back-paddle code (g_back[]) -> Switch button bit. 0=none 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back(Minus) 10=Start(Plus) 11=Guide(Home)
 static uint16_t codeToSwitch(uint8_t c, uint16_t fA, uint16_t fB, uint16_t fX,
@@ -74,9 +76,10 @@ static inline void backCodeToHatDirs(uint8_t c, bool &u, bool &d, bool &l,
 		r = true;
 }
 // HORIPAD/Switch button bits: Y=1 B=2 A=4 X=8 L=10 R=20 ZL=40 ZR=80 Minus=100 Plus=200 LClick=400 RClick=800 Home=1000 Capture=2000
-static void switchBuildHoripad(uint8_t out[8])
+// Per-slot: each controller's decoded input is in g_in[slot].
+static void switchBuildHoripad(uint8_t slot, uint8_t out[8])
 {
-	uint32_t b = g_in.buttons;
+	uint32_t b = g_in[slot].buttons;
 	uint16_t btn = 0;
 	if (g_qamMap && (b & TB_QAM)) {
 		b &= ~(uint32_t)TB_QAM;
@@ -101,9 +104,9 @@ static void switchBuildHoripad(uint8_t out[8])
 	if (b & TB_RB)
 		btn |= 0x20; // L, R
 	// ZL/ZR digital: trip on the analog threshold (activates early) OR the full-press click bit
-	if ((g_in.lt >= SW_TRIG_ON) || (b & 0x8000000u))
+	if ((g_in[slot].lt >= SW_TRIG_ON) || (b & 0x8000000u))
 		btn |= 0x40;
-	if ((g_in.rt >= SW_TRIG_ON) || (b & 0x800000u))
+	if ((g_in[slot].rt >= SW_TRIG_ON) || (b & 0x800000u))
 		btn |= 0x80;
 	if (b & TB_MENU)
 		btn |= 0x100;
@@ -154,10 +157,11 @@ static void switchBuildHoripad(uint8_t out[8])
 	out[0] = btn & 0xFF;
 	out[1] = btn >> 8;
 	out[2] = hat;
-	out[3] = swStick(g_in.lx, false);
-	out[4] = swStick(g_in.ly, true); // HID Y is down-positive -> invert
-	out[5] = swStick(g_in.rx, false);
-	out[6] = swStick(g_in.ry, true);
+	out[3] = swStick(g_in[slot].lx, false);
+	out[4] = swStick(g_in[slot].ly,
+			 true); // HID Y is down-positive -> invert
+	out[5] = swStick(g_in[slot].rx, false);
+	out[6] = swStick(g_in[slot].ry, true);
 	out[7] = 0;
 }
 
@@ -165,25 +169,37 @@ void SwitchHoriController::begin()
 {
 	USBDevice.setID(0x0F0D, 0x0092);
 
-	// Windows caches config by VID:PID:bcdDevice, so any interface change MUST bump this
-	USBDevice.setDeviceVersion(0x0202);
+	int n = bondedSlotCount();
+	USBDevice.setDeviceVersion(
+		(uint16_t)(0x0210 + (uint16_t)(n > 0 ? n - 1 : 0)));
 	USBDevice.setManufacturerDescriptor("HORI CO.,LTD.");
 	USBDevice.setProductDescriptor("POKKEN CONTROLLER");
-	g_switch.enableOutEndpoint(true);
-	g_switch.setReportDescriptor(SWITCH_HID_DESC, sizeof SWITCH_HID_DESC);
-
-	// 1ms bInterval so the RF rate is the only latency limit (matches Xbox)
-	g_switch.setPollInterval(1);
-	g_switch.begin();
+	for (int s = 0; s < NSLOT; s++) {
+		if (n > 0 && !g_slot[s].used)
+			continue;
+		if (n == 0 && s > 0)
+			break;
+		g_switch[s].enableOutEndpoint(true);
+		g_switch[s].setReportDescriptor(SWITCH_HID_DESC,
+						sizeof SWITCH_HID_DESC);
+		g_switch[s].setPollInterval(1);
+		g_switch[s].begin();
+	}
 }
 void SwitchHoriController::task()
-{ // stream the 8-byte HORIPAD report at ~250Hz (no handshake needed)
-	if (!g_switch.ready())
-		return;
-	if (millis() - g_swLastMs < USB_STREAM_MS)
-		return;
-	g_swLastMs = millis();
-	uint8_t p[8];
-	switchBuildHoripad(p);
-	g_switch.sendReport(0, p, sizeof p); // report-id-less descriptor
+{
+	// stream the 8-byte HORIPAD report at ~250Hz per controller. Per-slot last-ms so each HID is paced
+	// independently (same as the single-controller case); sending all 4 back-to-back in one loop keeps the
+	// 4ms target per controller while running at the full loop rate.
+	for (int s = 0; s < NSLOT; s++) {
+		if (!g_switch[s].ready())
+			continue;
+		if (millis() - g_swLastMs[s] < USB_STREAM_MS)
+			continue;
+		g_swLastMs[s] = millis();
+		uint8_t p[8];
+		switchBuildHoripad((uint8_t)s, p);
+		g_switch[s].sendReport(0, p,
+				       sizeof p); // report-id-less descriptor
+	}
 }
