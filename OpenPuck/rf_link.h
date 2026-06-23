@@ -91,6 +91,8 @@ extern volatile uint8_t g_linkRssi[NSLOT];
 // reads g_battery[g_curSlot] (the most recently active one). The raw 0x43 report is also forwarded to
 // Steam verbatim (puck_hid onAuxReport) so Steam reads it itself.
 extern volatile uint8_t g_battery[NSLOT];
+// charge state from report 0x43 body[0] (EChargeState: 1=discharging, 2=charging, 4=charging-done; 0=unknown)
+extern volatile uint8_t g_batteryState[NSLOT];
 
 // TX one connected packet [LEN][S1][payload] on channel ch, then RX the reply into rfrx; decodes 0xF1.
 // rxWinUs overrides the reply-wait window (0 = use g_rxWin). Pass a tiny value for NO-ACK relays that expect

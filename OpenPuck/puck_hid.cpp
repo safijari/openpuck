@@ -514,7 +514,7 @@ void SteamPuckController::task()
 	// slot. The real puck's per-slot edge-triggered 0x79 prevents re-triggering Steam's connect-chime loop.
 	static bool usbConn[NSLOT] = { 0 };
 	static unsigned long last79[NSLOT] = { 0 }, last7B[NSLOT] = { 0 },
-			     connEdgeMs[NSLOT] = { 0 };
+			     connEdgeMs[NSLOT] = { 0 }, last43[NSLOT] = { 0 };
 	for (int s = 0; s < NSLOT; s++) {
 		if (!g_slot[s].used || !hid[s].ready())
 			continue;
@@ -557,6 +557,23 @@ void SteamPuckController::task()
 			}
 			hid[s].sendReport(0x7B, s7b, 12);
 			last7B[s] = millis();
+		}
+		// Synthesized 0x43 = ID_TRITON_BATTERY_STATUS for SDL/Steam's gamepad driver. The verbatim forward of
+		// the controller's own 0x43 (onAuxReport) is what the LIZARD/kernel path reads, but SDL's Triton driver
+		// requires the FULL TritonBatteryStatus_t length (r >= 1 + 14) and lapses to the "wired" glyph without a
+		// fresh one -- so we push a clean 14-byte report from g_battery every 2s. Body: [ucChargeState][ucBattery
+		// Level][voltages/current/temp = 0]; SDL only reads the first two. Map unknown/reset state -> discharging
+		// so it shows ON_BATTERY + % rather than UNKNOWN. Skipped until the controller has reported a level.
+		if (conn && g_battery[s] && millis() - last43[s] >= 2000) {
+			uint8_t st = g_batteryState[s];
+			// EChargeState discharging -> SDL_POWERSTATE_ON_BATTERY
+			if (st != 1 && st != 2 && st != 4)
+				st = 1;
+			uint8_t b43[14] = { 0 };
+			b43[0] = st; // ucChargeState
+			b43[1] = g_battery[s]; // ucBatteryLevel (percent)
+			hid[s].sendReport(0x43, b43, sizeof b43);
+			last43[s] = millis();
 		}
 	}
 	// Reset edge state for slots that are no longer used/ready (so a re-bond sees a fresh edge).

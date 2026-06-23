@@ -68,6 +68,8 @@ volatile uint8_t g_linkRssi[NSLOT] = { 0 };
 // battery % from the controller's report 0x43 (body[1]); 0 = none yet. Per-slot -- the active controller's
 // battery is the most recently seen one (other slots' values stay in their own array slots).
 volatile uint8_t g_battery[NSLOT] = { 0 };
+// charge state from report 0x43 body[0] (EChargeState: 1=discharging 2=charging 4=charging-done; 0=unknown).
+volatile uint8_t g_batteryState[NSLOT] = { 0 };
 
 // Slot the poll loop is currently driving. Set by rfConnStep before each E7/relay/E3, consumed by the
 // decode (g_in[g_curSlot]), the haptic flush (per-slot session address), and the per-second stat dump.
@@ -534,13 +536,18 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						// [rid][body...]
 						const uint8_t *rep =
 							&rfrx[idx + 2];
-						// 0x43 body[1] (~0x5e=94) reads as battery % (sniff-derived)
+						// 0x43 body[0] = ucChargeState (EChargeState), body[1] = ucBatteryLevel % (sniff-derived).
+						// rep[0]=rid, rep[1]=body[0], rep[2]=body[1]. Snapshot both for the WebUSB panel and the
+						// synthesized full-length 0x43 the puck pushes for SDL (see puck_hid.cpp task()).
 						if (rep[0] == 0x43 &&
 						    tlen >= 3 &&
 						    g_curSlot >= 0 &&
-						    g_curSlot < NSLOT)
+						    g_curSlot < NSLOT) {
+							g_batteryState[g_curSlot] =
+								rep[1];
 							g_battery[g_curSlot] =
 								rep[2];
+						}
 						if (g_active)
 							g_active->onAuxReport(
 								g_curSlot,
