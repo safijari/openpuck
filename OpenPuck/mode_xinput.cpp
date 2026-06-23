@@ -320,9 +320,8 @@ static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 		btn |= XB_L3;
 	if (b & TB_R3)
 		btn |= XB_R3;
-	// face buttons, with optional A/B + X/Y swap (Nintendo layout)
-	uint16_t fA = g_abSwap ? XB_B : XB_A, fB = g_abSwap ? XB_A : XB_B,
-		 fX = g_abSwap ? XB_Y : XB_X, fY = g_abSwap ? XB_X : XB_Y;
+	// face buttons: Xbox always uses standard layout (swap is Switch-only)
+	uint16_t fA = XB_A, fB = XB_B, fX = XB_X, fY = XB_Y;
 	if (b & TB_A)
 		btn |= fA;
 	if (b & TB_B)

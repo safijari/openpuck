@@ -18,7 +18,7 @@ bool g_debugCdcThisBoot = false;
 static uint8_t g_debugCdc = 0;
 
 int g_mDiv = 64, g_mFric = 94;
-uint8_t g_abSwap = 0;
+uint8_t g_abSwap = 1;
 uint8_t g_back[4] = {
 	5, 6, 7, 8
 }; // L4->LB R4->RB L5->L3 R5->R3 (0..11 buttons, 12..15 D-pad U/D/L/R)

@@ -217,7 +217,7 @@ void serialConsolePoll()
 				g_abSwap = !g_abSwap;
 				saveCfg();
 				Serial.printf(
-					"# A/B + X/Y swap %s (Nintendo layout)\n",
+					"# A/B + X/Y swap %s (Switch modes only)\n",
 					g_abSwap ? "ON" : "off");
 			} else if (line[0] == 'K') {
 				int i = line[1] - '0';
