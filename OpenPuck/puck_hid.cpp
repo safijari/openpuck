@@ -97,11 +97,6 @@ static Adafruit_USBD_HID hid[NSLOT];
 
 // millis of last Steam OUTPUT/settings write; 0 at boot => lizard until Steam appears
 static unsigned long g_steamAliveMs = 0;
-// PER-SLOT millis of the last Steam OUTPUT/settings write to THAT slot's interface. The global stamp above
-// can't tell whether Steam has engaged a specific slot -- with two controllers, Steam reacting to slot A
-// advanced the global stamp and prematurely stopped slot B's 0x79=02 connect-edge re-send, so a missed B
-// edge left Steam never seeing B connect (its input never got processed). The 0x79 logic acks per slot.
-static unsigned long g_steamAliveSlot[NSLOT] = { 0 };
 // Fall back to lizard this long after Steam's ~3s settings heartbeat stops. Keep >2x the cadence: the haptic
 // relay is gated by !lizardActive(), so a shorter window lets a jittered/delayed heartbeat flip lizard
 // mid-session while Steam is still running -> a haptic arriving in that window gets gated out (dropped). 7s
@@ -151,8 +146,6 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			// leave lizard for gamepad NOW, so a haptic arriving before the first 0x87 isn't relayed while
 			// we're still presenting lizard (-> buzz loop).
 			hostStampAlive();
-			if (slot >= 0 && slot < NSLOT)
-				g_steamAliveSlot[slot] = millis();
 		}
 		// Post-resume mute also gates haptics: while onReport45 is muted Steam reads NO 0x45 back, which is the
 		// exact condition under which Steam loops the same haptic command (-> connect/wake buzz loop).
@@ -191,11 +184,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	uint16_t pln = (n >= 2) ? n - 2 : 0;
 
 	// settings/haptic/LED report (incl. 0x87 lizard-off heartbeat, SDL Triton lizard-disable)
-	if (cmd >= 0x80 && cmd <= 0x89) {
+	if (cmd >= 0x80 && cmd <= 0x89)
 		hostStampAlive();
-		if (slot >= 0 && slot < NSLOT)
-			g_steamAliveSlot[slot] = millis();
-	}
 	// Controller power-off: Steam's "turn off controller" is feature-0x01 frame 9F 04 6F 66 66 21 ("off!"),
 	// confirmed from a real puck capture. The feature-0x01 relay below forwards it once; hapticSendShutdown()
 	// bursts it for NO-ACK reliability (the single hook the test button + host-suspend also drive).
@@ -525,10 +515,6 @@ void SteamPuckController::task()
 	static bool usbConn[NSLOT] = { 0 };
 	static unsigned long last79[NSLOT] = { 0 }, last7B[NSLOT] = { 0 },
 			     connEdgeMs[NSLOT] = { 0 }, last43[NSLOT] = { 0 };
-	// remaining bounded re-sends of the 0x79=01 DISCONNECT edge (one report can be dropped, leaving Steam
-	// showing a powered-off controller forever -- the connect edge is re-sent until acked, the disconnect was
-	// one-shot). 0 = idle.
-	static uint8_t discResend[NSLOT] = { 0 };
 	for (int s = 0; s < NSLOT; s++) {
 		if (!g_slot[s].used || !hid[s].ready())
 			continue;
@@ -536,32 +522,21 @@ void SteamPuckController::task()
 		// connection edge, or each blip re-fires the 0x79=02 connect edge -> Steam re-runs connect handling
 		// (chime + connect-time haptic) -> buzz loop. g_linkUp drops only after a real outage (rf_link).
 		bool conn = g_linkUp[s];
-		// PER-SLOT ack: keep re-sending 0x79=02 until STEAM ENGAGES THIS SLOT's interface (g_steamAliveSlot[s]),
-		// not until it engages any slot. A global ack let one controller's activity stop the other's connect
-		// re-send, so a missed edge stranded that controller (input never processed).
-		bool steamAcked =
-			g_steamAliveSlot[s] &&
-			(int32_t)(g_steamAliveSlot[s] - connEdgeMs[s]) >= 0;
-		if (conn != usbConn[s]) {
-			// connect/disconnect edge
-			if (conn)
+		// 0x79 connection state: on edge, then repeated every 750ms ONLY until Steam reacts (its first OUTPUT/
+		// settings write after the edge -- g_steamAliveMs). The real puck sends 0x79 ONCE, edge-triggered; an
+		// unconditional forever-resend re-triggers Steam's connect handling (connect chime) every 750ms before
+		// Steam consumes 0x45 -> a loop of connect-time haptic buzzes. Resending until acked still covers
+		// "Steam missed the edge".
+		bool steamAcked = g_steamAliveMs &&
+				  (int32_t)(g_steamAliveMs - connEdgeMs[s]) >=
+					  0;
+		if (conn != usbConn[s] ||
+		    (conn && !steamAcked && millis() - last79[s] >= 750)) {
+			if (conn && !usbConn[s])
 				connEdgeMs[s] = millis();
-			else
-				// re-send the disconnect a few times for reliability
-				discResend[s] = 4;
 			uint8_t st = conn ? 0x02 : 0x01;
 			hid[s].sendReport(0x79, &st, 1);
 			usbConn[s] = conn;
-			last79[s] = millis();
-		} else if (!conn && discResend[s] && millis() - last79[s] >= 750) {
-			// still disconnected: re-assert 0x79=01 so a dropped edge can't leave Steam stale
-			uint8_t st = 0x01;
-			hid[s].sendReport(0x79, &st, 1);
-			last79[s] = millis();
-			discResend[s]--;
-		} else if (conn && !steamAcked && millis() - last79[s] >= 750) {
-			uint8_t st = 0x02;
-			hid[s].sendReport(0x79, &st, 1);
 			last79[s] = millis();
 		} else if (conn && millis() - last7B[s] >= 2000) {
 			// 0x7B status, live-captured template. Byte 8 is the controller->puck signal strength as signed
