@@ -14,9 +14,24 @@ CLANG_FORMAT ?= $(shell command -v clang-format-18 \
 # gitignored and excluded here so formatting never touches them.
 FORMAT_FILES := $(shell find OpenPuck puck_sniffer pairtui \
 	\( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.ino' \) \
-	-not -name 'git_version.h')
+	-not -name 'git_version.h' \
+	-not -name 'nrf_esb.c' -not -name 'nrf_esb.h' \
+	-not -name 'nrf_esb_error_codes.h' -not -name 'nrf_esb_resources.h')
 
-.PHONY: format format-check lint check
+.PHONY: format format-check lint check compile
+
+# Board + build flags must match CI (see AGENTS.md). CFG_TUD_HID=4 = four HID
+# interfaces (the four Steam slots); {build.flags.usb} is expanded by the BSP.
+FQBN ?= adafruit:nrf52:feather52840
+EXTRA_FLAGS ?= -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4
+
+## Compile-check the sketch with the CI board + flags (no hardware needed).
+## Regenerates the gitignored git_version.h first. Pass OPK_RADIO_ESB=1 etc via
+## EXTRA_FLAGS="... -DOPK_RADIO_ESB=1" to build an alternate backend.
+compile:
+	sh gen_version.sh
+	arduino-cli compile -b $(FQBN) \
+		--build-property "build.extra_flags=$(EXTRA_FLAGS)" OpenPuck
 
 ## Reformat all C/C++ sources in place using the Linux kernel style.
 format:

@@ -30,6 +30,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "haptics.h"
 #include "rf_link.h"
 #include "rf_diag.h"
+#include "esb_backend.h" // experimental nrf_esb backend (OPK_RADIO_ESB)
 #include "webusb_config.h"
 #include "serial_console.h"
 #include "wake_hid.h"
@@ -228,6 +229,13 @@ void setup()
 				g_slot[s].rec[7]);
 		}
 	}
+#if OPK_RADIO_ESB
+	// Experimental: bring up the nrf_esb radio backend. This is the init entry point of the ESB migration;
+	// the rf_link poll loop is NOT yet routed through esbBackendPoll/SendNoAck, so with this flag on the link
+	// does not yet function (and nrf_esb's RADIO ownership conflicts with rf_link's raw rfConfig). Present so
+	// the library links into the image and gives the wiring a home. See docs/ESB_MIGRATION.md.
+	esbBackendInit();
+#endif
 	// Hardware watchdog: if loop() ever stops feeding it (wedged radio busy-wait, HardFault spin, blocked CDC
 	// write) the WDT resets the nRF52 after ~8s, re-enumerating USB + re-initialising RF, so a hang no longer
 	// needs a physical replug. RUN keeps it counting in sleep; PAUSE freezes it under a debugger.

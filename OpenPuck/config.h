@@ -13,6 +13,14 @@
 #define OPK_LOG 0
 #endif
 
+// Radio backend selector. 0 (default) = the raw bare-metal RADIO half-duplex poller in radio.cpp/rf_link.cpp.
+// 1 = the vendored Nordic nrf_esb library (esb_backend.cpp), which adds hardware auto-ack + auto-retransmit +
+// an interrupt/PPI/timer-driven pipeline that the raw poller lacks. -DOPK_RADIO_ESB=1 to build it. The ESB
+// backend owns RADIO + TIMER2/TIMER3 + SWI0 + PPI 7-13; see docs/ESB_MIGRATION.md for the bring-up status.
+#ifndef OPK_RADIO_ESB
+#define OPK_RADIO_ESB 0
+#endif
+
 // Build-time FACTORY RESET (recovery build). 0 (default) = normal. -DOPK_FACTORY_RESET=1 wipes ALL persistent
 // storage (cfg.bin + bonds.bin) ONCE -- on the first boot after flashing -- then persists normally. A git-hash
 // tag file (written after the wipe) records that this build already reset, so subsequent boots skip it. Flashing
