@@ -265,7 +265,8 @@ void webusbPoll()
 						else if (k == 4)
 							g_type[et].qamMap = v;
 						else if (k == 5)
-							g_type[et].abSwap = v ? 1 : 0;
+							g_type[et].abSwap =
+								v ? 1 : 0;
 						else if (k == 6)
 							g_type[et].padHaptics =
 								v ? 1 : 0;
@@ -289,7 +290,8 @@ void webusbPoll()
 				// Legacy single-value fields (4 abSwap, 5-8 back, 21 qam) edit the ACTIVE emulated type.
 				case 4:
 					if (g_etype < ET_COUNT) {
-						g_type[g_etype].abSwap = v ? 1 : 0;
+						g_type[g_etype].abSwap = v ? 1 :
+									     0;
 						applyActiveType();
 					}
 					break;

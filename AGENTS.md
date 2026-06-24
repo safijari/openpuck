@@ -62,7 +62,7 @@ CI rejects a PR immediately if either fails. The lint lives in
 
 ```sh
 arduino-cli compile -b adafruit:nrf52:feather52840 \
-  --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4" \
+  --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=5" \
   OpenPuck
 ```
 

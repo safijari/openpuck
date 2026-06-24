@@ -43,15 +43,17 @@ void rfGenSessionAddr(int slot)
 		}
 	uint32_t h, h2;
 	if (uuidLive) {
-		h = (uint32_t)uuid[0] * 0x9E3779B1u ^ (uint32_t)uuid[2] * 0x85EBCA6Bu ^
+		h = (uint32_t)uuid[0] * 0x9E3779B1u ^
+		    (uint32_t)uuid[2] * 0x85EBCA6Bu ^
 		    (uint32_t)uuid[4] * 0xC2B2AE35u ^ (uint32_t)uuid[6] ^
 		    NRF_FICR->DEVICEID[0];
-		h2 = (uint32_t)uuid[1] * 0x27D4EB2Fu ^ (uint32_t)uuid[3] * 0x165667B1u ^
-		     (uint32_t)uuid[5] ^ (uint32_t)uuid[7] * 0x9E3779B1u ^
-		     NRF_FICR->DEVICEID[1];
+		h2 = (uint32_t)uuid[1] * 0x27D4EB2Fu ^
+		     (uint32_t)uuid[3] * 0x165667B1u ^ (uint32_t)uuid[5] ^
+		     (uint32_t)uuid[7] * 0x9E3779B1u ^ NRF_FICR->DEVICEID[1];
 	} else {
 		h = NRF_FICR->DEVICEID[0] * 0x9E3779B1u ^ NRF_FICR->DEVICEID[1];
-		h2 = NRF_FICR->DEVICEID[1] * 0x85EBCA6Bu ^ NRF_FICR->DEVICEID[0];
+		h2 = NRF_FICR->DEVICEID[1] * 0x85EBCA6Bu ^
+		     NRF_FICR->DEVICEID[0];
 	}
 	// Scrub degenerate bytes (0x00/0xFF) for clean preamble correlation.
 	for (int i = 0; i < 4; i++) {

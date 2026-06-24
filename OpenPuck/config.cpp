@@ -39,7 +39,8 @@ uint8_t g_padHaptics = 1;
 void applyActiveType()
 {
 	g_etype = etypeForMode(g_usbMode);
-	if (g_etype >= ET_COUNT) { // puck mode (Steam/Lizard): no remap, haptics on
+	if (g_etype >=
+	    ET_COUNT) { // puck mode (Steam/Lizard): no remap, haptics on
 		g_back[0] = 5;
 		g_back[1] = 6;
 		g_back[2] = 7;
@@ -67,8 +68,8 @@ const uint32_t g_pollUs = POLL_US_DEFAULT;
 // bumped (per-type TypeCfg blob replaces scalar abSwap/back/qamMap): old cfg ignored -> clean defaults on first boot
 #define CFG_MAGIC 0xCA
 struct Cfg {
-	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode, bootMode,
-		chordBtn[3], rumbleScale;
+	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
+		bootMode, chordBtn[3], rumbleScale;
 	TypeCfg type[ET_COUNT]; // per-emulated-type back/qam/abSwap/padHaptics
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 

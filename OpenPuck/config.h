@@ -120,14 +120,16 @@ struct TypeCfg {
 	uint8_t padHaptics;
 };
 extern TypeCfg g_type[ET_COUNT];
-extern uint8_t g_etype; // etypeForMode(g_usbMode), resolved at boot (ET_NONE for puck modes)
+extern uint8_t
+	g_etype; // etypeForMode(g_usbMode), resolved at boot (ET_NONE for puck modes)
 
 // Live, resolved-active-type mirrors of g_type[g_etype], read by the hot-path mode builders. Refreshed by
 // applyActiveType() at boot and after any edit to the active type.
 extern uint8_t g_abSwap; // 1 = swap A/B and X/Y (Nintendo face-button layout)
 extern uint8_t g_back[4];
 extern uint8_t g_qamMap;
-extern uint8_t g_padHaptics; // 1 = trackpad haptics on (default), 0 = disabled for the active type
+extern uint8_t
+	g_padHaptics; // 1 = trackpad haptics on (default), 0 = disabled for the active type
 
 // Copy g_type[g_etype] into the live mirrors above (safe defaults when g_etype == ET_NONE).
 void applyActiveType();

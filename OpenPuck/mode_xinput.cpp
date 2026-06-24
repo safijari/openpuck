@@ -82,7 +82,8 @@ static bool xi_deinit(void)
 static void xi_reset(uint8_t rhport)
 {
 	(void)rhport;
-	g_xiOpenU = 0; // restart per-interface claim ordering for this enumeration
+	g_xiOpenU =
+		0; // restart per-interface claim ordering for this enumeration
 	for (int s = 0; s < NSLOT; s++) {
 		g_xiSlot[s].itf = 0;
 		g_xiSlot[s].epIn = g_xiSlot[s].epOut = 0;

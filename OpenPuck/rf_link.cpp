@@ -28,8 +28,10 @@ uint8_t g_e3mode = 1;
 // (a bare E3) was answered by F1 immediately. That contradicts the earlier RE "recipe" (rf_link.h) which
 // assumed E7 + GET-0x45 were required. So these now default to the real-puck behavior; flip them at runtime
 // ('d'/'n' console cmds) to fall back to the legacy GET/E7 path for an A/B comparison on hardware.
-bool g_pollGet = false; // false = bare E3 poll (real puck); true = append GET-report-0x45 TLV (legacy)
-bool g_e7announce = false; // false = no E7 awake-announce (real puck); true = announce host-awake (legacy)
+bool g_pollGet =
+	false; // false = bare E3 poll (real puck); true = append GET-report-0x45 TLV (legacy)
+bool g_e7announce =
+	false; // false = no E7 awake-announce (real puck); true = announce host-awake (legacy)
 // Session-channel E1 host-frame keepalive. The real puck sends NO E1 on its session channel (the bonded
 // controller already knows the per-bond address and just resumes). OpenPuck still needs E1 because it runs
 // the SHARED "ibex" address, not the (un-reversed) per-bond address -- E1 is how the controller learns this

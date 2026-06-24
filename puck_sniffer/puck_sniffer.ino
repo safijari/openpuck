@@ -55,7 +55,8 @@ struct Cap;
 #define BONDFILE "/sniffbonds.bin"
 #define BOND_MAGIC 0x53424E32u // "SBN2"
 #define NBONDS 4
-#define BOND_NCH 6 // learned channels per bond (the map is ~4; a couple of spares)
+#define BOND_NCH \
+	6 // learned channels per bond (the map is ~4; a couple of spares)
 struct Bond {
 	uint8_t uuid[4]; // ibex_uuid key; all-zero = empty slot
 	uint8_t base[4]; // session ESB base
@@ -66,7 +67,8 @@ struct Bond {
 };
 static Bond g_bonds[NBONDS];
 static int g_curBond = -1; // index of the bond we're camped on (-1 = none)
-static bool g_bondDirty = false; // a learn changed the table -> flush to flash in loop()
+static bool g_bondDirty =
+	false; // a learn changed the table -> flush to flash in loop()
 static unsigned long g_lastBondSave = 0;
 
 static bool uuidSet(const uint8_t u[4])
@@ -153,7 +155,8 @@ struct Cap {
 	uint8_t ch, flags, rssi, match, n;
 	uint8_t b[96];
 };
-#define RINGN 1024 // ~2 s of headroom at 500 fps so a burst rides out a brief host hiccup without dropping
+#define RINGN \
+	1024 // ~2 s of headroom at 500 fps so a burst rides out a brief host hiccup without dropping
 static Cap g_ring[RINGN];
 static volatile uint16_t g_head = 0, g_tail = 0;
 static inline uint16_t rnext(uint16_t i)
@@ -168,7 +171,8 @@ static void tuneSession();
 static bool g_streaming = false; // app sent START -> emit packet frames
 // g_state/g_curCh are written by loop() (retune) and READ by the RADIO END ISR (which stamps each captured frame
 // with the current channel/state) -> volatile so the ISR never sees a cached value.
-static volatile uint8_t g_state = 0; // 0=ACQUIRE (ibex/ch2), 1=CAPTURE (session)
+static volatile uint8_t g_state =
+	0; // 0=ACQUIRE (ibex/ch2), 1=CAPTURE (session)
 static volatile uint8_t g_curCh = 2;
 static uint8_t g_sBase[4] = { 0x69, 0x62, 0x65, 0x78 };
 static uint8_t g_sPrefix = 0x10;
@@ -201,7 +205,8 @@ static uint8_t g_advCh = 0, g_advBase[4] = { 0, 0, 0, 0 }, g_advPfx = 0;
 // this follows a QoS channel hop. Only after a couple of fully-dry sweeps do we fall back to discovery.
 static const uint8_t SWEEP_CH[] = { 18, 46, 76, 22, 68, 2, 80, 52, 55, 56, 57 };
 static uint8_t g_sweepIdx = 0;
-static volatile uint8_t g_sweepDry = 0; // reset in the RADIO ISR on any session frame
+static volatile uint8_t g_sweepDry =
+	0; // reset in the RADIO ISR on any session frame
 
 // Gazell session-hunt: the puck's 5Hz E1/E2 keepalive trickles in on the primary channel even when the
 // controller isn't being actively polled, so "no packets" never fires the sweep. The ACTIVE session (E3 poll +
@@ -426,17 +431,28 @@ static void emitStatus()
 	uint8_t curN = (g_curBond >= 0) ? g_bonds[g_curBond].nchans : 0;
 	uint8_t bondInfo = (uint8_t)((g_curBond >= 0 ? 0x80 : 0) |
 				     ((nbonds & 0x7) << 4) | (curN & 0xF));
-	uint8_t f[22] = { 0xC1,		  0xDE,
-			  g_state,	  g_curCh,
-			  g_sBase[0],	  g_sBase[1],
-			  g_sBase[2],	  g_sBase[3],
-			  g_sPrefix,	  (uint8_t)(g_streaming ? 1 : 0),
-			  (uint8_t)rx,	  (uint8_t)(rx >> 8),
-			  g_advCh,	  g_advBase[0],
-			  g_advBase[1],	  g_advBase[2],
-			  g_advBase[3],	  g_advPfx,
-			  g_lastMatch,	  (uint8_t)drops,
-			  (uint8_t)(drops >> 8), bondInfo };
+	uint8_t f[22] = { 0xC1,
+			  0xDE,
+			  g_state,
+			  g_curCh,
+			  g_sBase[0],
+			  g_sBase[1],
+			  g_sBase[2],
+			  g_sBase[3],
+			  g_sPrefix,
+			  (uint8_t)(g_streaming ? 1 : 0),
+			  (uint8_t)rx,
+			  (uint8_t)(rx >> 8),
+			  g_advCh,
+			  g_advBase[0],
+			  g_advBase[1],
+			  g_advBase[2],
+			  g_advBase[3],
+			  g_advPfx,
+			  g_lastMatch,
+			  (uint8_t)drops,
+			  (uint8_t)(drops >> 8),
+			  bondInfo };
 	usb_web.write(f, sizeof f);
 	usb_web.flush();
 }
@@ -451,9 +467,11 @@ static void consumeRing()
 	// bound per-call so the loop stays responsive; the 512-deep ring absorbs anything beyond this
 	uint16_t budget = 128;
 	while (budget-- && g_tail != g_head) {
-		Cap c = g_ring[g_tail]; // copy out before releasing the slot to the producer
+		Cap c = g_ring
+			[g_tail]; // copy out before releasing the slot to the producer
 		g_tail = rnext(g_tail);
-		bool retuned = processFrame(c); // may retune the radio (acquire / channel hop)
+		bool retuned = processFrame(
+			c); // may retune the radio (acquire / channel hop)
 		if (emit)
 			emitPacket(c);
 		// On a retune, stop draining this round: the remaining queued frames were captured on the OLD channel, and
@@ -586,7 +604,8 @@ void setup()
 		if (uuidSet(g_bonds[i].uuid))
 			count++;
 	if (count == 1)
-		campBond(b0); // sole known bond -> adopt immediately (unambiguous)
+		campBond(
+			b0); // sole known bond -> adopt immediately (unambiguous)
 	else
 		tuneDiscovery(); // 0 bonds, or several -> discover / wait for a uuid lock
 	g_lastRx = millis();
@@ -612,7 +631,8 @@ void loop()
 	    millis() - g_lastFrx > HUNT_NOFRX_MS &&
 	    millis() - g_huntMs > HUNT_DWELL_MS) {
 		g_huntMs = millis();
-		uint8_t learned = (g_curBond >= 0) ? g_bonds[g_curBond].nchans : 0;
+		uint8_t learned = (g_curBond >= 0) ? g_bonds[g_curBond].nchans :
+						     0;
 		uint8_t total = learned + 1 + (uint8_t)sizeof HUNT_CH;
 		uint8_t slot = g_huntIdx;
 		uint8_t ch;

@@ -38,8 +38,8 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "identity.h"
 #include <stdio.h>
 
-#if CFG_TUD_HID < 4
-#error "build with -DCFG_TUD_HID=4 (extra_flags): up to 4 HID interfaces per mode"
+#if CFG_TUD_HID < 5
+#error "build with -DCFG_TUD_HID=5 (extra_flags): Switch Pro needs wake+2*slots HID instances"
 #endif
 
 // puck composite (4 HID + WebUSB) exceeds the default 256 B config buffer
@@ -62,14 +62,16 @@ void usbReenumerate(uint8_t k)
 	USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);
 	g_active->usbIdentity(); // clearConfiguration reset VID/PID/strings -- restore them
 	// serial carries the mounted count so the host invalidates its cached config descriptor on a change
-	snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c%u", g_unit,
-		 MODE_SUFFIX[(g_usbMode >= 1 && g_usbMode <= 8) ? g_usbMode - 1 :
-							         0],
-		 (unsigned)k);
+	snprintf(
+		g_usbSerial, sizeof g_usbSerial, "%s%c%u", g_unit,
+		MODE_SUFFIX[(g_usbMode >= 1 && g_usbMode <= 8) ? g_usbMode - 1 :
+								 0],
+		(unsigned)k);
 	USBDevice.setSerialDescriptor(g_usbSerial);
 	if (s_dynWantWakeMouse)
 		wakeHidAddInterface(); // HID instance 0
-	g_active->mountSlots(k); // mode's fixed HIDs (if any) + k slot interfaces
+	g_active->mountSlots(
+		k); // mode's fixed HIDs (if any) + k slot interfaces
 	if (s_dynWantWebusb)
 		USBDevice.addInterface(usb_web);
 	USBDevice.setConfigurationAttribute(0x80 | 0x20);
@@ -135,7 +137,8 @@ void setup()
 			usb_web.begin();
 		usbMountEnable(true, g_active->maxSlots());
 		usbMountRebuildMap(); // initial connected set (usually empty at cold boot)
-		usbReenumerate(g_usbMountCount); // build the live descriptor + attach
+		usbReenumerate(
+			g_usbMountCount); // build the live descriptor + attach
 	} else {
 		USBDevice.detach();
 		delay(30);

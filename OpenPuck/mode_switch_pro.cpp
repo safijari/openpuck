@@ -149,10 +149,26 @@ static uint32_t codeToJc(uint8_t c, uint32_t fA, uint32_t fB, uint32_t fX,
 		return 0;
 	}
 }
-// NSLOT Pro-Controller HIDs (one per bond slot) + per-slot handshake state (timer, report-mode gate,
-// subcommand-reply FIFO), per-slot reply queue indices, per-slot last-stream millis, per-slot MAC, and
-// per-slot user-cal SPI mirror.
+// HID mouse descriptor for the per-slot right-trackpad mice (relative, report ID 1).
+static const uint8_t SW_MOUSE_HID_DESC[] = { TUD_HID_REPORT_DESC_MOUSE(
+	HID_REPORT_ID(1)) };
+
+// NSLOT Pro-Controller HIDs + NSLOT right-trackpad mice (one pair per bond slot).
+// Per-slot handshake state (timer, report-mode gate, subcommand-reply FIFO), per-slot
+// reply queue indices, per-slot last-stream millis, per-slot MAC, and per-slot
+// user-cal SPI mirror.
 static Adafruit_USBD_HID g_swPro[NSLOT];
+// Per-slot mouse HID interface (right trackpad -> relative mouse motion with glide).
+static Adafruit_USBD_HID g_swMouse[NSLOT];
+// Per-slot mouse glide state.
+static float g_swMouseVx[NSLOT];
+static float g_swMouseVy[NSLOT];
+static int g_swMousePrx[NSLOT];
+static int g_swMousePry[NSLOT];
+static bool g_swMouseWasTouching[NSLOT];
+static float g_swMouseRmx[NSLOT];
+static float g_swMouseRmy[NSLOT];
+static uint8_t g_swMousePmbtn[NSLOT];
 static unsigned long g_swProLastMs[NSLOT] = { 0 };
 // 0 until the host's subcommand 0x03 selects 0x30 -> THEN we stream input
 static uint8_t g_swProReportMode[NSLOT] = { 0 };
@@ -205,7 +221,8 @@ static void jcRumble(uint8_t slot, const uint8_t *p, uint16_t pn)
 		return;
 	g_jcLastLo[slot] = lo;
 	g_jcLastHi[slot] = hi;
-	hapticSteamRumble(lo, hi, jcBondOf(slot)); // route to the mapped controller
+	hapticSteamRumble(lo, hi,
+			  jcBondOf(slot)); // route to the mapped controller
 }
 static int jcStick12(int16_t v, bool inv)
 { // steam int16 (center 0) -> 12-bit (center 0x800), clamped
@@ -224,7 +241,8 @@ static void jcPackStick(uint8_t s[3], int16_t x, int16_t y)
 // shared by the streamed 0x30 report and the 0x21 subcommand-reply reports the host reads during init.
 static void jcInputPrefix(uint8_t slot, uint8_t *out)
 {
-	uint8_t bond = jcBondOf(slot); // input data comes from the mapped controller; timer/state stay per USB slot
+	uint8_t bond = jcBondOf(
+		slot); // input data comes from the mapped controller; timer/state stay per USB slot
 	uint32_t b = g_in[bond].buttons;
 	// QAM (3 dots) remap -> applied via codeToJc below like a back paddle (so Capture(18)/any target work).
 	bool qam = g_qamMap && (b & TB_QAM);
@@ -298,7 +316,8 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 }
 static void switchProBuild(uint8_t slot, uint8_t out[63])
 {
-	uint8_t bond = jcBondOf(slot); // IMU data comes from the mapped controller
+	uint8_t bond =
+		jcBondOf(slot); // IMU data comes from the mapped controller
 	memset(out, 0, 63);
 	jcInputPrefix(slot, out);
 	// Gyro slot order follows hid-nintendo: raw+6 = ROLL, raw+8 = PITCH, raw+10 = YAW. Source routing (a proper
@@ -702,10 +721,10 @@ static jc_setcb_t const JC_SETCB[NSLOT] = { jcSet0, jcSet1, jcSet2, jcSet3 };
 void SwitchProController::begin()
 {
 }
-// Wake mouse (1 HID) is present in Switch mode, leaving CFG_TUD_HID-1 for the Pro Controller pool.
+// Wake mouse (1 HID) + 2 HIDs per slot (Pro Controller + right-trackpad mouse).
 uint8_t SwitchProController::maxSlots() const
 {
-	uint8_t cap = (uint8_t)(CFG_TUD_HID - 1);
+	uint8_t cap = (uint8_t)((CFG_TUD_HID - 1) / 2);
 	return cap < NSLOT ? cap : (uint8_t)NSLOT;
 }
 void SwitchProController::usbIdentity()
@@ -730,6 +749,15 @@ void SwitchProController::beginPool()
 		g_swPro[s].setPollInterval(1);
 		g_swPro[s].begin();
 	}
+	// Per-slot mice registered after the Pro Controller pool so their TinyUSB
+	// instance indices are stable (wake=0, pro[0..N-1], mouse[0..N-1]).
+	for (uint8_t s = 0; s < pool; s++) {
+		g_swMouse[s].setStringDescriptor("Pro Controller Mouse");
+		g_swMouse[s].setReportDescriptor(SW_MOUSE_HID_DESC,
+						 sizeof SW_MOUSE_HID_DESC);
+		g_swMouse[s].setPollInterval(1);
+		g_swMouse[s].begin();
+	}
 }
 void SwitchProController::mountSlots(uint8_t k)
 {
@@ -739,6 +767,17 @@ void SwitchProController::mountSlots(uint8_t k)
 		g_swProReportMode[u] = 0;
 		g_jcQh[u] = g_jcQt[u] = 0;
 		USBDevice.addInterface(g_swPro[u]);
+	}
+	// Per-slot mice mounted after all Pro Controllers; also reset glide state so a
+	// re-enumeration doesn't carry stale velocity or a stuck button.
+	for (uint8_t u = 0; u < k; u++) {
+		g_swMouseVx[u] = 0;
+		g_swMouseVy[u] = 0;
+		g_swMouseWasTouching[u] = false;
+		g_swMouseRmx[u] = 0;
+		g_swMouseRmy[u] = 0;
+		g_swMousePmbtn[u] = 0;
+		USBDevice.addInterface(g_swMouse[u]);
 	}
 }
 void SwitchProController::task()
@@ -779,5 +818,61 @@ void SwitchProController::task()
 		uint8_t p[63];
 		switchProBuild((uint8_t)s, p);
 		g_swPro[s].sendReport(0x30, p, sizeof p);
+	}
+	// Per-slot mice: right trackpad -> relative mouse motion with glide/friction.
+	// Runs independently of the Pro Controller handshake so the mouse is usable on
+	// a PC host even before (or without) a Nintendo Switch connection.
+	for (uint8_t s = 0; s < g_usbMountCount; s++) {
+		if (!g_swMouse[s].ready())
+			continue;
+		uint8_t bond = jcBondOf(s);
+		bool rtouch = (g_in[bond].buttons & TB_RPADT) != 0;
+		int rx = g_in[bond].rpx;
+		int ry = g_in[bond].rpy;
+		if (rtouch) {
+			if (g_swMouseWasTouching[s]) {
+				g_swMouseVx[s] += (float)(rx - g_swMousePrx[s]);
+				g_swMouseVy[s] += (float)(ry - g_swMousePry[s]);
+			}
+			g_swMousePrx[s] = rx;
+			g_swMousePry[s] = ry;
+		}
+		g_swMouseWasTouching[s] = rtouch;
+		// Y-inverted; divisor matches lizard/xbox trackpad-mouse sensitivity.
+		float mxf =
+			g_swMouseVx[s] / (float)(g_mDiv * 10) + g_swMouseRmx[s];
+		float myf = -(g_swMouseVy[s] / (float)(g_mDiv * 10)) +
+			    g_swMouseRmy[s];
+		int dx = (int)mxf;
+		int dy = (int)myf;
+		g_swMouseRmx[s] = mxf - (float)dx;
+		g_swMouseRmy[s] = myf - (float)dy;
+		if (dx > 127)
+			dx = 127;
+		else if (dx < -127)
+			dx = -127;
+		if (dy > 127)
+			dy = 127;
+		else if (dy < -127)
+			dy = -127;
+		float f = g_mFric / 100.0f;
+		g_swMouseVx[s] *= f;
+		g_swMouseVy[s] *= f;
+		if (g_swMouseVx[s] > -1.0f && g_swMouseVx[s] < 1.0f)
+			g_swMouseVx[s] = 0;
+		if (g_swMouseVy[s] > -1.0f && g_swMouseVy[s] < 1.0f)
+			g_swMouseVy[s] = 0;
+		// Right-pad click -> primary mouse button.
+		uint8_t mbtn = (g_in[bond].buttons & TB_RPADC) ? 1u : 0u;
+		if (dx || dy || mbtn != g_swMousePmbtn[s]) {
+			g_swMousePmbtn[s] = mbtn;
+			hid_mouse_report_t m;
+			m.buttons = mbtn;
+			m.x = (int8_t)dx;
+			m.y = (int8_t)dy;
+			m.wheel = 0;
+			m.pan = 0;
+			g_swMouse[s].sendReport(1, &m, sizeof m);
+		}
 	}
 }
