@@ -724,6 +724,7 @@ void SwitchProController::begin()
 // Wake mouse (1 HID) + 2 HIDs per slot (Pro Controller + right-trackpad mouse).
 uint8_t SwitchProController::maxSlots() const
 {
+	// 2 HID instances per slot: one Pro Controller + one mouse
 	uint8_t cap = (uint8_t)((CFG_TUD_HID - 1) / 2);
 	return cap < NSLOT ? cap : (uint8_t)NSLOT;
 }
@@ -838,7 +839,8 @@ void SwitchProController::task()
 			g_swMousePry[s] = ry;
 		}
 		g_swMouseWasTouching[s] = rtouch;
-		// Y-inverted; divisor matches lizard/xbox trackpad-mouse sensitivity.
+		// Y-inverted; g_mDiv*10 = effective divisor (matches lizard/xbox:
+		// g_mDiv=64 default gives 640 counts per full-range swipe).
 		float mxf =
 			g_swMouseVx[s] / (float)(g_mDiv * 10) + g_swMouseRmx[s];
 		float myf = -(g_swMouseVy[s] / (float)(g_mDiv * 10)) +
