@@ -347,12 +347,15 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// the controller only with the type-01 + inner-len form E3 [2+rl][01][rid][innerlen][data];
 			// the legacy form E3 [1+rl][05][rid][data] makes the controller DISCARD any 0x87+ command.
 			//
-			// Whitelist type-01 to only two commands: LED brightness (0x87 reg 0x2D) and power-off
-			// (0x9F). Other 0x87 writes (e.g. reg 0x30 IMU enable, 0x34/0x35 haptic amplitude) must
-			// stay on legacy form -- landing 0x30 freezes the gyro; landing 0x34/0x35 causes the buzz.
+			// Type-01 (landing) whitelist: LED brightness (0x87 reg 0x2D), the touchpad-haptics
+			// disable (0x87 reg 0x09, sniff-confirmed), and power-off (0x9F). Other 0x87 regs (0x30 IMU
+			// enable, 0x34/0x35 amplitude) MUST stay on legacy/discarded form -- landing 0x30 freezes
+			// the gyro, landing 0x34/0x35 buzzes.
 			bool land01 =
 				(m.rid == 0x9F) ||
-				(m.rid == 0x87 && rl >= 1 && m.data[0] == 0x2D);
+				(m.rid == 0x87 && rl >= 1 &&
+				 (m.data[0] == 0x2D ||
+				  m.data[0] == SETTING_HAPTICS_ENABLED));
 			uint8_t p[5 + RELAY_MAXP], plen;
 			if (land01) {
 				p[0] = g_relayOp;
@@ -390,19 +393,13 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1)
 // touchpad haptic sequences autonomously (haptics-sequencer-touchpad) gated by settings/haptics/enabled; in the
 // emulated (non-Steam) modes the host never sends SC haptic reports, so the only way to silence the pad buzz is
 // to write this setting. Wire format [id][val u16 LE] -- confirmed from the controller's SET_SETTINGS handler
-// (decomp FUN_0001f61c; id 0x30 == settings/sensors/imu/mode is the cross-check anchor in the same id space).
-// The exact id for settings/haptics/enabled needs a one-time `scmd labels` HW read (candidates from the captured
-// reinit: 0x18 / 0x2e / 0x34 / 0x35). Until it is set, SETTING_HAPTICS_ENABLED stays 0xFF and this is inert.
-#define SETTING_HAPTICS_ENABLED 0xFF
+// SET_SETTINGS(SETTING_HAPTICS_ENABLED, on?1:0) on the connected slot. Wire format [idx][u16 value LE]; landed
+// via the type-01 whitelist in rfConnFlushRelay. on=false (value 0) is what the real puck lands to quiet the
+// autonomous touchpad sequencer (sniff1.json); commanded 0x82 haptics are unaffected. See SETTING_HAPTICS_ENABLED.
 void hapticSetPadEnabled(uint8_t slot, bool on)
 {
-#if SETTING_HAPTICS_ENABLED != 0xFF
 	uint8_t pl[3] = { SETTING_HAPTICS_ENABLED, (uint8_t)(on ? 1 : 0), 0 };
 	relayEnqueue(0x87, pl, 3, slot);
-#else
-	(void)slot;
-	(void)on;
-#endif
 }
 void hapticReinit(uint8_t slot)
 {
@@ -428,10 +425,12 @@ void hapticReinit(uint8_t slot)
 	relayEnqueue(0x87, H35, sizeof H35, slot);
 	relayEnqueue(0x81, T81A, sizeof T81A, slot);
 	relayEnqueue(0x81, T81B, sizeof T81B, slot);
-	// Re-apply the active emulated type's trackpad-haptics preference last (after the haptic-config writes
-	// above, which would otherwise re-enable it). Default-on types send "enable"; Switch (padHaptics=0)
-	// disables. Inert until the setting id is captured.
-	hapticSetPadEnabled(slot, g_padHaptics != 0);
+	// Silence the controller's autonomous touchpad haptic sequencer -- the connect buzz. The real puck lands
+	// SET_SETTINGS(0x09, 0) here (sniff1.json); commanded 0x82 haptics still work. Sent last so the 0x87
+	// config writes above can't re-enable it. (Was gated on g_padHaptics, which left it ENABLED for the
+	// default types -> buzz; the autonomous sequencer is now always disabled to match the reference puck.)
+	(void)g_padHaptics;
+	hapticSetPadEnabled(slot, false);
 }
 void hapticInit()
 {
@@ -486,6 +485,17 @@ void hapticTask()
 		g_reinitAt = (g_reinitLeft && --g_reinitLeft) ?
 				     (millis() + HAPTIC_REINIT_GAP_MS) :
 				     0;
+	}
+	// Re-assert the touchpad-haptics-disable: the controller re-enables its autonomous sequencer, so the
+	// connect-time disable lapses and the buzz returns ~10-15s in. The real puck re-lands SET_SETTINGS(0x09,0)
+	// every ~3s (sniff1.json) -- we mirror that exactly, per connected slot.
+	static unsigned long lastPadReassert = 0;
+	if (anySlotLinkUp() &&
+	    millis() - lastPadReassert >= PAD_HAPTIC_REASSERT_MS) {
+		lastPadReassert = millis();
+		for (int s = 0; s < NSLOT; s++)
+			if (g_slot[s].used && hapticLinkUp(s))
+				hapticSetPadEnabled((uint8_t)s, false);
 	}
 	// Power-off on host sleep: only when VBUS is present (genuine sleep, not a cable unplug which also
 	// trips the suspend edge briefly) AND the suspend has PERSISTED >= SUSPEND_OFF_MS. A brief USB

@@ -36,6 +36,15 @@
 // during use (a buzz that starts seconds after connect and won't self-clear). Long enough not to fire between
 // rapid in-game haptics; short enough to clear a stuck buzz soon after the user pauses.
 #define HAPTIC_CLEAR_IDLE_MS 1200u
+// Settings index written to 0 to silence the controller's AUTONOMOUS touchpad haptic sequencer -- the connect
+// buzz. Decoded from a real puck<->controller capture (sniff1.json): the puck LANDS SET_SETTINGS(0x09, 0)
+// (on-air E3 .. 01 87 03 09 00 00) on connect and re-asserts it every ~3s. Commanded haptics (report 0x82)
+// are unaffected. The OpenPuck team had guessed 0x18/0x2e/0x34/0x35; the real index is 0x09.
+#define SETTING_HAPTICS_ENABLED 0x09
+// Re-assert cadence for the disable. The controller re-enables the sequencer, so a one-shot disable lapses
+// ~10-15s after connect (the reported buzz). Matches the real puck's observed +1950/+4951/+7953ms re-sends
+// in sniff1.json -- the reference puck's protocol, not a symptom-suppression timer.
+#define PAD_HAPTIC_REASSERT_MS 3000u
 // Controller power-off: hapticSendShutdown() relays Steam's confirmed "turn off controller" command (feature-0x01
 // cmd 0x9F, payload "off!" -- captured from the real puck). Sent as a small burst because the RF relay is NO-ACK.
 #define HAPTIC_SHUTDOWN_SHOTS 3u
