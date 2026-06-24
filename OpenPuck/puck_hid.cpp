@@ -626,8 +626,9 @@ void SteamPuckController::task()
 		// so it shows ON_BATTERY + % rather than UNKNOWN. Skipped until the controller has reported a level.
 		if (conn && g_battery[s] && millis() - last43[s] >= 2000) {
 			uint8_t st = g_batteryState[s];
+			// EChargeState discharging -> SDL_POWERSTATE_ON_BATTERY
 			if (st != 1 && st != 2 && st != 4)
-				st = 1; // EChargeState discharging -> SDL_POWERSTATE_ON_BATTERY
+				st = 1;
 			uint8_t b43[14] = { 0 };
 			b43[0] = st; // ucChargeState
 			b43[1] = g_battery[s]; // ucBatteryLevel (percent)
