@@ -406,32 +406,17 @@ void hapticSetPadEnabled(uint8_t slot, bool on)
 }
 void hapticReinit(uint8_t slot)
 {
-	static const uint8_t H30[] = { 0x30, 0x00, 0x00, 0x07, 0x07,
-				       0x00, 0x08, 0x07, 0x00, 0x31,
-				       0x02, 0x00, 0x52, 0x03, 0x00 };
-	static const uint8_t H18[] = { 0x18, 0x00, 0x00, 0x2e, 0x00,
-				       0x00, 0x34, 0xff, 0xff, 0x35,
-				       0xff, 0xff, 0x34, 0xff, 0xff };
-	static const uint8_t H35[] = { 0x35, 0xff, 0xff, 0x2e, 0x00, 0x00 };
-	static const uint8_t T81A[] = {
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-	};
-	static const uint8_t T81B[] = {
-		0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
-	};
-	// reset action (FUN_0001f554) -- Steam sends this first
-	relayEnqueue(0x81, nullptr, 0, slot);
-	relayEnqueue(0x87, H30, sizeof H30, slot);
-
-	// haptic config (enabled/amplifier/gain): the part that clears a latch
-	relayEnqueue(0x87, H18, sizeof H18, slot);
-	relayEnqueue(0x87, H35, sizeof H35, slot);
-	relayEnqueue(0x81, T81A, sizeof T81A, slot);
-	relayEnqueue(0x81, T81B, sizeof T81B, slot);
-	// Re-apply the active emulated type's trackpad-haptics preference last (after the haptic-config writes
-	// above, which would otherwise re-enable it). Default-on types send "enable"; Switch (padHaptics=0)
-	// disables. Inert until the setting id is captured.
-	hapticSetPadEnabled(slot, g_padHaptics != 0);
+	// DISABLED. This "replay Steam's reinit to clear a latched buzz" was built on the assumption that the
+	// controller's haptic LATCHES until told to stop. A full real-puck<->controller capture (sniff1.json)
+	// disproves that: the puck's only P->C traffic is e2 + e3, with haptics as `82 01 01 f7` re-sent ~every
+	// 18ms in keep-alive bursts that simply STOP (no 0x82-zero stop is ever sent -- the haptic auto-decays).
+	// The real puck NEVER sends a 0x81 frame at all. hapticReinit emitted three landed 0x81 actuator frames
+	// per call, on connect (8x) AND ~1.2s after every haptic goes quiet (the idle-clear) -- i.e. exactly the
+	// "buzz 10-15s after connect" timeline. Those 0x81s are frames the no-buzz reference never sends, so the
+	// reinit was a buzz SOURCE, not a fix. Emit nothing; OpenPuck now sends the controller only what the real
+	// puck does (polls + relayed Steam 0x82). The 0x87 config blocks here were discarded on-air anyway
+	// (legacy framing), so dropping them changes nothing on the wire.
+	(void)slot;
 }
 void hapticInit()
 {
