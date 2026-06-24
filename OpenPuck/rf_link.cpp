@@ -379,7 +379,11 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 				}
 			}
 			bool isF1 = (rtype == 0xF1);
-			if (isF1) {
+			// The whole 0x45 decode below indexes g_in[]/g_lastSeq[]/steamDownMs[]/offHoldMs[]/chWant[]/...
+			// by g_curSlot directly. g_curSlot is -1 when idle (and on rf_diag/console-driven TXs), so an F1
+			// decoded with no valid slot would write g_in[-1] etc. -> out-of-bounds -> memory corruption ->
+			// HardFault/reset. Require a valid slot before touching any per-slot state.
+			if (isF1 && g_curSlot >= 0 && g_curSlot < NSLOT) {
 				g_connF1++;
 				// walk ALL type6 TLVs (= HID report 0x45); taking only [0] halves the rate. idx is INT,
 				// not uint8_t: tlen 0xFE would make idx+=tlen+2 wrap mod-256 -> infinite loop -> USB hang.
