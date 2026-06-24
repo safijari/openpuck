@@ -96,6 +96,12 @@ uint8_t esbBackendPoll(const uint8_t *payload, uint8_t plen, uint8_t *out,
 	return n;
 }
 
+uint8_t esbLastRssi()
+{
+	// s_rx.rssi is the RSSI magnitude nrf_esb sampled on the received ACK payload.
+	return s_rxHave ? s_rx.rssi : 0;
+}
+
 void esbBackendSendNoAck(const uint8_t *payload, uint8_t plen)
 {
 	nrf_esb_payload_t tx;

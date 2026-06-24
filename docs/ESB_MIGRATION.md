@@ -50,23 +50,27 @@ runtime; reassign via `nrf_esb`'s `#define`s (overridable) if it does.
 
 ## Status
 
-Done and verified (compiles + links, no symbol conflicts; default build unaffected):
+Done and verified by compile/link (both backends build; no symbol conflicts; default build unchanged):
 - vendored `nrf_esb` builds against the Adafruit BSP via the shim;
-- `esb_backend` configures it for the puck's exact link and is linked into the `OPK_RADIO_ESB=1` image;
-- `esbBackendInit()` is the boot entry point.
+- `esb_backend` configures it for the puck's exact link;
+- **the data path is wired.** Under `OPK_RADIO_ESB` the connected poll/relay (`rfConnTx` via the new
+  `rfTransact()` transport) and the E1 beacon (`rfHostFrameOnce`) route through `esbBackendPoll()` /
+  `esbBackendSendNoAck()`; the raw `rfConfig`/`NRF_RADIO` path is `#else`'d out so the two never both own
+  RADIO. The F1/F3 decode is backend-agnostic — the ESB reply is rebuilt into `rfrx` with a synthesized
+  `[LEN][S1]` header so the exact same decoder runs. Channel hopping works as-is (`rfTransact`/the beacon set
+  the channel each call from `g_sessCh`, which `rfHopTo` updates). PID is handled natively by `nrf_esb`
+  (it auto-increments per distinct payload — the dedup the raw path hand-cycled).
 
-Remaining (hardware-gated — cannot be done without a puck + controller on the bench):
-1. **Wire the data path.** Route `rfConnStep`/`rfConnTx` (poll) through `esbBackendPoll()` and
-   `rfHostFrameOnce` (E1 beacon) through `esbBackendSendNoAck()`, and **gate off** the raw `rfConfig()`/
-   `NRF_RADIO` path in `rf_link.cpp`/`radio.cpp` under `OPK_RADIO_ESB` (the two cannot both own RADIO). Today
-   with the flag on, `esbBackendInit()` and the raw poller both touch RADIO, so the link does not function —
-   this is why the flag is experimental/off.
-2. **Channel hopping.** Re-point `rfHopTo`/QoS at `esbBackendSetChannel()`.
-3. **On-air A/B.** With a real controller: confirm it answers the PTX poll with F1 in the ACK payload on the
-   bonded address; tune `retransmit_count`/`retransmit_delay`; verify the E1 discovery beacon still lands.
-4. **Pacing.** `esbBackendPoll` busy-waits for the TX-done edge to mirror `rfConnTx`; once stable, consider
-   making the poll loop fully event-driven (TX-done callback drives the next poll) so it no longer blocks
-   `loop()` at all — the real payoff of moving to `nrf_esb`.
+Remaining (hardware-gated — needs a puck + controller on the bench):
+1. **On-air A/B.** Confirm the controller answers the PTX poll with F1 in the ACK payload on the bonded
+   address; confirm the E1 discovery beacon still lands and the controller adopts the session; tune
+   `retransmit_count` / `retransmit_delay`.
+2. **`rf_diag` coexistence.** `rf_diag.cpp` still drives `NRF_RADIO` raw; it will fight `nrf_esb` if a diag
+   command runs while the flag is on. Gate `rf_diag` under `OPK_RADIO_ESB` (or have it borrow the backend)
+   before relying on it in an ESB build.
+3. **Pacing.** `esbBackendPoll` busy-waits for the TX-done edge to mirror `rfConnTx`. Once stable, make the
+   poll loop fully event-driven (TX-done callback drives the next poll) so it no longer blocks `loop()` at
+   all — the real payoff of `nrf_esb`.
 
-Once 1–3 are validated, the buzz-relevant win is automatic: a lost poll is retransmitted in hardware instead
+Once (1) is validated, the buzz-relevant win is automatic: a lost poll is retransmitted in hardware instead
 of becoming the reply gap that the (separately fixed) reconnect/connect-edge logic reacts to.

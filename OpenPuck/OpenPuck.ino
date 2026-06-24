@@ -230,10 +230,9 @@ void setup()
 		}
 	}
 #if OPK_RADIO_ESB
-	// Experimental: bring up the nrf_esb radio backend. This is the init entry point of the ESB migration;
-	// the rf_link poll loop is NOT yet routed through esbBackendPoll/SendNoAck, so with this flag on the link
-	// does not yet function (and nrf_esb's RADIO ownership conflicts with rf_link's raw rfConfig). Present so
-	// the library links into the image and gives the wiring a home. See docs/ESB_MIGRATION.md.
+	// Bring up the nrf_esb radio backend. With OPK_RADIO_ESB the rf_link poll loop + E1 beacon are routed
+	// through it (esbBackendPoll / esbBackendSendNoAck) instead of the raw RADIO path. Not yet validated on
+	// hardware, and rf_diag still drives RADIO raw -- see docs/ESB_MIGRATION.md.
 	esbBackendInit();
 #endif
 	// Hardware watchdog: if loop() ever stops feeding it (wedged radio busy-wait, HardFault spin, blocked CDC

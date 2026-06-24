@@ -6,6 +6,7 @@
 #include "haptics.h"
 #include "controllers.h"
 #include "status_led.h"
+#include "esb_backend.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -148,6 +149,14 @@ static void rfHostFrameOnce(int slot, bool discovery)
 	// identical either way -- so the discovery frame can also double as a re-advertisement if needed.
 	const uint8_t *txBase = discovery ? g_rfBase : g_sessBase[slot];
 	uint8_t txPfx = discovery ? g_rfPrefix : g_sessPrefix[slot];
+#if OPK_RADIO_ESB
+	// ESB adds the LENGTH/S1/PID header + CRC itself, so hand it only the 18-byte payload (0xE1...prefix) at
+	// rftx[2]. No-ack: the controller adopts the advertised session and then answers E3 polls; it does not ack
+	// the beacon, so there is no response window to capture (the raw path's RE/pairing print is dropped here).
+	esbBackendSetChannel(g_rfCh);
+	esbBackendSetAddr(txBase, txPfx);
+	esbBackendSendNoAck(&rftx[2], 0x12);
+#else
 	rfConfig(g_rfCh);
 	rfSetAddr(txBase, txPfx);
 	NRF_RADIO->PACKETPTR = (uint32_t)rftx;
@@ -189,6 +198,67 @@ static void rfHostFrameOnce(int slot, bool discovery)
 	NRF_RADIO->TASKS_DISABLE = 1;
 	RWAIT_DISABLED();
 	NRF_RADIO->EVENTS_DISABLED = 0;
+#endif
+}
+
+// Connected-poll transport: TX the [LEN][S1][payload] already staged in rftx on slot's session address +
+// channel ch, capture the reply into rfrx (with the [LEN][S1] header rebuilt so the decode is backend-
+// agnostic), and report whether a packet arrived, its CRC validity and its RSSI magnitude. Returns rxlen.
+static uint8_t rfTransact(uint8_t ch, int slot, uint16_t win, bool *gotPkt,
+			  bool *crcok, uint8_t *rssiMag)
+{
+#if OPK_RADIO_ESB
+	(void)win;
+	// ESB strips LEN/S1/PID; send the payload (rftx[2..]) of length rftx[0]=plen and place the reply payload
+	// at rfrx[2] with a synthesized [LEN][S1] header so the shared decode below reads it byte-identically.
+	esbBackendSetChannel(ch);
+	esbBackendSetAddr(g_sessBase[slot], g_sessPrefix[slot]);
+	uint8_t n = esbBackendPoll(&rftx[2], rftx[0], &rfrx[2],
+				   (uint8_t)(sizeof rfrx - 2));
+	rfrx[0] = n;
+	rfrx[1] = 0;
+	// nrf_esb delivers RX_RECEIVED only for CRC-good packets; a reply (ack payload) means CRC was good.
+	*gotPkt = (n != 0);
+	*crcok = (n != 0);
+	*rssiMag = esbLastRssi();
+	return n;
+#else
+	rfConfig(ch);
+	rfSetAddr(g_sessBase[slot], g_sessPrefix[slot]);
+	NRF_RADIO->PACKETPTR = (uint32_t)rftx;
+	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
+			    RADIO_SHORTS_END_DISABLE_Msk;
+	NRF_RADIO->EVENTS_DISABLED = 0;
+	NRF_RADIO->TASKS_TXEN = 1;
+	RWAIT_DISABLED();
+	NRF_RADIO->EVENTS_DISABLED = 0;
+	NRF_RADIO->PACKETPTR = (uint32_t)rfrx;
+	rfrx[0] = 0;
+	// RXEN->READY->START; ADDRESS->RSSISTART samples the reply RSSI; DISABLED->RSSISTOP closes it.
+	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
+			    RADIO_SHORTS_ADDRESS_RSSISTART_Msk |
+			    RADIO_SHORTS_DISABLED_RSSISTOP_Msk;
+	NRF_RADIO->EVENTS_END = 0;
+	NRF_RADIO->TASKS_RXEN = 1;
+	uint32_t t0 = micros();
+	while (!NRF_RADIO->EVENTS_END && (micros() - t0) < win) {
+	}
+	uint8_t rxlen = 0;
+	*gotPkt = false;
+	*crcok = false;
+	*rssiMag = 0;
+	if (NRF_RADIO->EVENTS_END) {
+		NRF_RADIO->EVENTS_END = 0;
+		*gotPkt = true;
+		*crcok = NRF_RADIO->CRCSTATUS & 1;
+		*rssiMag = (uint8_t)(NRF_RADIO->RSSISAMPLE & 0x7F);
+		rxlen = rfrx[0];
+	}
+	NRF_RADIO->TASKS_DISABLE = 1;
+	RWAIT_DISABLED();
+	NRF_RADIO->EVENTS_DISABLED = 0;
+	return rxlen;
+#endif
 }
 
 void rfHopTo(uint8_t newCh)
@@ -223,36 +293,14 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 	rftx[0] = plen; // LENGTH = payload byte count
 	rftx[1] = s1; // S1 (type-specific)
 	memcpy(rftx + 2, payload, plen); // payload[0]=type byte, then data/TLVs
-	rfConfig(ch);
 	// connected poll runs on this slot's UNIQUE session addr (per-bond). g_curSlot is set by rfConnStep
 	// before each call; fall back to slot 0 if not (e.g. rf_diag paths).
 	int slot = (g_curSlot >= 0 && g_curSlot < NSLOT) ? g_curSlot : 0;
-	rfSetAddr(g_sessBase[slot], g_sessPrefix[slot]);
-	NRF_RADIO->PACKETPTR = (uint32_t)rftx;
-	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
-			    RADIO_SHORTS_END_DISABLE_Msk;
-	NRF_RADIO->EVENTS_DISABLED = 0;
-	NRF_RADIO->TASKS_TXEN = 1;
-	RWAIT_DISABLED();
-	NRF_RADIO->EVENTS_DISABLED = 0;
-	NRF_RADIO->PACKETPTR = (uint32_t)rfrx;
-	rfrx[0] = 0;
-	// RXEN->READY->START; catch the reply. ADDRESS->RSSISTART samples the reply's signal strength (read from
-	// RSSISAMPLE below, surfaced to Steam via report 0x7B); DISABLED->RSSISTOP closes the measurement.
-	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
-			    RADIO_SHORTS_ADDRESS_RSSISTART_Msk |
-			    RADIO_SHORTS_DISABLED_RSSISTOP_Msk;
-	NRF_RADIO->EVENTS_END = 0;
-	NRF_RADIO->TASKS_RXEN = 1;
 	g_stPoll++;
-	uint32_t t0 = micros();
-	while (!NRF_RADIO->EVENTS_END && (micros() - t0) < win) {
-	} // RX window (tunable 'r'; or relay override)
-	uint8_t rxlen = 0;
-	if (NRF_RADIO->EVENTS_END) {
-		NRF_RADIO->EVENTS_END = 0;
-		bool crcok = NRF_RADIO->CRCSTATUS & 1;
-		rxlen = rfrx[0];
+	bool gotPkt = false, crcok = false;
+	uint8_t rssiMag = 0;
+	uint8_t rxlen = rfTransact(ch, slot, win, &gotPkt, &crcok, &rssiMag);
+	if (gotPkt) {
 		// reply arrived but CRC failed -> RF quality (channel/interference)
 		if (!crcok) {
 			g_stCrc++;
@@ -283,9 +331,8 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 				g_connRx++;
 				// link alive -> loop() suppresses the redundant E1 beacon
 				g_connReplyMs[s] = millis();
-				// |dBm| of this reply (started by the ADDRESS short)
-				uint8_t rs =
-					(uint8_t)(NRF_RADIO->RSSISAMPLE & 0x7F);
+				// |dBm| of this reply (raw: ADDRESS-short RSSISAMPLE; ESB: ack-payload RSSI)
+				uint8_t rs = rssiMag;
 				// EWMA, ~8-sample horizon, per-slot
 				if (rs)
 					g_linkRssi[s] =
@@ -644,9 +691,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		g_stNoRx++;
 		g_qosBad++;
 	}
-	NRF_RADIO->TASKS_DISABLE = 1;
-	RWAIT_DISABLED();
-	NRF_RADIO->EVENTS_DISABLED = 0;
+	// the radio is left disabled by rfTransact (raw) / managed by nrf_esb (ESB)
 	return rxlen;
 }
 

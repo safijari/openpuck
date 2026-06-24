@@ -31,4 +31,7 @@ uint8_t esbBackendPoll(const uint8_t *payload, uint8_t plen, uint8_t *out,
 
 // Send one no-ack packet (the E1 discovery/host frame); no reply is expected.
 void esbBackendSendNoAck(const uint8_t *payload, uint8_t plen);
+
+// |dBm| of the most recent ACK-payload reply (nrf_esb samples RSSI on the received ack). 0 = none yet.
+uint8_t esbLastRssi();
 #endif // OPK_RADIO_ESB
