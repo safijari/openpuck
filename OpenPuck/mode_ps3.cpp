@@ -104,7 +104,8 @@ static const uint8_t DS3_HID_DESC[] = {
 static Adafruit_USBD_HID g_ds3;
 static unsigned long g_ds3LastMs = 0;
 
-// Per-slot MAC: OUI 001BDC is Sony's; last byte distinguishes slot.
+// OUI 001BDC is Sony's; 0x4F55 is the same arbitrary device suffix used by the
+// DS4 pool in mode_hidgyro.cpp. Last byte 0x70 is fixed (only one slot).
 static const uint8_t DS3_MAC_BASE[5] = { 0x00, 0x1B, 0xDC, 0x4F, 0x55 };
 static uint8_t g_ds3Mac[6];
 static bool g_ds3MacInit = false;
@@ -117,12 +118,11 @@ static void initDs3Mac()
 	g_ds3MacInit = true;
 }
 
-// Map signed SC2 int16 IMU value to DS3 unsigned big-endian 10-bit (center 512).
-// The SC2 IMU outputs int16 values; scale >>6 maps ±2048 to ±32 around 512,
-// or ±32768 to ±512. Larger motions saturate at 0 / 1023. The PS3 kernel
-// driver applies its own calibration so the exact divisor is not critical; this
-// produces a usable live signal. Tune by adjusting the shift if the range feels
-// too narrow or too wide on real hardware.
+// Map signed SC2 int16 IMU value to DS3 unsigned big-endian format (center 512).
+// >>6 maps the full int16 range (±32768) to ±512 around center, filling the
+// DS3's useful 0-1023 window. Increase the shift to narrow the live range
+// (less sensitive), decrease it to widen (more sensitive, clips sooner).
+// The PS3 OS applies its own calibration on top, so exact scaling is not critical.
 static uint16_t imuToDs3(int16_t v)
 {
 	int32_t out = 512 + ((int32_t)v >> 6);
@@ -197,6 +197,7 @@ static void ds3SetReport(uint8_t rid, hid_report_type_t type, uint8_t const *b,
 	if (bond < 0)
 		return;
 	// p[4] = left (LFR) motor power, p[2] > 0 means right (HFR) motor on.
+	// 257 = 65535/255: scales an 8-bit motor value to the 16-bit haptic range.
 	hapticSteamRumble((uint16_t)p[4] * 257u,
 			  (uint16_t)(p[2] > 0 ? 255 : 0) * 257u, (uint8_t)bond);
 }
