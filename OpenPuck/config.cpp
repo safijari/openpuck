@@ -1,4 +1,6 @@
 #include "config.h"
+#include "rf_link.h" // g_rxWin (poll RX window persisted here)
+#include "haptics.h" // g_hapticBlockOn, g_hapticBlockMs
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 #include <string.h>
@@ -68,11 +70,14 @@ uint8_t g_rumbleScale = 200;
 const uint32_t g_pollUs = POLL_US_DEFAULT;
 
 #define CFG_FILE "/cfg.bin"
-// TypeCfg size changed; old flash format is incompatible -> clean defaults on first boot after upgrade
-#define CFG_MAGIC 0xCB
+// Struct layout/semantics changed (RF tunables); bump so old flash format is discarded -> clean defaults once.
+#define CFG_MAGIC 0xCD
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
 		bootMode, chordBtn[3], rumbleScale;
+	// Connection tunables: the connected-poll RX window in 10us units (g_rxWin/10), the post-connect haptic
+	// block enable, and its duration in seconds. 0 in rxWin10 => use the boot default.
+	uint8_t rxWin10, hapticBlockOn, hapticBlockS;
 	TypeCfg type[ET_COUNT]; // per-emulated-type back/qam/abSwap/padHaptics
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
@@ -88,6 +93,9 @@ void saveCfg()
 		  g_bootMode,
 		  { g_chordBtn[0], g_chordBtn[1], g_chordBtn[2] },
 		  g_rumbleScale,
+		  (uint8_t)(g_rxWin / 10),
+		  g_hapticBlockOn,
+		  (uint8_t)(g_hapticBlockMs / 1000),
 		  {} };
 	for (int i = 0; i < ET_COUNT; i++)
 		c.type[i] = g_type[i];
@@ -142,6 +150,18 @@ void loadCfg()
 
 			// 0 is a valid setting (rumble off)
 			g_rumbleScale = c.rumbleScale;
+			// Connection tunables: restore the poll RX window (0 = unset/old cfg -> keep boot default) and
+			// the post-connect haptic block (enable + duration in seconds).
+			if (c.rxWin10) {
+				uint32_t w = (uint32_t)c.rxWin10 * 10;
+				g_rxWin = w < 600 ? 600 : (w > 3000 ? 3000 : w);
+			}
+			g_hapticBlockOn = c.hapticBlockOn ? 1 : 0;
+			// clamp seconds so s*1000 fits the uint16 ms field (max 60s)
+			g_hapticBlockMs =
+				(uint16_t)((c.hapticBlockS > 60 ? 60 :
+							      c.hapticBlockS) *
+					   1000u);
 		}
 		f.close();
 	}

@@ -297,7 +297,10 @@ void rfBeaconOnce()
 	// RAM: [LENGTH][ (S1 if S1INCL) ][payload]
 	rftx[0] = 0;
 	rftx[1] = g_plen;
-	memcpy(rftx + 2, pl, g_plen);
+	// g_plen comes unclamped from the console 'L' command (0..255); the source is pl[48] and the dest is
+	// rftx[100] written at +2, so copy at most 48 bytes -- otherwise we over-read the stack and overrun rftx.
+	uint8_t cpLen = g_plen > sizeof pl ? (uint8_t)sizeof pl : g_plen;
+	memcpy(rftx + 2, pl, cpLen);
 	NRF_RADIO->PACKETPTR = (uint32_t)rftx;
 	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
 			    RADIO_SHORTS_END_DISABLE_Msk;

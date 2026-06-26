@@ -113,12 +113,27 @@
         <div class="stat"><div class="k">Build (git)</div><div class="v" id="stBuild">—</div></div>
         <div class="stat"><div class="k">Last reset</div><div class="v" id="stReset">—</div></div>
       </div>
-      <p class="note" style="margin-top:6px"><strong>Reset history</strong> (newest first, persists across power-off): <span id="resetHist" style="font-family:ui-monospace,Menlo,monospace">—</span><br>
-        <em>watchdog</em>/<em>LOCKUP</em> = a fault (loop hang / crash); <em>soft reboot</em> = an intentional reset (mode change); <em>power-on</em> = normal plug-in.</p>
+      <p class="note" style="margin-top:6px"><strong>Reset detail:</strong> <span id="resetHist" style="font-family:ui-monospace,Menlo,monospace">—</span><br>
+        <em>watchdog (hang)</em>/<em>CPU lockup</em>/<em>HARDFAULT</em> = a fault worth reporting (issue #72); <em>reboot</em> = an intentional reset (mode change / config); <em>power-on</em> &amp; <em>pin/replug</em> = normal plug-in.</p>
       <p class="note" style="margin-top:8px"><strong>IMU (raw):</strong> <span id="stImu" style="font-family:ui-monospace,Menlo,monospace">—</span><br>
         Raw SC2 accel (before scaling). This controller is a ±2 g sensor (~16384 = 1 g); the Switch report divides it by 4 to present the genuine ±8 g (4096 = 1 g) scale so the console's gravity-correction engages and the gyro stops drifting.</p>
       <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
-      <div class="row" style="margin:10px 0 0"><button id="hapClear">Clear stuck buzz</button>
+      <div class="row" style="margin:14px 0 0;border-top:1px solid #272d3d;padding-top:14px">
+        <strong style="flex-basis:100%">Connection tuning <span class="note">(persists across reboot)</span></strong>
+      </div>
+      <div class="row" style="margin:8px 0 0"><label style="min-width:150px">Poll RX window</label>
+        <input type="range" id="rxWin" min="60" max="300" step="10"><span class="val" id="rxWinV"></span>
+        <span class="note" style="flex:1">How long each poll waits for the controller's reply. Wider (↑) catches replies that arrive late under heavy haptics (fewer drops); narrower (↓) allows a higher poll rate. Default 2000 µs.</span>
+      </div>
+      <div class="row" style="margin:8px 0 0"><label style="min-width:150px">Block haptics on connect</label>
+        <button id="hapBlockOn">off</button>
+        <span class="note" style="flex:1">Drops all Steam haptics for a short window right after a controller (re)connects, so its haptic engine settles before the first real haptic.</span>
+      </div>
+      <div class="row" style="margin:8px 0 0"><label style="min-width:150px">Block duration</label>
+        <input type="range" id="hapBlockS" min="0" max="30" step="1"><span class="val" id="hapBlockSV"></span>
+        <span class="note" style="flex:1">How long to drop haptics after connect (seconds). Default 10 s.</span>
+      </div>
+      <div class="row" style="margin:14px 0 0;border-top:1px solid #272d3d;padding-top:14px"><button id="hapClear">Clear stuck buzz</button>
         <span class="note" style="flex:1">If the controller's haptics get stuck/buzzing, this re-inits them (same as pressing Steam).</span>
       </div>
       <div class="row" style="margin:10px 0 0"><button id="ctlrOff">Turn off controller</button>
@@ -441,35 +456,26 @@ function applyBlob(p){
   $("#stLoop").textContent = loopUs? loopUs+" µs" : "—";
   $("#stWorst").textContent = loopUs? (WORST[worstIdx]||worstIdx)+" "+worstUs+"µs" : "—";
   $("#stPollPer").textContent = up? (pollUs+" / "+pollIntended+" µs") : "—";
-  // reset-cause history (protocol v9): JS p[73]=count, p[74..83]=last 10 causes (newest first).
-  // Persisted in puck flash, so a reboot that happened on a Switch is still readable here after replugging.
-  function resetReasonText(rr){
-    if (rr === 0) return "power-on";
-    const r = [];
-    if (rr & 0x02) r.push("watchdog");      // DOG: loop wedge / hang
-    if (rr & 0x08) r.push("LOCKUP");        // CPU lockup = HardFault escalation (real crash)
-    if (rr & 0x04) r.push("soft reboot");   // SREQ: NVIC_SystemReset (mode change etc.)
-    if (rr & 0x01) r.push("reset pin");
-    return r.length ? r.join("+") : ("0x"+rr.toString(16));
+  // last-boot reset cause (protocol v11): a single classified code (firmware classifies it from RESETREAS +
+  // a GPREGRET2 marker) plus the raw RESETREAS. Codes match RR_* in fault_diag.h. Earlier firmware (<v11)
+  // didn't send this -> guard on length and leave the tile blank.
+  const RR_NAMES = ["unknown","power-on","pin/replug","watchdog (hang)","CPU lockup",
+                    "HARDFAULT","reboot","soft reset","wake-from-off"];
+  const RR_FAULT = new Set([3,4,5]); // watchdog / lockup / hardfault = a real crash worth reporting (#72)
+  if (p.length > 109) {
+    const code = p[105];
+    const raw = ((p[106]|(p[107]<<8)|(p[108]<<16)|(p[109]<<24))>>>0);
+    const name = RR_NAMES[code] || ("code "+code);
+    $("#stReset").innerHTML = RR_FAULT.has(code) ? ('<span class="pill dn">'+name+'</span>') : name;
+    const el = $("#resetHist");
+    if (el) el.textContent = "RESETREAS=0x"+raw.toString(16).padStart(8,"0");
   }
-  if (p.length > 73) {
-    const n = Math.min(p[73], 10);
-    const hist = [];
-    for (let i=0; i<n; i++) hist.push(p[74+i]);
-    const fault = (rr)=>!!(rr & 0x0A); // watchdog or lockup = a real fault
-    if (n === 0) { $("#stReset").textContent = "—"; }
-    else {
-      const newest = hist[0];
-      const head = fault(newest) ? ('<span class="pill dn">'+resetReasonText(newest)+'</span>') : resetReasonText(newest);
-      $("#stReset").innerHTML = head;
-      // full history list under the tile (newest -> oldest)
-      const items = hist.map((rr,i)=>{
-        const t = resetReasonText(rr);
-        return (i===0?'<strong>':'')+ '#'+(n-i)+' '+(fault(rr)?('<span style="color:#ff6b6b">'+t+'</span>'):t) +(i===0?' (latest)</strong>':'');
-      });
-      const el = $("#resetHist"); if (el) el.innerHTML = items.join(' &nbsp;·&nbsp; ');
-    }
-  }
+
+  // Connection tuning: poll RX window /10us (p[110]), haptic-block enable (p[111]), block seconds (p[112]).
+  if (p.length>110) setSlider("rxWin", p[110]);
+  const hapBlockOn = (p.length>111?p[111]:0);
+  $("#hapBlockOn").textContent = hapBlockOn?"on":"off"; $("#hapBlockOn").classList.toggle("active",!!hapBlockOn);
+  if (p.length>112) setSlider("hapBlockS", p[112]);
   const gitDirty=(p.length>38?p[38]:0); let gitHash="";
   for(let i=39;i<51 && i<p.length && p[i];i++) gitHash+=String.fromCharCode(p[i]);
   $("#stBuild").innerHTML = gitHash
@@ -504,7 +510,7 @@ function applyBlob(p){
   { const sel=$("#swGyro"); if(document.activeElement!==sel) sel.value=swGyro10; }
   for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
 }
-function fmtSlider(id,v){ return id==="rumble" ? v+"%" : ""+v; }
+function fmtSlider(id,v){ return id==="rumble" ? v+"%" : id==="rxWin" ? (v*10)+" µs" : id==="hapBlockS" ? v+" s" : ""+v; }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
 
 let inflight=false;
@@ -615,8 +621,10 @@ $("#factoryErase").onclick=async()=>{
   log("FACTORY ERASE sent — copycat is reformatting and rebooting to defaults. Re-pair the controller, then reconnect.");
 };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
-for(const id of ["mDiv","mFric","rumble"]){
-  const field={mDiv:1,mFric:2,rumble:22}[id];
+// Connection tuning: poll RX window /10us (field 25), post-connect haptic block on (field 27) + seconds (field 28)
+$("#hapBlockOn").onclick=()=>{ const on=$("#hapBlockOn").classList.contains("active"); setField(27, on?0:1); };
+for(const id of ["mDiv","mFric","rumble","rxWin","hapBlockS"]){
+  const field={mDiv:1,mFric:2,rumble:22,rxWin:25,hapBlockS:28}[id];
   $("#"+id).addEventListener("input", ()=>{ $("#"+id+"V").textContent=fmtSlider(id,$("#"+id).value); });
   $("#"+id).addEventListener("change", ()=>setField(field, +$("#"+id).value));
 }

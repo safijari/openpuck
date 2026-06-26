@@ -36,6 +36,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "status_led.h"
 #include "usb_mount.h"
 #include "identity.h"
+#include "fault_diag.h"
 #include <stdio.h>
 
 #if CFG_TUD_HID < 4
@@ -209,6 +210,9 @@ void setup()
 	Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit,
 		      g_board,
 		      MODE_NAME[g_usbMode <= MODE_MAX ? g_usbMode : 0]);
+	// Classify why we (re)booted: distinguishes a watchdog hang from a HardFault from an intentional reboot
+	// (issue #72 -- those are conflated in the field). Surfaced on the WebUSB panel too.
+	faultDiagBoot();
 	if (puckMode)
 		Serial.printf(
 			"# puck USB: %s\n",

@@ -20,10 +20,11 @@
 
 // after this much host silence, consider the current 0x82 haptic stream inactive
 #define HAPTIC_QUIET_MS 300u
-// Block ALL haptic relays for this long after a (re)connect: a just-powered-on controller's haptic engine
-// isn't ready, and feeding it haptics in that window leaves it in a degraded/latched state (slow/stuck/missing
-// haptics until a re-init). 3s gives it time to initialize.
-#define HAPTIC_RECONNECT_BLOCK_MS 3000u
+// Post-(re)connect haptic block default. While armed, ALL Steam haptic relays to that slot are dropped: a
+// just-powered-on controller's haptic engine isn't ready, and feeding it haptics in that window leaves it in a
+// degraded/latched state (slow/stuck/missing haptics until a re-init). Runtime-adjustable (g_hapticBlockMs) and
+// toggleable (g_hapticBlockOn) from the WebUSB panel; this is the boot default.
+#define HAPTIC_BLOCK_MS_DEFAULT 10000u
 // 0x82-zero relays per stop event (sent at poll cadence -- not loop rate)
 #define HAPTIC_STOP_BURST 4u
 // max relayed payload bytes per entry: RF frame = [E3][len][05][rid][payload] and MAXLEN=64 -> 60
@@ -46,6 +47,11 @@
 bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 		  uint8_t slot = 0xFF);
 
+// Post-connect haptic block (persisted, panel-controlled): when g_hapticBlockOn, Steam haptics are dropped for
+// g_hapticBlockMs after a (re)connect so the controller's haptic engine settles before the first real haptic.
+extern uint8_t g_hapticBlockOn; // 1 = block enabled, 0 = relay haptics immediately on connect (default)
+extern uint16_t g_hapticBlockMs; // block duration in ms (default HAPTIC_BLOCK_MS_DEFAULT)
+
 // anything still queued (xinput uses it to pace rumble re-queues)
 bool relayPending();
 extern uint8_t g_relayOp; // relay frame opcode (E3 poll)
@@ -53,7 +59,7 @@ extern uint8_t g_relaySub; // relay sub-TLV type byte = SET
 extern volatile uint8_t g_testHaptic; // 't<n>' injects n test haptics
 // pending haptic-STOP frames to relay (kill a latched whine)
 extern volatile uint8_t g_hapticStop;
-// Per-slot block: arm after a (re)connect, drop haptics aimed at the slot for HAPTIC_RECONNECT_BLOCK_MS.
+// Per-slot block: arm after a (re)connect, drop haptics aimed at the slot for g_hapticBlockMs (when g_hapticBlockOn).
 extern unsigned long g_hapticBlockUntil[NSLOT];
 
 // relay the controller power-off (0x9F "off!"), burst x3 (Steam 0x9F / host-suspend / test button)
@@ -112,7 +118,7 @@ void hapticTask();
 // harmless on healthy controllers, so it's worth re-initializing every slot the firmware knows about.
 void hapticReinit(uint8_t slot = 0xFF);
 // Called from rf_link the instant a controller (re)connect is detected (an F-reply after a gap): blocks haptic
-// relays for HAPTIC_RECONNECT_BLOCK_MS and schedules a re-init just after, to keep the freshly-booted
+// relays for g_hapticBlockMs and schedules a re-init just after, to keep the freshly-booted
 // controller out of the degraded/latched haptic state. Reliable -- independent of hapticTask's link heuristic.
 // Per-slot: only the slot that just reconnected is blocked, the others keep relaying.
 void hapticOnReconnect(int slot);

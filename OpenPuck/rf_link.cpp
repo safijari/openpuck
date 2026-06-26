@@ -6,6 +6,7 @@
 #include "haptics.h"
 #include "controllers.h"
 #include "status_led.h"
+#include "fault_diag.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -40,8 +41,8 @@ bool g_e7announce =
 bool g_e1keepalive = true;
 
 bool g_connVerbose = false;
-// poll RX-window (us); shorter=more polls/s but may miss DELAYED replies. Tunable 'r'.
-uint32_t g_rxWin = 1200;
+// poll RX-window (us); shorter=more polls/s but may miss DELAYED replies. Persisted + panel-adjustable; 'r'.
+uint32_t g_rxWin = 2000;
 unsigned long g_connCooldown = 0;
 
 uint8_t g_connSt = 0; // 0=announce awake, 1=poll loop
@@ -325,6 +326,13 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 				}
 			}
 			bool isF1 = (rtype == 0xF1);
+			// Every rfConnTx caller (rfConnStep) sets g_curSlot to a valid 0..NSLOT-1 before a poll, so it
+			// IS in range here today. But this block does ~50 unguarded g_curSlot array writes (g_in[],
+			// g_lastSeq[], and several static per-slot arrays) -- if any future/edge caller ever left
+			// g_curSlot at -1, those become out-of-bounds writes that corrupt RAM (the stack-smash / LOCKUP
+			// class we're chasing). Guard once at the top so the decode is robust by construction.
+			if (isF1 && (g_curSlot < 0 || g_curSlot >= NSLOT))
+				isF1 = false;
 			if (isF1) {
 				g_connF1++;
 				// walk ALL type6 TLVs (= HID report 0x45); taking only [0] halves the rate. idx is INT,
@@ -595,6 +603,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						    !USBDevice.suspended()) {
 							saveMode(want);
 							delay(40);
+							faultDiagArmIntentionalReset();
 							NVIC_SystemReset();
 						}
 					} else {

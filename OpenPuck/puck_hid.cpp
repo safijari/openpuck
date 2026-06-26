@@ -168,6 +168,12 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			}
 		}
 
+#if OPK_LOG
+		// Per-report Serial echo: gated to the diagnostic build only. handleSet runs on the TinyUSB device
+		// task, whose FreeRTOS stack is just 800 bytes; a Serial.printf there costs 200-500B and, stacked
+		// under TinyUSB's control-transfer frames + a preempting USB ISR, can blow the stack -> the exact
+		// SP-corruption-during-exception-entry that shows up as RR_LOCKUP. Production keeps this path
+		// printf-free; the same data is already in the OPK_LOG capture ring (hapLogAdd) for the WebUSB panel.
 		if (Serial.availableForWrite() > 80) {
 			Serial.printf("# OUT if%d rid=%02X n=%u:", slot, rid,
 				      n);
@@ -175,6 +181,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				Serial.printf(" %02X", b[i]);
 			Serial.println();
 		}
+#endif
 		return;
 	}
 	if (type != HID_REPORT_TYPE_FEATURE || n < 1)
@@ -214,10 +221,12 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
 			// 18B cap, and the chopped frames were why those settings never landed on the controller.
 			uint8_t rl = (len <= pln) ? len : (uint8_t)pln;
+#if OPK_LOG
 			if (len > RELAY_MAXP && Serial.availableForWrite() > 60)
 				Serial.printf(
 					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
 					cmd, len, (unsigned)RELAY_MAXP);
+#endif
 			relayEnqueue(cmd, pl, rl, (uint8_t)slot);
 
 			// track from RELAYED frames only (see the OUTPUT path)
@@ -225,6 +234,9 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				haptic82HostReport(pl, len);
 		}
 	}
+#if OPK_LOG
+	// Diagnostic-build only -- see the OUTPUT-path note: no Serial.printf on the 800B usbd-task stack in
+	// production (LOCKUP mitigation). The feature SET is already captured to the OPK_LOG ring above.
 	if (Serial.availableForWrite() > 80) {
 		Serial.printf("# SET if%d rid=%02X cmd=%02X len=%u:", slot, rid,
 			      cmd, len);
@@ -232,6 +244,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			Serial.printf(" %02X", b[i]);
 		Serial.println();
 	}
+#endif
 	memset(S.resp, 0, sizeof S.resp);
 	S.resp_len = 0;
 	switch (cmd) {
@@ -270,7 +283,9 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		break;
 	case 0xAD:
 		g_pairing = (pln > 0 && pl[0] != 0);
+#if OPK_LOG
 		Serial.printf("# pairing %s\n", g_pairing ? "ON" : "off");
+#endif
 		S.resp[0] = 0xAD;
 		S.resp[1] = 0;
 		S.resp_len = 63;
@@ -285,8 +300,10 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				S.used = true;
 			}
 			g_dirty = true;
+#if OPK_LOG
 			Serial.printf("# slot %d %s\n", slot,
 				      recEmpty(pl) ? "cleared" : "bonded");
+#endif
 		}
 		S.resp[0] = 0xA2;
 		S.resp[1] = 0;
@@ -337,6 +354,9 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 			lastMs = millis();
 			// ring marker 0xFC = "host feature GET" (panel renders it as "GET rid=.."); payload = what we returned
 			hapLogAdd(0xFC, rid, S.resp, n);
+#if OPK_LOG
+			// Diagnostic build only -- no Serial.printf on the 800B usbd-task stack in production (LOCKUP
+			// mitigation). The GET is captured to the OPK_LOG ring above for the WebUSB panel.
 			if (Serial.availableForWrite() > 80)
 				Serial.printf(
 					"# GET if%d rid=%02X reqlen=%u -> %02X %02X %02X (batt=%u%%)\n",
@@ -345,6 +365,7 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 					(slot >= 0 && slot < NSLOT) ?
 						g_battery[slot] :
 						0);
+#endif
 		}
 	}
 	return n;

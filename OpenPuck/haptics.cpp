@@ -14,6 +14,10 @@ uint8_t g_relayOp = 0xE3; // E3 poll
 uint8_t g_relaySub = 0x05;
 volatile uint8_t g_testHaptic = 0;
 volatile uint8_t g_hapticStop = 0;
+// Post-connect haptic block (see haptics.h): enabled + duration, both persisted and panel-adjustable.
+// Off by default -- opt in from the WebUSB panel if a controller's haptics come up degraded after connect.
+uint8_t g_hapticBlockOn = 0;
+uint16_t g_hapticBlockMs = HAPTIC_BLOCK_MS_DEFAULT;
 // Per-slot reconnect block. 0 = idle; non-zero = drop haptics aimed at this slot until millis() catches up.
 unsigned long g_hapticBlockUntil[NSLOT] = { 0 };
 
@@ -140,8 +144,10 @@ void hapLogAdd(uint8_t slot, uint8_t rid, const uint8_t *b, uint16_t n)
 	e.n = (uint8_t)(n > 255 ? 255 : n);
 	for (int i = 0; i < 16; i++)
 		e.b[i] = (i < (int)n) ? b[i] : 0;
-	g_hapHead = (uint8_t)((g_hapHead + 1) %
-			      (sizeof g_hapLog / sizeof g_hapLog[0]));
+	// uint16_t, NOT uint8_t: HAPLOG_N is 4096, so a uint8_t cast truncated the head to 0..255 and only the
+	// first 256 ring slots were ever used (capture lost ~94% of its depth).
+	g_hapHead = (uint16_t)((g_hapHead + 1) %
+			       (sizeof g_hapLog / sizeof g_hapLog[0]));
 	__set_PRIMASK(pm);
 }
 void hapticDumpLog()
@@ -448,8 +454,9 @@ void hapticInit()
 		g_rqHead[s] = g_rqTail[s] = 0;
 		g_rumble80On[s] = false;
 		g_rumble80Ms[s] = 0;
-		// block stale Steam 0x82 until the link is stable after boot
-		g_hapticBlockUntil[s] = millis() + HAPTIC_RECONNECT_BLOCK_MS;
+		// block stale Steam 0x82 until the link is stable after boot (when the block is enabled)
+		g_hapticBlockUntil[s] =
+			g_hapticBlockOn ? (millis() + g_hapticBlockMs) : 0;
 	}
 }
 // Arm the post-(re)connect haptic block + schedule the clearing re-init. Called on the reliable first-reply
@@ -459,7 +466,8 @@ void hapticOnReconnect(int slot)
 {
 	if (slot < 0 || slot >= NSLOT)
 		return;
-	g_hapticBlockUntil[slot] = millis() + HAPTIC_RECONNECT_BLOCK_MS;
+	g_hapticBlockUntil[slot] =
+		g_hapticBlockOn ? (millis() + g_hapticBlockMs) : 0;
 	g_haptic82On = false;
 	g_rumble80On[slot] = false;
 	g_rumble80Ms[slot] = 0;

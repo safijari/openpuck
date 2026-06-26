@@ -6,6 +6,7 @@
 #include "puck_hid.h"
 #include "triton.h" // g_in raw IMU (diagnostic readout)
 #include "build_info.h"
+#include "fault_diag.h"
 #include <Arduino.h>
 #include <string.h>
 
@@ -19,9 +20,10 @@ Adafruit_USBD_WebUSB usb_web;
 //                [gitDirty][gitHash 12B ASCII, NUL-padded][rumbleScale][swPro120][swGyroScale10][raw accel ax ay az 3x s16 LE]
 //                [bondedCount][slot0_up][slot0_batt][slot0_rssi]...[slot3_up][slot3_batt][slot3_rssi]
 //                [v10: per-type cfg, 4x8B: ET_XBOX/SWITCH/DS4/DS5 each {back0..3, qam, abSwap, padHaptics, ledBright}]
-// p[6]/p[7]/p[8..11] mirror the ACTIVE type (legacy display). v10 extends to 105 bytes (107 total incl header);
+//                [v11: resetReason(RR_* code)][resetReas raw u32 LE][rxWin/10 us][hapticBlockOn][hapticBlock s]
+// p[6]/p[7]/p[8..11] mirror the ACTIVE type (legacy display). v11 extends to 113 bytes (115 total incl header);
 // browser reads with transferIn(128) to span the two USB-FS packets.
-#define WB_PAYLEN 105
+#define WB_PAYLEN 113
 static void webusbSendBlob()
 {
 	if (!usb_web.connected())
@@ -35,8 +37,8 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (10 = +ledBright per type; 9 = +per-type cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 10;
+	// protocol version (11 = +reset cause; 10 = +ledBright per type; 9 = +per-type cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
+	p[2] = 11;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -127,6 +129,19 @@ static void webusbSendBlob()
 		q[6] = g_type[et].padHaptics;
 		q[7] = g_type[et].ledBright;
 	}
+	// last-boot reset cause (protocol v11): why we (re)booted -- watchdog hang vs HardFault vs intentional
+	// reboot vs power-on (issue #72). p[107] = RR_* code; p[108..111] = raw RESETREAS for the curious.
+	p[107] = faultDiagReason();
+	uint32_t rr = faultDiagResetReas();
+	p[108] = (uint8_t)rr;
+	p[109] = (uint8_t)(rr >> 8);
+	p[110] = (uint8_t)(rr >> 16);
+	p[111] = (uint8_t)(rr >> 24);
+	// Connection tunables (protocol v11): poll RX window in 10us units, post-connect haptic block enable,
+	// and block duration in seconds.
+	p[112] = (uint8_t)(g_rxWin / 10);
+	p[113] = g_hapticBlockOn;
+	p[114] = (uint8_t)(g_hapticBlockMs / 1000);
 	usb_web.write(p, sizeof p);
 	usb_web.flush();
 }
@@ -235,6 +250,7 @@ void webusbPoll()
 					usb_web.flush();
 					factoryErase();
 					delay(40);
+					faultDiagArmIntentionalReset();
 					NVIC_SystemReset();
 				}
 
@@ -242,12 +258,14 @@ void webusbPoll()
 			} else if (op == 0x0B) {
 				usb_web.flush();
 				delay(40);
+				faultDiagArmIntentionalReset();
 				enterSerialDfu();
 
 				// reboot into UF2 bootloader (USB mass storage)
 			} else if (op == 0x0C) {
 				usb_web.flush();
 				delay(40);
+				faultDiagArmIntentionalReset();
 				enterUf2Dfu();
 
 			} else if (op == 0x02) {
@@ -358,6 +376,7 @@ void webusbPoll()
 					armDebugCdcNextBoot();
 					usb_web.flush();
 					delay(40);
+					faultDiagArmIntentionalReset();
 					NVIC_SystemReset();
 					break;
 
@@ -386,6 +405,27 @@ void webusbPoll()
 					swProSaveCfg();
 					persist = false;
 					break; // Switch Pro gyro scale x10
+
+				// connected-poll RX window, in 10us units: wider window catches a controller reply that
+				// lands late under haptic load; narrower allows a higher poll rate. Clamp 600..3000us.
+				case 25: {
+					uint32_t w = (uint32_t)v * 10;
+					g_rxWin = w < 600 ? 600 :
+						  w > 3000 ? 3000 :
+							     w;
+					break;
+				}
+
+				// post-connect haptic block enable: drop Steam haptics for g_hapticBlockMs after a connect
+				case 27:
+					g_hapticBlockOn = v ? 1 : 0;
+					break;
+
+				// post-connect haptic block duration, in seconds (clamp 0..60)
+				case 28:
+					g_hapticBlockMs =
+						(uint16_t)((v > 60 ? 60 : v) * 1000u);
+					break;
 				}
 				if (persist)
 					saveCfg();
@@ -397,6 +437,7 @@ void webusbPoll()
 					usb_web.flush();
 					saveMode(m);
 					delay(40);
+					faultDiagArmIntentionalReset();
 					NVIC_SystemReset();
 				}
 			}

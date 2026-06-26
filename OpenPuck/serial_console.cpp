@@ -5,6 +5,7 @@
 #include "haptics.h"
 #include "bonds.h"
 #include "config.h"
+#include "fault_diag.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <stdlib.h>
@@ -30,6 +31,7 @@ void serialConsolePoll()
 				Serial.println(
 					"# done -- rebooting into clean defaults; re-pair the controller");
 				delay(40);
+				faultDiagArmIntentionalReset();
 				NVIC_SystemReset();
 			} else if (line[0] == 'l')
 				rfListenStart();
@@ -104,6 +106,7 @@ void serialConsolePoll()
 						delay(20);
 						saveMode(m);
 						delay(40);
+						faultDiagArmIntentionalReset();
 						NVIC_SystemReset();
 					}
 				}
