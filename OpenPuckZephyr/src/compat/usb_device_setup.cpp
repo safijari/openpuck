@@ -102,7 +102,15 @@ static bool s_enabled;
 
 static void msg_cb(struct usbd_context *const ctx, const struct usbd_msg *const msg)
 {
-	(void)ctx;
+	// On the nRF52840 the USB peripheral can detect VBUS; the controller must
+	// be enabled only once VBUS is present (and disabled when it goes away),
+	// otherwise enumeration never starts. Mirror the Zephyr sample.
+	if (usbd_can_detect_vbus(ctx)) {
+		if (msg->type == USBD_MSG_VBUS_READY)
+			usbd_enable(ctx);
+		else if (msg->type == USBD_MSG_VBUS_REMOVED)
+			usbd_disable(ctx);
+	}
 	opk_usb_msg(msg->type);
 }
 
@@ -140,10 +148,13 @@ static int do_setup(void)
 	int hc = opk_hid_claimed();
 	for (int i = hc; i < 5; i++)
 		block[bi++] = HIDN[i]; // unused HID pool nodes
-	if (!opk_want_webusb()) {
-		block[bi++] = "opk_webusb_0";
-		block[bi++] = "cdc_acm_0"; // CDC rides with the panel (clean-PS drops both)
-	}
+	// The nRF52840 USBD has only 7 usable IN endpoints (EP1..7) beyond EP0.
+	// Puck mode already uses 5 HID IN (wake + 4 slots); adding WebUSB (1) + CDC
+	// (2) overflows to 8. For now drop WebUSB and keep the CDC console (5 HID +
+	// 2 CDC = 7) — the console is the only bring-up observability on this board.
+	block[bi++] = "opk_webusb_0";
+	if (!opk_want_webusb())
+		block[bi++] = "cdc_acm_0"; // clean-PS: single HID only, no CDC
 	if (!opk_xinput_want())
 		block[bi++] = "opk_xinput_0";
 	block[bi] = NULL;
@@ -189,12 +200,16 @@ extern "C" int opk_usbd_enable(void)
 		LOG_ERR("usbd_init failed (%d)", err);
 		return err;
 	}
-	err = usbd_enable(&opk_usbd);
-	if (err && err != -EALREADY) {
-		LOG_ERR("usbd_enable failed (%d)", err);
-		return err;
-	}
 	s_enabled = true;
+	// When the controller can detect VBUS (nRF52840), enabling happens in the
+	// message callback on USBD_MSG_VBUS_READY. Otherwise enable now.
+	if (!usbd_can_detect_vbus(&opk_usbd)) {
+		err = usbd_enable(&opk_usbd);
+		if (err && err != -EALREADY) {
+			LOG_ERR("usbd_enable failed (%d)", err);
+			return err;
+		}
+	}
 	return 0;
 }
 

@@ -329,14 +329,40 @@ void loop()
 }
 
 // Zephyr entry. The Arduino runtime called setup() once then loop() forever; we
-// do the same on the main thread. The loop is intentionally tight (no sleep):
-// the RF poll cadence (~250 Hz) depends on coming around quickly, exactly as on
-// the Arduino core. USB servicing runs in the USBD stack thread + ISRs, so the
-// tight main loop does not starve it.
+// do the same on the main thread. The loop is intentionally tight (the RF poll
+// cadence depends on coming around quickly), but we k_yield() each iteration so
+// the cooperative USBD stack thread always gets CPU for control transfers.
+// Bring-up diagnostic via the nice!nano blue LED (P0.15 = absolute pin 15):
+//   3 slow blinks  -> main() reached (bootloader handoff + C++ init OK)
+//   6 fast blinks  -> setup() returned (USB/radio/persistence init didn't hang)
+//   then ~1 Hz heartbeat in the loop -> the cooperative loop is running
+// Tells us where it dies when USB never enumerates. Remove once USB is up.
+#define OPK_DIAG_LED 15
+static void diag_blink(int n, int ms)
+{
+	for (int i = 0; i < n; i++) {
+		digitalWrite(OPK_DIAG_LED, HIGH);
+		delay(ms);
+		digitalWrite(OPK_DIAG_LED, LOW);
+		delay(ms);
+	}
+}
+
 int main(void)
 {
+	pinMode(OPK_DIAG_LED, OUTPUT);
+	diag_blink(3, 200); // main() reached
 	setup();
-	for (;;)
+	diag_blink(6, 70); // setup() returned
+	uint32_t last = millis();
+	for (;;) {
 		loop();
+		k_yield();
+		if (millis() - last >= 500) {
+			last = millis();
+			digitalWrite(OPK_DIAG_LED,
+				     (millis() / 500) & 1 ? HIGH : LOW);
+		}
+	}
 	return 0;
 }
