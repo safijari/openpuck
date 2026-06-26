@@ -203,10 +203,18 @@ class Adafruit_USBD_HID : public Adafruit_USBD_Interface
 };
 
 // ---- WebUSB vendor interface ----
-class Adafruit_USBD_WebUSB
+class Adafruit_USBD_WebUSB : public Adafruit_USBD_Interface
 {
     public:
 	Adafruit_USBD_WebUSB();
+	uint16_t getInterfaceDescriptor(uint8_t itfnum, uint8_t *buf,
+					uint16_t bufsize) override
+	{
+		(void)itfnum;
+		(void)buf;
+		(void)bufsize;
+		return 0;
+	}
 	bool begin();
 	bool connected();
 	int available();

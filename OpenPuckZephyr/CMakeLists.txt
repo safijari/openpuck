@@ -17,7 +17,7 @@ target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src/compat)
 
 target_sources(app PRIVATE
-  src/main.c
+  src/main.cpp
 
   # compatibility layer
   src/compat/arduino_compat.cpp
