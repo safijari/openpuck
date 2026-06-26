@@ -42,33 +42,45 @@ radio, rf_link, rf_diag, triton, gamepad_util, haptics, controllers, puck_hid,
 all six modes (lizard, xinput, switch_hori, switch_pro, ps5, hidgyro),
 webusb_config, serial_console, usb_mount, wake_hid, config, bonds.
 
-### Functional / verified-as-compiling
+### Functional (compiles + linked into the UF2; hardware-verification pending)
 - Build pipeline, persistence (LittleFS), config + bond load/save, the radio
   register layer, the RF protocol state machines, and all mode report-building
-  logic compile under Zephyr.
-- HFXO is started explicitly in `setup()` (the Arduino core did it implicitly);
-  the WDT is driven directly via `NRF_WDT` (Zephyr's watchdog driver is left out
-  to avoid double-ownership).
+  logic.
+- HFXO started explicitly in `setup()`; WDT driven directly via `NRF_WDT`.
+- **USB is wired (not inert):** a real `usbd_context` (`usb_device_setup.cpp`)
+  brings the stack up via the TinyUSB shim's `attach()`. It registers, per active
+  mode, only the classes that mode used:
+  - **HID** — a 5-node `zephyr,hid-device` pool (`app.overlay`); the shim
+    (`usb_glue.cpp`) binds `Adafruit_USBD_HID` objects in `begin()` order,
+    `sendReport`→`hid_device_submit_report`, get/set/output reports dispatched to
+    the modes. Covers puck/lizard slots, switch (hori/pro), ps5, hidgyro, the
+    wake mouse, and the Xbox right-pad mouse.
+  - **CDC ACM** — the board console; `serial_cdc_glue.cpp` wires the debug
+    console's input + output to it.
+  - **WebUSB** — a custom vendor class (`usb_webusb_class.cpp`) bridged to byte
+    rings, plus a BOS WebUSB platform capability + landing-page URL.
+  - **XInput** — a custom vendor class (`usb_xinput_class.cpp`): the FF/5D/01
+    interface + magic blob + interrupt IN/OUT; `mode_xinput` feeds the 20-byte
+    report and decodes the OUT rumble packet.
+- Per-mode interface selection (the reboot-to-reenumerate concession) is done by
+  blocklisting the unused class instances in `usb_device_setup.cpp`, which also
+  keeps within the nRF52840's 8 IN-endpoint budget.
 
-### NOT yet functional (the remaining work, none hardware-verified)
-1. **USB is inert.** `usb_stub.cpp` satisfies the TinyUSB shim with safe no-ops
-   (device never mounts, HIDs never ready). The device will **not enumerate**
-   until the real Zephyr USBD backing is finished. The staged real backing lives
-   in `usb_glue.cpp` and needs:
-   - a devicetree overlay declaring N `zephyr,hid-device` nodes (the HID pool the
-     shim binds to) plus CDC ACM, MSC, and a vendor (WebUSB) interface;
-   - a `usbd_context` built per active mode (register exactly the classes that
-     mode needs at init — see the concession below);
-   - the USBD message callback wired to `opk_usb_msg` for mount/suspend state.
-2. **WebUSB** vendor pipe (`Adafruit_USBD_WebUSB`) + **MS OS 2.0** descriptors —
-   needed to preserve Windows/Chrome binding. Currently stubbed inert.
-3. **XInput** is a custom TinyUSB class driver (`mode_xinput.cpp`, via the
-   `device/usbd_pvt.h` shim). It compiles but needs a real Zephyr custom USBD
-   class to enumerate; the report-building logic is intact.
-4. **CDC console**: `serial_console` reads via the `opk_serial_*` weak hooks —
-   wire them to a Zephyr CDC ACM (or RTT) endpoint.
-5. **status_led** pin mapping: the Arduino code uses logical pin numbers; under
-   the absolute-nRF-pin `digitalWrite` shim the B-pin (P0.15) needs an override.
+### Remaining / to confirm on hardware (none hardware-verified here)
+1. **Everything USB needs real-hardware verification** — enumeration, the per-mode
+   class-instance names (`hid_0..hid_4`, `cdc_acm_0`, `opk_webusb_0`,
+   `opk_xinput_0`), endpoint assignment, and the per-mode endpoint budget.
+2. **XInput is single-controller.** Multi-controller XInput (one interface per
+   connected pad, as the Arduino dynamic-mount did) is a follow-up.
+3. **Dynamic mount.** The variable connected-controller count without reboot is
+   collapsed to a fixed per-mode set + reboot-to-reenumerate (the concession
+   below). The `usb_mount` watcher is compiled but its re-enumeration is inert.
+4. **MS OS 2.0 / WinUSB** auto-binding for WebUSB on Windows is not added (the
+   WebUSB BOS + URL are). The browser panel works where the OS lets a page claim
+   a vendor interface; Windows may need a manual WinUSB association.
+5. **Wake-on-Windows nuance:** the boot-mouse wake interface is a generic HID
+   node (`protocol-code = "none"`); for Windows to arm it as a wake source the
+   wake node likely needs `protocol-code = "mouse"`.
 
 ### Behavioral concession (documented)
 Zephyr's USBD descriptor set is fixed once the stack is enabled. The Arduino

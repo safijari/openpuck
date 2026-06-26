@@ -1,0 +1,41 @@
+name: Zephyr Build
+
+on:
+  push:
+    branches:
+      - main
+      - zephyr-migration
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/zephyrproject-rtos/ci:latest
+    env:
+      CMAKE_PREFIX_PATH: /opt/toolchains
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          path: openpuck
+
+      - name: Initialize Zephyr workspace
+        run: |
+          # Freestanding app: pull mainline Zephyr into a sibling workspace.
+          west init zephyrproject --mr main
+          cd zephyrproject && west update --narrow -o=--depth=1
+          west zephyr-export
+
+      - name: Build (adafruit_feather_nrf52840/nrf52840/uf2)
+        run: |
+          cd zephyrproject
+          west build -b adafruit_feather_nrf52840/nrf52840/uf2 \
+            -p always ../openpuck/OpenPuckZephyr
+
+      - name: Upload UF2
+        uses: actions/upload-artifact@v4
+        with:
+          name: openpuck-zephyr-uf2
+          path: zephyrproject/build/zephyr/zephyr.uf2
+          if-no-files-found: warn
