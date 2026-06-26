@@ -5,6 +5,7 @@
 #include "haptics.h"
 #include "puck_hid.h"
 #include "triton.h" // g_in raw IMU (diagnostic readout)
+#include "lizard_map.h"
 #include "build_info.h"
 #include <Arduino.h>
 #include <string.h>
@@ -99,7 +100,9 @@ static void webusbSendBlob()
 	// Switch Pro gyro sensitivity x10 (protocol v6)
 	p[55] = g_swGyroScale10;
 	{
-		int16_t a[3] = { g_in[0].ax, g_in[0].ay, g_in[0].az };
+		// Read the ACTIVE slot's accel, not a hardcoded g_in[0]: a controller bonded to a non-zero
+		// slot leaves g_in[0] zeroed, which made this readout (and lizard) look dead.
+		int16_t a[3] = { g_in[cs].ax, g_in[cs].ay, g_in[cs].az };
 		memcpy(&p[56], a, 6);
 	} // raw accelerometer for scale diagnostics (protocol v7)
 
@@ -128,6 +131,40 @@ static void webusbSendBlob()
 		q[7] = g_type[et].ledBright;
 	}
 	usb_web.write(p, sizeof p);
+	usb_web.flush();
+}
+
+// Send the whole lizard binding table as one 0xA7 frame so the panel can edit it:
+//   [0xA7][count][ per binding (16B): outType, outData[0..6], trigMask LE(4), holdMask LE(4) ]
+// Total = 2 + count*16 (max 2 + 32*16 = 514). The panel reads byte[1]=count and accumulates
+// transferIn packets until it has the full frame.
+static void webusbSendLizard()
+{
+	if (!usb_web.connected())
+		return;
+	uint8_t count = g_lizardMap.count;
+	if (count > LZ_MAX_BINDINGS)
+		count = LZ_MAX_BINDINGS;
+	// static (not stack): 514 B is large for the USB task stack, and webusbPoll is single-threaded.
+	static uint8_t f[2 + LZ_MAX_BINDINGS * 16];
+	f[0] = 0xA7;
+	f[1] = count;
+	for (uint8_t i = 0; i < count; i++) {
+		const LizardBinding &b = g_lizardMap.bindings[i];
+		uint8_t *q = &f[2 + i * 16];
+		q[0] = b.outType;
+		for (int k = 0; k < 7; k++)
+			q[1 + k] = b.outData[k];
+		q[8] = (uint8_t)b.trigMask;
+		q[9] = (uint8_t)(b.trigMask >> 8);
+		q[10] = (uint8_t)(b.trigMask >> 16);
+		q[11] = (uint8_t)(b.trigMask >> 24);
+		q[12] = (uint8_t)b.holdMask;
+		q[13] = (uint8_t)(b.holdMask >> 8);
+		q[14] = (uint8_t)(b.holdMask >> 16);
+		q[15] = (uint8_t)(b.holdMask >> 24);
+	}
+	usb_web.write(f, (uint16_t)(2 + count * 16));
 	usb_web.flush();
 }
 #if OPK_LOG
@@ -178,7 +215,8 @@ static void webusbDrainCapture()
 #endif // OPK_LOG
 void webusbPoll()
 {
-	static uint8_t buf[16];
+	// 32B: the lizard "set binding" command (0x0E) is 18 bytes; every other command is <=4.
+	static uint8_t buf[32];
 	static uint8_t n = 0;
 	while (usb_web.available()) {
 		int c = usb_web.read();
@@ -192,12 +230,15 @@ void webusbPoll()
 				break;
 			uint8_t op = buf[0];
 
-			// 0x05 carries a value byte; 0x0A carries a 3-byte magic
-			uint8_t need = (op == 0x02)		  ? 3 :
-				       (op == 0x03 || op == 0x05) ? 2 :
+			// 0x05/0x0F carry one value byte; 0x02 carries field+value; 0x0A carries a 3-byte
+			// magic; 0x0E carries idx + a 16-byte serialized lizard binding (18 total).
+			uint8_t need = (op == 0x0E)		  ? 18 :
+				       (op == 0x02)		  ? 3 :
+				       (op == 0x03 || op == 0x05 ||
+					op == 0x0F)		  ? 2 :
 				       (op == 0x0A)		  ? 4 :
 								    1;
-			if (op < 0x01 || op > 0x0C) { // resync: drop one byte
+			if (op < 0x01 || op > 0x11) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
 			}
@@ -249,6 +290,48 @@ void webusbPoll()
 				usb_web.flush();
 				delay(40);
 				enterUf2Dfu();
+
+				// ---- lizard (desktop) binding map editor ----
+				// 0x0D: dump the current map as a 0xA7 frame.
+			} else if (op == 0x0D) {
+				webusbSendLizard();
+
+				// 0x0F [count]: BEGIN a map edit -- set the binding count (clamped). The
+				// panel then sends one 0x0E per binding (0..count-1) and a 0x10 to persist.
+			} else if (op == 0x0F) {
+				g_lizardMap.count = (buf[1] <= LZ_MAX_BINDINGS) ?
+							    buf[1] :
+							    LZ_MAX_BINDINGS;
+
+				// 0x0E [idx][outType][od0..6][trig LE4][hold LE4]: set one binding.
+			} else if (op == 0x0E) {
+				uint8_t idx = buf[1];
+				if (idx < LZ_MAX_BINDINGS) {
+					LizardBinding &b =
+						g_lizardMap.bindings[idx];
+					b.outType = buf[2];
+					for (int k = 0; k < 7; k++)
+						b.outData[k] = buf[3 + k];
+					b.trigMask = (uint32_t)buf[10] |
+						     ((uint32_t)buf[11] << 8) |
+						     ((uint32_t)buf[12] << 16) |
+						     ((uint32_t)buf[13] << 24);
+					b.holdMask = (uint32_t)buf[14] |
+						     ((uint32_t)buf[15] << 8) |
+						     ((uint32_t)buf[16] << 16) |
+						     ((uint32_t)buf[17] << 24);
+				}
+
+				// 0x10: COMMIT the edited map to flash and echo it back.
+			} else if (op == 0x10) {
+				saveLizardMap();
+				webusbSendLizard();
+
+				// 0x11: reset the map to the built-in defaults, persist, echo back.
+			} else if (op == 0x11) {
+				defaultLizardMap();
+				saveLizardMap();
+				webusbSendLizard();
 
 			} else if (op == 0x02) {
 				uint8_t f = buf[1], v = buf[2];

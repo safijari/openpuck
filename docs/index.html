@@ -10,7 +10,7 @@
   body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg);padding:24px}
   h1{font-size:20px;margin:0 0 4px}
   .sub{color:var(--mut);margin:0 0 20px}
-  .wrap{max-width:680px;margin:0 auto}
+  .wrap{max-width:960px;margin:0 auto}
   .card{background:var(--card);border:1px solid #272d3d;border-radius:12px;padding:18px 20px;margin-bottom:16px}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 14px}
   .row{display:flex;align-items:center;gap:14px;margin:12px 0}
@@ -165,6 +165,19 @@
       <div id="typeCfgs"></div>
     </div>
 
+    <div class="card" id="lizardCard" style="display:none">
+      <h2>Lizard / desktop mapping</h2>
+      <p class="note" style="margin-top:0">Keyboard, mouse &amp; media bindings for <strong>Lizard (always)</strong> mode — each row maps a controller input to a desktop action. (Steam-mode seamless lizard, when Steam is closed, keeps the built-in default behavior and is not affected by this map.) Edits apply after <strong>Save to device</strong>.</p>
+      <div id="lizardList"></div>
+      <div class="row" style="margin:12px 0 0;flex-wrap:wrap;gap:8px">
+        <button id="lzAdd">+ Add binding</button>
+        <button id="lzSave" class="primary">Save to device</button>
+        <button id="lzReload">Reload</button>
+        <button id="lzReset" style="margin-left:auto">Reset to defaults</button>
+      </div>
+      <p class="note" id="lzStatus" style="margin-top:8px">—</p>
+    </div>
+
     <div class="card logonly">
       <h2>Capture — host → controller commands</h2>
       <p class="note" style="margin-top:0">The firmware logs everything from boot into a big RAM ring: Steam's writes (<code>ifN</code>), the frames we transmit to the controller (<code>TX→ctlr</code>), and RF <code>LINK UP/DOWN</code> edges. For the reconnect buzz: trigger it (it appears moments after the puck boots / the controller reconnects), then connect here and click <b>Dump from boot</b> — the trigger is still in the ring. (Only present in a logging build, <code>-DOPK_LOG=1</code>.)</p>
@@ -200,6 +213,46 @@ const TYPE_DEFS = [
 ];
 // Which emulated type a USB mode belongs to (mirror of firmware etypeForMode); -1 = puck mode (no type).
 function etypeForMode(m){ switch(m){case 1:return 0; case 2:case 4:return 1; case 6:case 8:return 2; case 5:case 7:return 3; default:return -1;} }
+
+// ===================== Lizard (desktop) binding map =====================
+// Mirrors firmware lizard_map.h. A binding is {outType, od:[7], trig, hold}. Output types and the
+// per-type payload (od[]) layout must match the constants in lizard_map.h exactly.
+const LZ_MAX = 32;
+const LZO = {NONE:0, KBD:1, MBTN:2, AXIS:3, SCROLL:4, CONSUMER:5};
+const LZ_OUT_LABELS = {0:"(disabled)", 1:"Keyboard key", 2:"Mouse button", 3:"Mouse move", 4:"Scroll wheel", 5:"Media key"};
+// Controller input bits (triton.h TB_* + virtual left-stick deflection bits). Single-bit triggers only.
+const LZ_BTNS = [
+  [0x1,"A"],[0x2,"B"],[0x4,"X"],[0x8,"Y"],
+  [0x10,"QAM (• • •)"],[0x40,"View"],[0x4000,"Menu"],[0x10000,"Steam"],
+  [0x20,"R3 (stick click)"],[0x8000,"L3 (stick click)"],
+  [0x80,"R4 (back upper-right)"],[0x100,"R5 (back lower-right)"],
+  [0x20000,"L4 (back upper-left)"],[0x40000,"L5 (back lower-left)"],
+  [0x200,"RB (bumper)"],[0x80000,"LB (bumper)"],
+  [0x800000,"R2 (trigger pull)"],[0x8000000,"L2 (trigger pull)"],
+  [0x2000,"D-pad Up"],[0x400,"D-pad Down"],[0x1000,"D-pad Left"],[0x800,"D-pad Right"],
+  [0x400000,"Right pad click"],[0x4000000,"Left pad click"],
+  [0x200000,"Right pad touch"],[0x2000000,"Left pad touch"],
+  [0x10000000,"L-stick → right"],[0x20000000,"L-stick → left"],[0x40000000,"L-stick → down"],[0x80000000,"L-stick → up"],
+];
+// Keyboard modifier bits (od[0] for KBD output).
+const LZ_MODS = [[0x01,"Ctrl"],[0x02,"Shift"],[0x04,"Alt"],[0x08,"Win/⌘"]];
+// Curated HID keycodes (od[1] for KBD output). Value 0 = no key (modifier-only).
+const LZ_KEYS = [[0,"— none —"]];
+"ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").forEach((c,i)=>LZ_KEYS.push([0x04+i,c]));
+"1234567890".split("").forEach((c,i)=>LZ_KEYS.push([0x1e+i,c]));
+[[0x28,"Enter"],[0x29,"Esc"],[0x2a,"Backspace"],[0x2b,"Tab"],[0x2c,"Space"],
+ [0x4f,"Arrow Right"],[0x50,"Arrow Left"],[0x51,"Arrow Down"],[0x52,"Arrow Up"],
+ [0x4a,"Home"],[0x4d,"End"],[0x4b,"Page Up"],[0x4e,"Page Down"],[0x49,"Insert"],[0x4c,"Delete"],
+ [0x2d,"- _"],[0x2e,"= +"],[0x46,"Print Screen"]].forEach(k=>LZ_KEYS.push(k));
+for(let i=0;i<12;i++) LZ_KEYS.push([0x3a+i,"F"+(i+1)]);
+const LZ_MBTNS = [[1,"Left click"],[2,"Right click"],[4,"Middle click"]];
+const LZ_AXIS_SRC = [[0,"Right trackpad"],[1,"Left stick"],[2,"Gyro"]];
+const LZ_GYRO_ACT = [[0,"Always"],[1,"While right pad touched"],[2,"While left stick deflected"],[3,"While hold-button held"]];
+const LZ_CONSUMER = [[1,"Volume +"],[2,"Volume −"]];
+
+function lzBtnLabel(mask){ const m=LZ_BTNS.find(b=>b[0]===(mask>>>0)); return m?m[1]:(mask?("0x"+(mask>>>0).toString(16)):""); }
+let lizardBindings = [];   // [{outType, od:[7], trig, hold}]
+let lizardBusy = false;
 const BACK_LABELS = ["L4 (back upper-left)","R4 (back upper-right)","L5 (back lower-left)","R5 (back lower-right)"];
 const typeEls = []; // one entry per TYPE_DEFS: {sec, tab, activeDot, back[], qam, abSwap, pad, led, ledV}
 function mkSelect(def, includeNone){
@@ -336,6 +389,7 @@ async function connect(){
     $("#panel").classList.remove("hide");
     log(`connected — VID ${dev.vendorId.toString(16)} iface ${ifNum} epIn ${epIn} epOut ${epOut}`);
     navigator.usb.addEventListener("disconnect", e=>{ if(e.device===dev){ onGone(); }});
+    await loadLizard();
     startPolling();
   }catch(e){ log("connect failed: "+e.message); }
 }
@@ -377,6 +431,9 @@ function applyBlob(p){
   for(const el of document.querySelectorAll(".logonly")) el.style.display = logEnabled ? "" : "none";
   for(const b of document.querySelectorAll(".modebtn")) b.classList.toggle("active", +b.dataset.mode===mode);
   $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
+  // The custom map applies ONLY to pure Lizard (always) mode. Steam-mode seamless lizard keeps
+  // the built-in default behavior, so the editor is shown only when the device is in Lizard mode.
+  $("#lizardCard").style.display = (mode===3)?"":"none";
   const battery=(p.length>36?p[36]:0);
   const rumbleScale=(p.length>51?p[51]:200);
   const swProRate=(p.length>52?p[52]:2);
@@ -509,7 +566,7 @@ function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ e
 
 let inflight=false;
 async function refresh(){
-  if(!dev||inflight||capturing) return; inflight=true;
+  if(!dev||inflight||capturing||lizardBusy) return; inflight=true;
   await send([0x01]); const p=await readBlob(); if(p) applyBlob(p);
   inflight=false;
 }
@@ -588,11 +645,166 @@ async function startPolling(){
   while(polling && dev){ await new Promise(r=>setTimeout(r,600)); await refresh(); }
 }
 
+// ---- lizard map transfers ----
+// The status-blob poll and these map transfers share one bulk pipe, so we pause polling
+// (lizardBusy) and wait out any in-flight refresh before sending a 0x0D/0x10/0x11 that
+// expects a 0xA7 reply.
+async function lizardExchange(fn){
+  lizardBusy=true;
+  for(let i=0;i<25 && inflight;i++) await new Promise(r=>setTimeout(r,20));
+  try{ return await fn(); }
+  catch(e){ log("lizard err: "+e.message); return null; }
+  finally{ lizardBusy=false; }
+}
+// Read one [0xA7][count][count*16] frame, accumulating transferIn packets until complete.
+async function readLizard(){
+  let acc=new Uint8Array(0);
+  for(let guard=0; guard<64; guard++){
+    const r=await dev.transferIn(epIn,128);
+    if(r.status!=="ok") break;
+    const d=new Uint8Array(r.data.buffer);
+    const m=new Uint8Array(acc.length+d.length); m.set(acc); m.set(d,acc.length); acc=m;
+    let i=0; while(i<acc.length && acc[i]!==0xA7) i++;
+    if(i>0) acc=acc.slice(i);
+    if(acc.length<2) continue;
+    const count=acc[1], total=2+count*16;
+    if(acc.length>=total){
+      const out=[];
+      for(let b=0;b<count;b++){
+        const q=2+b*16;
+        out.push({
+          outType:acc[q],
+          od:[...acc.slice(q+1,q+8)],
+          trig:((acc[q+8])|(acc[q+9]<<8)|(acc[q+10]<<16)|(acc[q+11]<<24))>>>0,
+          hold:((acc[q+12])|(acc[q+13]<<8)|(acc[q+14]<<16)|(acc[q+15]<<24))>>>0,
+        });
+      }
+      return out;
+    }
+  }
+  return null;
+}
+async function loadLizard(){
+  await lizardExchange(async()=>{
+    await send([0x0D]);
+    const b=await readLizard();
+    if(b){ lizardBindings=b; renderLizard(); log(`lizard map loaded — ${b.length} bindings`); }
+  });
+}
+async function saveLizard(){
+  if(!dev) return;
+  // A digital binding (keyboard/mouse/media) with neither a trigger nor a hold fires
+  // unconditionally in the firmware (the trigMask==0 guard is skipped) -- it would type/click
+  // forever. Drop those rows so a half-finished binding can't brick desktop input.
+  const digital=b=>b.outType===LZO.KBD||b.outType===LZO.MBTN||b.outType===LZO.CONSUMER;
+  const valid=lizardBindings.filter(b=> b.outType!==LZO.NONE && (!digital(b) || (b.trig>>>0)||(b.hold>>>0)) );
+  const dropped=lizardBindings.length-valid.length;
+  await lizardExchange(async()=>{
+    await send([0x0F, valid.length&0xff]);
+    for(let i=0;i<valid.length;i++){
+      const b=valid[i];
+      const od=(b.od||[]).slice(0,7); while(od.length<7) od.push(0);
+      const t=b.trig>>>0, h=b.hold>>>0;
+      await send([0x0E, i, b.outType, ...od.map(x=>x&0xff),
+        t&0xff,(t>>>8)&0xff,(t>>>16)&0xff,(t>>>24)&0xff,
+        h&0xff,(h>>>8)&0xff,(h>>>16)&0xff,(h>>>24)&0xff]);
+    }
+    await send([0x10]); // commit + persist to flash
+    const b=await readLizard(); if(b){ lizardBindings=b; renderLizard(); }
+    log(`lizard map saved — ${valid.length} bindings`+(dropped?` (skipped ${dropped} incomplete: no trigger/hold)`:""));
+  });
+}
+async function resetLizard(){
+  if(!dev) return;
+  if(!confirm("Reset the lizard map to the built-in defaults? Unsaved edits are lost.")) return;
+  await lizardExchange(async()=>{
+    await send([0x11]);
+    const b=await readLizard(); if(b){ lizardBindings=b; renderLizard(); }
+    log("lizard map reset to defaults");
+  });
+}
+
+// ---- lizard map UI ----
+function mkSel(opts, val, onchange){
+  const s=document.createElement("select"); s.style.flex="0 1 auto"; s.style.minWidth="0";
+  for(const [v,l] of opts){ const o=document.createElement("option"); o.value=v; o.textContent=l; s.appendChild(o); }
+  s.value=val; s.addEventListener("change",()=>onchange(+s.value));
+  return s;
+}
+function renderLizard(){
+  const host=$("#lizardList"); host.innerHTML="";
+  lizardBindings.forEach((b,idx)=>host.appendChild(buildLizardRow(b,idx)));
+  $("#lzStatus").textContent = `${lizardBindings.length} / ${LZ_MAX} bindings`;
+  $("#lzAdd").disabled = lizardBindings.length>=LZ_MAX;
+}
+function buildLizardRow(b, idx){
+  const row=document.createElement("div");
+  row.style.cssText="display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:8px 10px;margin:8px 0";
+  const analog = (b.outType===LZO.AXIS || b.outType===LZO.SCROLL);
+
+  // Trigger (When) + Hold — meaningful only for digital outputs
+  if(!analog){
+    const when=document.createElement("span"); when.className="note"; when.textContent="When"; when.style.flex="0 0 auto"; row.appendChild(when);
+    row.appendChild(mkSel([[0,"— pick input —"],...LZ_BTNS], b.trig, v=>{ b.trig=v>>>0; }));
+    const plus=document.createElement("span"); plus.className="note"; plus.textContent="+ hold"; plus.style.flex="0 0 auto"; row.appendChild(plus);
+    row.appendChild(mkSel([[0,"(none)"],...LZ_BTNS], b.hold, v=>{ b.hold=v>>>0; }));
+  } else {
+    const lab=document.createElement("span"); lab.className="note"; lab.textContent="Analog source"; lab.style.flex="0 0 auto"; row.appendChild(lab);
+  }
+
+  // Arrow + output type
+  const arrow=document.createElement("span"); arrow.textContent="→"; arrow.style.color="var(--mut)"; row.appendChild(arrow);
+  row.appendChild(mkSel(Object.entries(LZ_OUT_LABELS).map(([v,l])=>[+v,l]), b.outType, v=>{
+    b.outType=v;
+    // reset payload to sane defaults for the new type
+    if(v===LZO.AXIS){ b.od=[0,0,0,0,0,0,0]; }
+    else if(v===LZO.SCROLL){ b.od=[0,0,0,0,0,0,0]; }
+    else if(v===LZO.MBTN){ b.od=[1,0,0,0,0,0,0]; }
+    else if(v===LZO.CONSUMER){ b.od=[1,0,0,0,0,0,0]; }
+    else if(v===LZO.KBD){ b.od=[0,0,0,0,0,0,0]; }
+    renderLizard();
+  }));
+
+  // Output-specific controls
+  if(b.outType===LZO.KBD){
+    for(const [bit,name] of LZ_MODS){
+      const w=document.createElement("label"); w.style.cssText="flex:0 0 auto;display:flex;align-items:center;gap:3px;color:var(--fg)";
+      const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=!!(b.od[0]&bit);
+      cb.addEventListener("change",()=>{ b.od[0]=cb.checked?(b.od[0]|bit):(b.od[0]&~bit); });
+      w.appendChild(cb); w.appendChild(document.createTextNode(name)); row.appendChild(w);
+    }
+    row.appendChild(mkSel(LZ_KEYS, b.od[1]||0, v=>{ b.od[1]=v; for(let k=2;k<7;k++) b.od[k]=0; }));
+  } else if(b.outType===LZO.MBTN){
+    row.appendChild(mkSel(LZ_MBTNS, b.od[0]||1, v=>{ b.od[0]=v; }));
+  } else if(b.outType===LZO.AXIS){
+    row.appendChild(mkSel(LZ_AXIS_SRC, b.od[0]||0, v=>{ b.od[0]=v; renderLizard(); }));
+    if((b.od[0]||0)===2){ // gyro: activation selector
+      const g=document.createElement("span"); g.className="note"; g.textContent="when"; g.style.flex="0 0 auto"; row.appendChild(g);
+      row.appendChild(mkSel(LZ_GYRO_ACT, b.od[1]||0, v=>{ b.od[1]=v; }));
+    }
+  } else if(b.outType===LZO.SCROLL){
+    const s=document.createElement("span"); s.className="note"; s.textContent="Left trackpad → scroll"; row.appendChild(s);
+  } else if(b.outType===LZO.CONSUMER){
+    row.appendChild(mkSel(LZ_CONSUMER, b.od[0]||1, v=>{ b.od[0]=v; }));
+  }
+
+  // delete
+  const del=document.createElement("button"); del.textContent="✕"; del.title="Delete binding";
+  del.style.cssText="margin-left:auto;flex:0 0 auto;padding:4px 10px";
+  del.onclick=()=>{ lizardBindings.splice(idx,1); renderLizard(); };
+  row.appendChild(del);
+  return row;
+}
+
 // UI wiring
 $("#connectBtn").onclick=connect;
 $("#capDl").onclick=downloadCap;
 $("#capStart").onclick=startCapture;
 $("#capStop").onclick=stopCapture;
+$("#lzAdd").onclick=()=>{ if(lizardBindings.length<LZ_MAX){ lizardBindings.push({outType:LZO.KBD,od:[0,0,0,0,0,0,0],trig:0,hold:0}); renderLizard(); } };
+$("#lzSave").onclick=saveLizard;
+$("#lzReload").onclick=loadLizard;
+$("#lzReset").onclick=resetLizard;
 $("#hapClear").onclick=async()=>{ if(dev){ await send([0x07]); log("haptic re-init sent (clear stuck buzz)"); } };
 $("#ctlrOff").onclick=async()=>{ if(dev){ await send([0x08]); log("controller power-off attempt sent — watch link status"); } };
 $("#dfuSerial").onclick=async()=>{

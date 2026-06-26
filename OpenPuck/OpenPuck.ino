@@ -31,6 +31,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "rf_link.h"
 #include "rf_diag.h"
 #include "webusb_config.h"
+#include "lizard_map.h"
 #include "serial_console.h"
 #include "wake_hid.h"
 #include "status_led.h"
@@ -94,6 +95,15 @@ void setup()
 #endif
 	loadCfg();
 	loadBonds();
+	// Lizard (desktop) keyboard/mouse binding table. Custom remapping applies ONLY in pure
+	// MODE_LIZARD: there we install the user's saved/editable map. In every other mode the
+	// seamless lizard (Steam mode with Steam closed) uses the built-in DEFAULT map, so edits
+	// made for pure lizard never change Steam-mode desktop behavior. (Without either call
+	// g_lizardMap.count stays 0 and lizard produces no keyboard/mouse output at all.)
+	if (g_usbMode == MODE_LIZARD)
+		loadLizardMap();
+	else
+		defaultLizardMap();
 	// regenerate per-slot session addresses from each bond UUID (deterministic, stable across reboots)
 	for (int s = 0; s < NSLOT; s++)
 		if (g_slot[s].used)

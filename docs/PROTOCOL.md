@@ -370,8 +370,23 @@ Messages:
   - `0x01`: get status blob
   - `0x02 <field> <value>`: set one field
   - `0x03 <mode>`: switch mode and reboot
+  - `0x0D`: get the lizard binding map (device replies `0xA7`)
+  - `0x0F <count>`: begin a lizard-map edit — set the binding count
+  - `0x0E <idx> <16-byte binding>`: set one lizard binding (see below)
+  - `0x10`: commit the edited lizard map to flash (device echoes `0xA7`)
+  - `0x11`: reset the lizard map to built-in defaults (device echoes `0xA7`)
 - Device to host:
-  - `0xA5 <len> <payload>`
+  - `0xA5 <len> <payload>`: status blob
+  - `0xA7 <count> <count×16-byte bindings>`: lizard binding map
+
+Lizard binding wire format (16 bytes), matching `LizardBinding` in `lizard_map.h`:
+
+```text
+[0]     outType   (0 none, 1 keyboard chord, 2 mouse btn, 3 mouse axis, 4 scroll, 5 consumer)
+[1..7]  outData[0..6]  (type-specific payload)
+[8..11] trigMask  u32 LE  (button bits: any-of)
+[12..15] holdMask u32 LE  (button bits: all-of guard)
+```
 
 Status blob payload:
 

@@ -406,9 +406,9 @@ void SteamPuckController::begin()
 
 // Forward the controller's report 0x45 to Steam, or drive lizard kb/mouse when Steam is closed. PURELY a
 // USB-side decision -- changes nothing about the RF poll or the host->controller relay. Per-slot: each
-// controller's 0x45 goes to its OWN hid[slot], so Steam sees four independent inputs. Lizard remains
-// single-controller (slot 0); the other slots stay quiet in lizard mode -- one mouse + one keyboard is
-// the only thing a desktop can consume, and the comment in mode_lizard.h documents this.
+// controller's 0x45 goes to its OWN hid[slot], so Steam sees four independent inputs. Lizard, by contrast,
+// presents ONE mouse + keyboard (a desktop can only consume one): rfLizard merges every bonded controller's
+// input onto hid[0], so all connected controllers drive the same cursor/keys together.
 void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 				     uint8_t bodyTlen)
 {
@@ -428,10 +428,18 @@ void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 	if (!g_slot[slot].used)
 		return;
 	if (lizardActive()) {
-		// Lizard single-controller: only slot 0's interface drives the mouse/keyboard. Other slots
-		// stay quiet in lizard mode.
-		if (slot == 0)
-			rfLizard(rep, &hid[0], &hid[0], 0x40, 0x41);
+		// All bonded controllers share ONE desktop mouse/keyboard (mounted on hid[0] regardless of
+		// which RF slots are in use). rfLizard merges g_in[] across every used slot internally, so we
+		// fire it ONCE per cycle -- gated on the lowest bonded slot's report so it runs at a steady
+		// cadence (not once per slot, which would multiply the output rate).
+		int lizSlot = -1;
+		for (int s = 0; s < NSLOT; s++)
+			if (g_slot[s].used) {
+				lizSlot = s;
+				break;
+			}
+		if (slot == lizSlot)
+			rfLizard(&hid[0], &hid[0], 0x40, 0x41);
 	} else {
 		uint8_t blen = bodyTlen - 1;
 		if (blen > 45)
