@@ -19,6 +19,17 @@
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
+
+// Zephyr XInput custom class bridge (usb_xinput_class.cpp).
+extern "C" bool opk_xinput_ready(void);
+extern "C" bool opk_xinput_send(const uint8_t *rep, uint16_t n);
+extern "C" void opk_xinput_begin(void);
+// rumble decode hook the class calls on an OUT packet (-> Steam rumble relay).
+extern "C" void opk_xinput_rumble(uint8_t big, uint8_t sml)
+{
+	hapticSteamRumble((uint16_t)big * 257u, (uint16_t)sml * 257u, 0);
+}
+
 // custom class-driver API for the XInput interface
 extern "C" {
 #include "device/usbd_pvt.h"
@@ -229,12 +240,12 @@ static Adafruit_USBD_XInput g_xinput[NSLOT];
 static void xinputSend(uint8_t slot, uint16_t buttons, uint8_t lt, uint8_t rt,
 		       int16_t lx, int16_t ly, int16_t rx, int16_t ry)
 {
-	if (slot >= NSLOT || !g_xiSlot[slot].inUse)
+	// Zephyr port: a single XInput interface (controller 0) via the Zephyr
+	// custom class (usb_xinput_class.cpp). The TinyUSB per-slot endpoint
+	// bookkeeping (g_xiSlot) is unused here.
+	if (slot != 0 || !opk_xinput_ready())
 		return;
-	XiSlot &S = g_xiSlot[slot];
-	if (!tud_mounted() || S.epIn == 0 || usbd_edpt_busy(0, S.epIn))
-		return;
-	uint8_t *r = S.inBuf;
+	uint8_t r[20];
 	r[0] = 0x00;
 	r[1] = 0x14;
 	r[2] = buttons & 0xFF;
@@ -250,10 +261,7 @@ static void xinputSend(uint8_t slot, uint16_t buttons, uint8_t lt, uint8_t rt,
 	r[12] = ry & 0xFF;
 	r[13] = ry >> 8;
 	memset(r + 14, 0, 6);
-	if (usbd_edpt_claim(0, S.epIn)) {
-		if (!usbd_edpt_xfer(0, S.epIn, r, 20))
-			usbd_edpt_release(0, S.epIn);
-	}
+	opk_xinput_send(r, 20);
 }
 
 // ===================== right-pad mouse interface =====================
@@ -463,6 +471,8 @@ void XboxController::beginPool()
 	g_mouse.begin();
 	for (int s = 0; s < NSLOT; s++)
 		g_xinput[s].setStringDescriptor("Controller");
+	// Zephyr: request the XInput vendor class be registered this boot.
+	opk_xinput_begin();
 }
 void XboxController::mountSlots(uint8_t k)
 {

@@ -20,6 +20,10 @@
 LOG_MODULE_REGISTER(opk_usbd, LOG_LEVEL_INF);
 
 extern "C" void opk_usb_msg(const enum usbd_msg_type type);
+// per-mode class-selection inputs (set by the shim / modes before attach)
+extern "C" int opk_hid_claimed(void);
+extern "C" bool opk_want_webusb(void);
+extern "C" bool opk_xinput_want(void);
 
 USBD_DEVICE_DEFINE(opk_usbd, DEVICE_DT_GET(DT_NODELABEL(zephyr_udc0)), 0x28DE,
 		   0x1304);
@@ -123,8 +127,28 @@ static int do_setup(void)
 		return err;
 	}
 
-	// Register every class instance from devicetree (HID pool + board CDC ACM).
-	err = usbd_register_all_classes(&opk_usbd, USBD_SPEED_FS, 1, NULL);
+	// Register only the classes this mode actually used. Zephyr's descriptor
+	// set is fixed once enabled, so per-mode interface selection happens here
+	// (the reboot-to-reenumerate concession). The nRF52840 has 8 IN endpoints,
+	// so registering every class at once would also overflow the budget.
+	// Names are the USBD_DEFINE_CLASS instance names: HID pool = hid_0..hid_4,
+	// the board CDC console = cdc_acm_0, plus our opk_webusb_0 / opk_xinput_0.
+	static const char *const HIDN[] = { "hid_0", "hid_1", "hid_2", "hid_3",
+					    "hid_4" };
+	const char *block[8];
+	int bi = 0;
+	int hc = opk_hid_claimed();
+	for (int i = hc; i < 5; i++)
+		block[bi++] = HIDN[i]; // unused HID pool nodes
+	if (!opk_want_webusb()) {
+		block[bi++] = "opk_webusb_0";
+		block[bi++] = "cdc_acm_0"; // CDC rides with the panel (clean-PS drops both)
+	}
+	if (!opk_xinput_want())
+		block[bi++] = "opk_xinput_0";
+	block[bi] = NULL;
+
+	err = usbd_register_all_classes(&opk_usbd, USBD_SPEED_FS, 1, block);
 	if (err) {
 		LOG_ERR("register classes failed (%d)", err);
 		return err;

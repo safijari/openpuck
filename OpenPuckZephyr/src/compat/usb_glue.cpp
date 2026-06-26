@@ -335,11 +335,24 @@ extern "C" int opk_webusb_read(void);
 extern "C" uint32_t opk_webusb_write(const void *data, uint32_t n);
 extern "C" void opk_webusb_flush(void);
 
+static bool s_want_webusb;
+extern "C" bool opk_want_webusb(void)
+{
+	return s_want_webusb;
+}
+extern "C" int opk_hid_claimed(void)
+{
+	return s_hid_claimed;
+}
+
 Adafruit_USBD_WebUSB::Adafruit_USBD_WebUSB()
 {
 }
 bool Adafruit_USBD_WebUSB::begin()
 {
+	// The firmware calls this exactly for modes that expose the panel (i.e.
+	// not the clean-PS modes); used to gate per-mode class registration.
+	s_want_webusb = true;
 	return true;
 }
 bool Adafruit_USBD_WebUSB::connected()

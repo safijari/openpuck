@@ -32,6 +32,7 @@ target_sources(app PRIVATE
   src/compat/usb_glue.cpp           # Zephyr USBD backing for the TinyUSB shim
   src/compat/usb_device_setup.cpp   # usbd_context (HID pool + CDC) bring-up
   src/compat/usb_webusb_class.cpp   # WebUSB vendor class (config panel pipe)
+  src/compat/usb_xinput_class.cpp   # XInput (Xbox) vendor class
 
   # ported firmware modules
   src/config.cpp
