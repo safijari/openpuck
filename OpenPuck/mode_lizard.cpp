@@ -1,6 +1,7 @@
 #include "mode_lizard.h"
 #include "triton.h"
 #include "config.h"
+#include "usb_tx.h"
 
 void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 	      Adafruit_USBD_HID *kdev, uint8_t mrid, uint8_t krid)
@@ -84,7 +85,7 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 		m.wheel = (int8_t)dw;
 		m.pan = 0;
 		if (mdev->ready())
-			mdev->sendReport(mrid, &m, sizeof m);
+			usbTxHid(mdev, mrid, &m, sizeof m);
 	}
 	// --- keyboard: modifiers + up to 6 keycodes ---
 	uint8_t mod = 0, kc[6] = { 0, 0, 0, 0, 0, 0 }, nk = 0;
@@ -120,17 +121,17 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 		if (nL5 && !prevL5) {
 			uint8_t cc = 0x02;
 			if (mdev->ready())
-				mdev->sendReport(0x03, &cc, 1);
+				usbTxHid(mdev, 0x03, &cc, 1);
 		}
 		if (nR5 && !prevR5) {
 			uint8_t cc = 0x01;
 			if (mdev->ready())
-				mdev->sendReport(0x03, &cc, 1);
+				usbTxHid(mdev, 0x03, &cc, 1);
 		}
 		if ((!nL5 && prevL5) || (!nR5 && prevR5)) {
 			uint8_t cc = 0x00;
 			if (mdev->ready())
-				mdev->sendReport(0x03, &cc, 1);
+				usbTxHid(mdev, 0x03, &cc, 1);
 		}
 		prevL5 = nL5;
 		prevR5 = nR5;
@@ -169,6 +170,6 @@ void rfLizard(const uint8_t *r, Adafruit_USBD_HID *mdev,
 		uint8_t krep[8] = { mod,   0,	  kc[0], kc[1],
 				    kc[2], kc[3], kc[4], kc[5] };
 		if (kdev->ready())
-			kdev->sendReport(krid, krep, 8);
+			usbTxHid(kdev, krid, krep, 8);
 	}
 }

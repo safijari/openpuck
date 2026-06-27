@@ -410,7 +410,7 @@ void webusbPoll()
 				// lands late under haptic load; narrower allows a higher poll rate. Clamp 600..3000us.
 				case 25: {
 					uint32_t w = (uint32_t)v * 10;
-					g_rxWin = w < 600 ? 600 :
+					g_rxWin = w < 600  ? 600 :
 						  w > 3000 ? 3000 :
 							     w;
 					break;
@@ -424,7 +424,8 @@ void webusbPoll()
 				// post-connect haptic block duration, in seconds (clamp 0..60)
 				case 28:
 					g_hapticBlockMs =
-						(uint16_t)((v > 60 ? 60 : v) * 1000u);
+						(uint16_t)((v > 60 ? 60 : v) *
+							   1000u);
 					break;
 				}
 				if (persist)

@@ -4,6 +4,7 @@
 #include "config.h"
 #include "bonds.h"
 #include "usb_mount.h"
+#include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 
@@ -223,7 +224,7 @@ void SwitchHoriController::task()
 		g_swLastMs[u] = millis();
 		uint8_t p[8];
 		switchBuildHoripad((uint8_t)bond, p);
-		g_switch[u].sendReport(0, p,
-				       sizeof p); // report-id-less descriptor
+		usbTxHid(&g_switch[u], 0, p,
+			 sizeof p); // report-id-less descriptor
 	}
 }

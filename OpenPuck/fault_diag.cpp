@@ -11,9 +11,8 @@ static uint8_t g_reason = RR_UNKNOWN;
 static uint32_t g_resetReas = 0;
 
 static const char *const REASON_STR[RR_COUNT] = {
-	"unknown",	   "power-on",	   "pin/replug",
-	"WATCHDOG (hang)", "CPU lockup",   "HARDFAULT",
-	"reboot",	   "soft reset",   "wake-from-off",
+	"unknown",   "power-on", "pin/replug", "WATCHDOG (hang)", "CPU lockup",
+	"HARDFAULT", "reboot",	 "soft reset", "wake-from-off",
 };
 
 // HardFault override. The Adafruit core's default handler (cores/.../debug.cpp) already does NVIC_SystemReset();
@@ -36,7 +35,8 @@ void faultDiagArmIntentionalReset()
 
 void faultDiagBoot()
 {
-	uint32_t rr = readResetReason(); // latched + cleared by the core's init()
+	uint32_t rr =
+		readResetReason(); // latched + cleared by the core's init()
 	uint8_t g2 = (uint8_t)NRF_POWER->GPREGRET2;
 	NRF_POWER->GPREGRET2 = 0; // consume the marker for this boot cycle
 	g_resetReas = rr;
@@ -51,7 +51,7 @@ void faultDiagBoot()
 	else if (rr & POWER_RESETREAS_LOCKUP_Msk)
 		reason = RR_LOCKUP;
 	else if (rr & POWER_RESETREAS_SREQ_Msk)
-		reason = (g2 == G2_FAULT) ? RR_HARDFAULT :
+		reason = (g2 == G2_FAULT)  ? RR_HARDFAULT :
 			 (g2 == G2_INTENT) ? RR_REBOOT :
 					     RR_SOFT;
 	else if (rr & POWER_RESETREAS_OFF_Msk)

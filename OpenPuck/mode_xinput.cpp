@@ -16,6 +16,7 @@
 #include "haptics.h"
 #include "bonds.h"
 #include "usb_mount.h"
+#include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -62,6 +63,9 @@ struct XiSlot {
 	volatile unsigned long
 		rumbleMs; // millis of last OUT packet (stuck-rumble watchdog)
 	volatile bool inUse;
+	// inBuf holds a built-but-not-yet-sent 20B XInput report; the actual usbd_edpt_xfer is issued from the
+	// usbd task (usbTxDrainHook), never from loop(), so the cross-task blocking-defer can't stall the loop.
+	volatile bool txPending;
 };
 static XiSlot g_xiSlot[NSLOT];
 // Dynamic mount: xi_open is called once per XInput interface in descriptor order; this counts them so the
@@ -232,6 +236,8 @@ static void xinputSend(uint8_t slot, uint16_t buttons, uint8_t lt, uint8_t rt,
 	if (slot >= NSLOT || !g_xiSlot[slot].inUse)
 		return;
 	XiSlot &S = g_xiSlot[slot];
+	// Only refill inBuf when the IN endpoint is idle: while a transfer is in flight (busy) the DMA is still
+	// reading inBuf, so leave it untouched (this also coalesces -- newest state wins, like a real pad).
 	if (!tud_mounted() || S.epIn == 0 || usbd_edpt_busy(0, S.epIn))
 		return;
 	uint8_t *r = S.inBuf;
@@ -250,9 +256,29 @@ static void xinputSend(uint8_t slot, uint16_t buttons, uint8_t lt, uint8_t rt,
 	r[12] = ry & 0xFF;
 	r[13] = ry >> 8;
 	memset(r + 14, 0, 6);
-	if (usbd_edpt_claim(0, S.epIn)) {
-		if (!usbd_edpt_xfer(0, S.epIn, r, 20))
-			usbd_edpt_release(0, S.epIn);
+	// Hand off to the usbd task: the xfer is issued from usbTxDrainHook() (SOF), not here, so loop() never
+	// calls into the dcd transfer path (which can block on the device event queue under load).
+	S.txPending = true;
+}
+
+// usbd-task drain (called from tud_sof_cb via usbTxDrainHook). Issues the deferred XInput IN transfers. Runs at
+// higher priority than loop(), so the claim->xfer is atomic w.r.t. xinputSend() refilling inBuf -- no torn DMA.
+extern "C" void usbTxDrainHook(void)
+{
+	if (!tud_mounted())
+		return;
+	for (int s = 0; s < NSLOT; s++) {
+		XiSlot &S = g_xiSlot[s];
+		if (!S.inUse || !S.txPending || S.epIn == 0)
+			continue;
+		if (usbd_edpt_busy(0, S.epIn))
+			continue;
+		if (usbd_edpt_claim(0, S.epIn)) {
+			if (usbd_edpt_xfer(0, S.epIn, S.inBuf, 20))
+				S.txPending = false;
+			else
+				usbd_edpt_release(0, S.epIn);
+		}
 	}
 }
 
@@ -430,7 +456,7 @@ static void rfXboxMouse(const uint8_t *r)
 		m.wheel = 0;
 		m.pan = 0;
 		if (g_mouse.ready())
-			g_mouse.sendReport(0, &m, sizeof m);
+			usbTxHid(&g_mouse, 0, &m, sizeof m);
 	}
 }
 

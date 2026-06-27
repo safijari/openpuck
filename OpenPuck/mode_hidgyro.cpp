@@ -5,6 +5,7 @@
 #include "haptics.h"
 #include "bonds.h"
 #include "usb_mount.h"
+#include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -236,6 +237,6 @@ void HidGyroController::task()
 		g_gyroLastMs[u] = millis();
 		uint8_t p[63];
 		hidGyroBuild(u, (uint8_t)bond, p);
-		g_hidGyro[u].sendReport(0x01, p, sizeof p);
+		usbTxHid(&g_hidGyro[u], 0x01, p, sizeof p);
 	}
 }

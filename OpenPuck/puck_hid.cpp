@@ -7,6 +7,7 @@
 #include "triton.h"
 #include "mode_lizard.h"
 #include "wake_hid.h"
+#include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -461,9 +462,8 @@ void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 		// only FRESH reports: the real puck dedupes, so stale repeats make Steam's velocity/smoothing
 		// stair-step. g_fwdNewOnly toggles for A/B.
 		if ((fresh || !g_fwdNewOnly) && hid[slot].ready())
-			hid[slot].sendReport(
-				0x45, rep + 1,
-				blen); // Steam/SDL Triton: input report 0x45
+			usbTxHid(&hid[slot], 0x45, rep + 1,
+				 blen); // Steam/SDL Triton: input report 0x45
 	}
 }
 
@@ -487,7 +487,7 @@ void SteamPuckController::onAuxReport(int slot, uint8_t rid,
 		// capture the pushed status report (0x43 battery / 0x44) device->host for the WebUSB panel: this is
 		// the channel Steam actually reads battery from; marker 0xFB = "->host push".
 		hapLogAdd(0xFB, rid, data, n);
-		hid[slot].sendReport(rid, data, n);
+		usbTxHid(&hid[slot], rid, data, n);
 	}
 }
 
@@ -565,8 +565,8 @@ static void wakeNudgeTask()
 		m.y = 0;
 		m.wheel = 0;
 		m.pan = 0;
-		hid[s].sendReport(0x40, &m,
-				  sizeof m); // jiggle right, then back
+		usbTxHid(&hid[s], 0x40, &m,
+			 sizeof m); // jiggle right, then back
 		g_nudgeStep[s] = (g_nudgeStep[s] >= 2) ?
 					 0 :
 					 (uint8_t)(g_nudgeStep[s] + 1);
@@ -616,7 +616,7 @@ void SteamPuckController::task()
 				connEdgeMs[s] = millis();
 			uint8_t st = conn ? 0x02 : 0x01;
 			hapLogAdd(0xFB, 0x79, &st, 1); // ->host push (capture)
-			hid[s].sendReport(0x79, &st, 1);
+			usbTxHid(&hid[s], 0x79, &st, 1);
 			usbConn[s] = conn;
 			last79[s] = millis();
 		} else if (conn && millis() - last7B[s] >= 2000) {
@@ -640,7 +640,7 @@ void SteamPuckController::task()
 				s7b[8] = (uint8_t)(0u - (uint8_t)mag);
 			}
 			hapLogAdd(0xFB, 0x7B, s7b, 12); // ->host push (capture)
-			hid[s].sendReport(0x7B, s7b, 12);
+			usbTxHid(&hid[s], 0x7B, s7b, 12);
 			last7B[s] = millis();
 		}
 		// Synthesized 0x43 = ID_TRITON_BATTERY_STATUS for SDL/Steam's gamepad driver. The verbatim forward of
@@ -658,7 +658,7 @@ void SteamPuckController::task()
 			b43[0] = st; // ucChargeState
 			b43[1] = g_battery[s]; // ucBatteryLevel (percent)
 			hapLogAdd(0xFB, 0x43, b43, 14); // ->host push (capture)
-			hid[s].sendReport(0x43, b43, sizeof b43);
+			usbTxHid(&hid[s], 0x43, b43, sizeof b43);
 			last43[s] = millis();
 		}
 	}

@@ -37,6 +37,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "usb_mount.h"
 #include "identity.h"
 #include "fault_diag.h"
+#include "usb_tx.h"
 #include <stdio.h>
 
 #if CFG_TUD_HID < 4
@@ -213,6 +214,9 @@ void setup()
 		USBDevice.remoteWakeup();
 		ledWakePulse();
 	} // wake host if bus was sleeping when we (re-)attached
+	// Route all device->host HID sends through the usbd task (SOF drain) so loop() never calls tud_* directly
+	// -> the cross-task blocking-defer that deadlocked the loop under comms load can no longer happen.
+	usbTxBegin();
 	hapticInit();
 	static const char *MODE_NAME[] = {
 		"STEAM(puck)",	       "XBOX(xinput+mouse)",

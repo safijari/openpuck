@@ -5,6 +5,7 @@
 #include "haptics.h"
 #include "bonds.h"
 #include "usb_mount.h"
+#include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -247,6 +248,6 @@ void Ps5Controller::task()
 		g_ps5LastMs[u] = millis();
 		uint8_t p[63];
 		ps5Build(u, (uint8_t)bond, p);
-		g_ps5[u].sendReport(0x01, p, sizeof p);
+		usbTxHid(&g_ps5[u], 0x01, p, sizeof p);
 	}
 }

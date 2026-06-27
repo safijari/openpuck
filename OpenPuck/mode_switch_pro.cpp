@@ -5,6 +5,7 @@
 #include "haptics.h"
 #include "bonds.h"
 #include "usb_mount.h"
+#include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
@@ -760,8 +761,8 @@ void SwitchProController::task()
 		// bursty host-init doesn't starve the streamed 0x30
 		if (g_jcQh[s] != g_jcQt[s]) {
 			JcRep *r = &g_jcQ[s][g_jcQh[s]];
-			if (g_swPro[s].sendReport(r->rid, r->data, JC_REPLEN))
-				g_jcQh[s] = (uint8_t)((g_jcQh[s] + 1) % JCQ_N);
+			usbTxHid(&g_swPro[s], r->rid, r->data, JC_REPLEN);
+			g_jcQh[s] = (uint8_t)((g_jcQh[s] + 1) % JCQ_N);
 			// one report per slot per call; the rest next loop
 			continue;
 		}
@@ -781,6 +782,6 @@ void SwitchProController::task()
 		g_swProLastMs[s] = millis();
 		uint8_t p[63];
 		switchProBuild((uint8_t)s, p);
-		g_swPro[s].sendReport(0x30, p, sizeof p);
+		usbTxHid(&g_swPro[s], 0x30, p, sizeof p);
 	}
 }

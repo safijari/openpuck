@@ -49,8 +49,10 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 
 // Post-connect haptic block (persisted, panel-controlled): when g_hapticBlockOn, Steam haptics are dropped for
 // g_hapticBlockMs after a (re)connect so the controller's haptic engine settles before the first real haptic.
-extern uint8_t g_hapticBlockOn; // 1 = block enabled, 0 = relay haptics immediately on connect (default)
-extern uint16_t g_hapticBlockMs; // block duration in ms (default HAPTIC_BLOCK_MS_DEFAULT)
+extern uint8_t
+	g_hapticBlockOn; // 1 = block enabled, 0 = relay haptics immediately on connect (default)
+extern uint16_t
+	g_hapticBlockMs; // block duration in ms (default HAPTIC_BLOCK_MS_DEFAULT)
 
 // anything still queued (xinput uses it to pace rumble re-queues)
 bool relayPending();

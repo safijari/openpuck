@@ -398,7 +398,8 @@ void rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// slot was already consumed under the critical section above.
 			// s1 carries a PID distinct from the GET poll (caller cycles it) so the controller's ESB
 			// dedup never treats the GET as a retransmit of this relay. 80us RX: relay is NO-ACK.
-			rfConnTx(ch, s1, p, plen, 80); // one relay per poll cycle
+			rfConnTx(ch, s1, p, plen,
+				 80); // one relay per poll cycle
 		}
 	}
 }

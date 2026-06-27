@@ -158,10 +158,10 @@ void loadCfg()
 			}
 			g_hapticBlockOn = c.hapticBlockOn ? 1 : 0;
 			// clamp seconds so s*1000 fits the uint16 ms field (max 60s)
-			g_hapticBlockMs =
-				(uint16_t)((c.hapticBlockS > 60 ? 60 :
+			g_hapticBlockMs = (uint16_t)((c.hapticBlockS > 60 ?
+							      60 :
 							      c.hapticBlockS) *
-					   1000u);
+						     1000u);
 		}
 		f.close();
 	}

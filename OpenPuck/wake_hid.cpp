@@ -1,4 +1,5 @@
 #include "wake_hid.h"
+#include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
 
 // Boot MOUSE descriptor -- proven to enumerate and wake Windows. The host enumerates a "HID-compliant mouse"
@@ -34,8 +35,16 @@ bool wakeHidMove(int8_t dx, int8_t dy)
 {
 	if (!wakeHidReady())
 		return false;
-	// boot mouse descriptor has no report ID -> report_id 0; buttons=0 so we move but never click
-	return g_wakeHid.mouseReport(0, 0, dx, dy, 0, 0);
+	// boot mouse descriptor has no report ID -> report_id 0; buttons=0 so we move but never click. Queued for
+	// the usbd task (usbTxHid) rather than sent inline, like every other report -- loop() issues no tud_* call.
+	hid_mouse_report_t m;
+	m.buttons = 0;
+	m.x = dx;
+	m.y = dy;
+	m.wheel = 0;
+	m.pan = 0;
+	usbTxHid(&g_wakeHid, 0, &m, sizeof m);
+	return true;
 }
 
 void wakeHidAddInterface()
