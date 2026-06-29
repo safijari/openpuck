@@ -74,11 +74,13 @@ This is a tool to emulate a Steam Controller 2 with almost all of its inputs (ex
 # Future work
 - Find a way to make Xinput mode and mouse work together on all platforms
 - Design the charging portion (and make it short proof)
+- Make ReversePuck into a system that you can plug into most controllers and allow them to talk to OpenPuck
+- A BLE version
 
 # Contributions
 The firmware is split into small, single-responsibility modules under `OpenPuck/` (one file per emulated controller, plus the RF, config, and host-interface layers). Start with [ARCHITECTURE.md](./ARCHITECTURE.md) for the map of how it all fits together and how to add a new USB personality.
 
-I have tested this software fairly extensively but I have limited resources. I only have one controller so I've been unable to do full end-to-end multi-controller hardware testing — the per-slot session address, per-slot USB fanout, and per-slot haptic demux are in place and the design is sound, but the `U` CDC command exists specifically so anyone with a second controller can verify the per-slot state at a glance. Please submit issues with any issues you find. PRs also welcome of course.
+I have tested this software fairly extensively but I have limited resources. Please submit issues with any issues you find. PRs also welcome of course.
 
 # Acknowledgements
 - Valve for putting out the amazing controller

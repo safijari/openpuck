@@ -49,20 +49,28 @@ arduino-cli core install adafruit:nrf52 --additional-urls https://adafruit.githu
 From the repository root:
 
 ```bash
-arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4 -DCFG_TUD_TASK_QUEUE_SZ=64" OpenPuck
+make build
 ```
 
-This sketch requires `CFG_TUD_HID=4` because Steam mode exposes four HID interfaces.
+That's the whole command — the USB flags the firmware needs are baked in, so you don't pass them yourself:
 
-It also requires `CFG_TUD_TASK_QUEUE_SZ=64` (the sketch `#error`s without it). The firmware emits HID reports
-from the `loop()` task while TinyUSB's `tud_task()` runs in a separate high-priority `usbd` task; a cross-task
-`sendReport` whose shared EasyDMA is momentarily busy takes TinyUSB's `usbd_defer_func()` path, which does a
-*blocking* enqueue onto the device event queue. The default 16-deep queue saturates under comms bursts
-(haptics/trackpad floods, the connect-time re-init storm, four slots at once), the `loop()` task then blocks
-posting to it and stops feeding the ~8 s watchdog, and the MCU resets — surfacing as a controller "disconnect".
-A 64-deep queue absorbs realistic bursts so the loop never blocks.
+- `CFG_TUD_HID=4` — Steam mode exposes four HID interfaces (the Adafruit nRF core defaults to 2).
+- `CFG_TUD_TASK_QUEUE_SZ=64` — a deeper TinyUSB device event queue; the default of 16 can deadlock the firmware's loop under heavy USB traffic and trip the watchdog.
 
-**Build provenance.** `gen_version.sh` writes `OpenPuck/git_version.h` with the current commit's short hash and a dirty flag (1 if the working tree has any tracked change or untracked file). The firmware bakes these in and reports them over WebUSB, so the panel's **Build (git)** field shows exactly which commit is flashed and whether it was a clean checkout — handy for confirming what's on a board. The header is git-ignored; if you skip the script the build still succeeds and the panel shows `unknown`. You can also inject the values directly instead of using the script, e.g. append ``-DOPK_GIT_HASH=\"$(git rev-parse --short=8 HEAD)\" -DOPK_GIT_DIRTY=0`` to `build.extra_flags`.
+**Overriding the defaults** (only if you need to) — pass them as `make` variables:
+
+```bash
+make build CFG_TUD_HID=6 CFG_TUD_TASK_QUEUE_SZ=128   # different interface count / queue depth
+make build EXTRA_FLAGS="-DOPK_LOG=1"                  # add your own defines
+make build FQBN=adafruit:nrf52:somethingelse          # a different nRF52840 board
+```
+
+**Calling `arduino-cli` directly** instead of `make`? Then you must supply the flags yourself — the build
+`#error`s without them (so a forgotten flag fails loudly instead of shipping a broken/deadlock-prone image):
+
+```bash
+arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4 -DCFG_TUD_TASK_QUEUE_SZ=64" OpenPuck
+```
 
 ## 5. Upload the firmware
 
@@ -141,8 +149,10 @@ Re-flashing firmware does **not** erase the board's internal LittleFS. The paire
 
   ```bash
   ./gen_version.sh   # recommended: gives the build a distinct git hash (see below)
-  arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4 -DCFG_TUD_TASK_QUEUE_SZ=64 -DOPK_FACTORY_RESET=1" OpenPuck
+  make build-recovery
   ```
+
+  (`make build-recovery` is just `make build` plus `-DOPK_FACTORY_RESET=1`; the usual USB flags are still baked in.)
 
   It is **not** a wipe-every-boot image: after the one-time reset it stamps a tag file with the build's git hash, so subsequent boots skip the wipe and persist normally. Flashing this same image again won't re-wipe (the tag matches); flashing a **different** build (different git hash) re-triggers the one-time reset. For an on-demand wipe at any time, use the WebUSB button or serial `ERASE-ALL` below. Re-pair the controller after a reset.
 - **WebUSB panel (any mode):** open the panel (§8), and in the maintenance card click **⚠ Factory erase**. Confirm the two warning dialogs and type `ERASE` when prompted. The board reformats its filesystem and reboots to factory defaults. This works in every USB mode.

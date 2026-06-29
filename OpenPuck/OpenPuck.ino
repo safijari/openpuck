@@ -2,7 +2,7 @@
 //
 // This firmware impersonates the Valve puck over USB, maintains puck-style bond slots, speaks the
 // reverse-engineered RF protocol to the controller, and re-enumerates into Steam, Xbox, Switch, PS5, or DS4
-// personalities. Build with -DCFG_TUD_HID=4 (the Adafruit nRF port defaults to 2).
+// personalities. Build with `make build` (bakes in the required CFG_TUD_HID=4 + CFG_TUD_TASK_QUEUE_SZ=64).
 //
 // This file is just the entry point: setup() builds the USB presentation for the persisted mode and arms the
 // hardware watchdog; loop() pumps each subsystem. Everything substantive lives in the modules below -- see
@@ -40,7 +40,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include <stdio.h>
 
 #if CFG_TUD_HID < 4
-#error "build with -DCFG_TUD_HID=4 (extra_flags): up to 4 HID interfaces per mode"
+#error "CFG_TUD_HID must be >= 4 (up to 4 HID interfaces per mode). Build with `make build` (bakes it in), or pass -DCFG_TUD_HID=4 in build.extra_flags."
 #endif
 
 // The TinyUSB device-stack event queue (_usbd_q) defaults to 16 entries. tud_task() runs in the dedicated
@@ -54,7 +54,7 @@ using namespace Adafruit_LittleFS_Namespace;
 // TinyUSB-internal #ifndef default, so a sketch header cannot reach usbd.c) -- enforce it here so a build that
 // omits the flag fails loudly instead of shipping the deadlock.
 #if !defined(CFG_TUD_TASK_QUEUE_SZ) || CFG_TUD_TASK_QUEUE_SZ < 32
-#error "build with -DCFG_TUD_TASK_QUEUE_SZ=64 (extra_flags): the default 16-deep usbd event queue deadlocks the loop task under comms load -> watchdog reset"
+#error "CFG_TUD_TASK_QUEUE_SZ must be >= 32: the default 16-deep usbd event queue deadlocks the loop task under comms load -> watchdog reset. Build with `make build` (bakes in 64), or pass -DCFG_TUD_TASK_QUEUE_SZ=64 in build.extra_flags."
 #endif
 
 // puck composite (4 HID + WebUSB) exceeds the default 256 B config buffer

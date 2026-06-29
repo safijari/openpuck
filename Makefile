@@ -16,7 +16,31 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 	\( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.ino' \) \
 	-not -name 'git_version.h')
 
-.PHONY: format format-check check
+# --- firmware build ---------------------------------------------------------
+# The OpenPuck firmware needs two TinyUSB config values that differ from the Adafruit nRF52 core defaults:
+#   CFG_TUD_HID=4            -- four HID interfaces (Steam mode exposes four puck slots); core default is 2.
+#   CFG_TUD_TASK_QUEUE_SZ=64 -- deeper usbd event queue; the default 16 deadlocks the loop task under comms
+#                               load -> watchdog reset (see OpenPuck.ino + docs/BUILD_AND_DEPLOY.md).
+# They're baked in here so a normal build is just `make build` -- no need to remember the flags. Override any
+# on the command line, e.g.   make build CFG_TUD_HID=6 CFG_TUD_TASK_QUEUE_SZ=128
+# or add your own defines:     make build EXTRA_FLAGS="-DOPK_LOG=1"
+FQBN ?= adafruit:nrf52:feather52840
+CFG_TUD_HID ?= 4
+CFG_TUD_TASK_QUEUE_SZ ?= 64
+EXTRA_FLAGS ?=
+# {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
+USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) $(EXTRA_FLAGS)
+
+.PHONY: format format-check check build build-recovery
+
+## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
+## EXTRA_FLAGS / FQBN as make variables if needed.
+build:
+	arduino-cli compile -b $(FQBN) --build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" OpenPuck
+
+## One-time factory-reset recovery image (wipes persistent storage once on first boot). See §6 of the build doc.
+build-recovery:
+	$(MAKE) build EXTRA_FLAGS="$(EXTRA_FLAGS) -DOPK_FACTORY_RESET=1"
 
 ## Reformat all C/C++ sources in place using the Linux kernel style.
 format:
