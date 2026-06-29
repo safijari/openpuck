@@ -26,7 +26,9 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 # or add your own defines:     make build EXTRA_FLAGS="-DOPK_LOG=1"
 FQBN ?= adafruit:nrf52:feather52840
 CFG_TUD_HID ?= 4
-CFG_TUD_TASK_QUEUE_SZ ?= 64
+# Deep so a loop()-context sendReport never blocks on a full usbd event queue (the watchdog path). Sends run
+# from loop() now (usbTxPump) for stable RF timing, so this depth is what keeps that block from happening.
+CFG_TUD_TASK_QUEUE_SZ ?= 512
 EXTRA_FLAGS ?=
 # {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
 USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) $(EXTRA_FLAGS)

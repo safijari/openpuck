@@ -6,8 +6,8 @@
 // One outbound ring per active HID destination. Only one USB mode is live at a time, and a mode presents at
 // most CFG_TUD_HID HID interfaces plus the wake mouse, so a handful of channels covers every case. Channels are
 // allocated lazily on first send to a given Adafruit_USBD_HID* and never freed (the object set is fixed for the
-// session). The producer side runs under PRIMASK (loop AND the RF-decode path enqueue); the consumer is the
-// single usbd task (tud_sof_cb), so head/tail need no further locking beyond the enqueue critical section.
+// session). The producer side runs under PRIMASK (loop enqueue); the consumer (usbTxDrain) runs from the
+// usbtx task AND tud_hid_report_complete_cb, serialized by a guard flag inside usbTxDrain.
 #define TX_CHAN_MAX 8
 #define TX_RING_N \
 	4 // depth per destination; 250 Hz produced, ~1 kHz SOF drain -> stays shallow
@@ -73,12 +73,18 @@ void usbTxHid(Adafruit_USBD_HID *hid, uint8_t rid, const void *data,
 	__set_PRIMASK(pm);
 }
 
-// usbd task only (tud_sof_cb). Send at most one ready report per destination per SOF: after a send the
-// endpoint stays busy until the host polls it (~1 ms), and SOF fires every ~1 ms, so this naturally paces each
-// stream to the host's poll rate without ever blocking. A destination whose endpoint is busy is simply left
-// for the next frame; it does not hold up the others.
+// Send at most one ready report per destination per call. After a send the endpoint stays busy until the host
+// polls it, so the next report for that destination goes out from tud_hid_report_complete_cb (the instant the
+// host reads it) -- that chaining is what paces each stream to the host's poll rate. The usbtx task calls this
+// too, to kick a stream that's idle (no completion pending) and to keep non-busy destinations moving. A busy
+// destination is simply skipped; it does not hold up the others.
 void usbTxDrain(void)
 {
+	// Re-entrancy guard (defensive): usbTxPump only calls this from loop(), but sendReport below can yield,
+	// so guard against a nested loop()-context call ever racing a channel's tail. The loser just skips.
+	static volatile unsigned char draining;
+	if (__atomic_test_and_set(&draining, __ATOMIC_ACQUIRE))
+		return;
 	for (int i = 0; i < TX_CHAN_MAX; i++) {
 		TxChan *c = &g_chan[i];
 		if (!c->hid)
@@ -87,17 +93,17 @@ void usbTxDrain(void)
 		if (t == c->head)
 			continue; // empty
 		if (!c->hid->ready())
-			continue; // endpoint busy / not mounted -> retry next SOF
+			continue; // endpoint busy / not mounted -> retry on completion/next tick
 		TxItem &it = c->ring[t];
 		// sendReport copies into the endpoint buffer, so releasing the slot right after is safe.
 		if (c->hid->sendReport(it.rid, it.data, it.len))
 			c->tail = txNext(t);
 	}
+	__atomic_clear(&draining, __ATOMIC_RELEASE);
 }
 
-// Per-frame drain callbacks for non-HID senders (XInput endpoint, WebUSB blob). Registered at setup(),
-// invoked from tud_sof_cb on the usbd task. Fixed, tiny capacity; registration is setup-only (single-threaded)
-// so no locking is needed and the SOF reader sees a stable list.
+// Per-slot drain callbacks for non-HID senders (XInput endpoint, WebUSB blob). Registered at setup(), invoked
+// from usbTxPump() (loop context). Fixed, tiny capacity; registration is setup-only (single-threaded).
 #define TX_DRAIN_MAX 4
 static usbTxDrainFn g_drainFns[TX_DRAIN_MAX];
 static uint8_t g_nDrain;
@@ -108,26 +114,22 @@ void usbTxRegisterDrain(usbTxDrainFn fn)
 		g_drainFns[g_nDrain++] = fn;
 }
 
-// Drain trigger: a DEDICATED FreeRTOS task -- NOT tud_sof_cb. SOF proved unusable here: TinyUSB gates the SOF
-// callback on `sof_consumer`, which configuration_reset() wipes on every bus reset (tu_varclr(&_usbd_dev)), so
-// after the host's first reset tud_sof_cb silently stops firing and NO device->host data flows (0x45 input,
-// the 0x79 connect report, streamed reports, the WebUSB blob -- all dead, while RF keeps working). A plain task
-// is ungated and always runs. Crucially it is a SEPARATE task from loop(): if a sendReport ever blocks on a
-// full usbd event queue, this task just blocks/yields -- loop() keeps running and feeding the ~8 s watchdog,
-// which is the whole reason we moved sends off loop() in the first place.
-static void usbTxTask(void *arg)
+// Drain everything from loop() -- NOT from a SOF callback, a dedicated task, or report_complete. All three of
+// those were tried and all fight the RF poll, which is a microsecond-precise busy-wait running in loop(): SOF
+// got silently disabled by bus resets; the high-priority usbd task (report_complete) preempted the RF RX
+// windows -> missed replies + usbd self-blocking on a full event queue -> controllers dropped; a separate
+// low-priority task got starved under USB load -> latency. Draining in loop() is what stability-fix did and is
+// the only context that does NOT jitter the RF timing: the send and the poll run sequentially in one task, so
+// no send ever interrupts an RX window. The cost -- loop() can block if sendReport hits a full usbd event
+// queue -- is handled by a deep CFG_TUD_TASK_QUEUE_SZ (so it never fills) rather than by moving sends off loop.
+// Call once per loop() iteration.
+void usbTxPump(void)
 {
-	(void)arg;
-	for (;;) {
-		usbTxDrain();
-		for (uint8_t i = 0; i < g_nDrain; i++)
-			g_drainFns[i]();
-		vTaskDelay(1); // ~1 ms, matching the USB frame cadence
-	}
+	usbTxDrain();
+	for (uint8_t i = 0; i < g_nDrain; i++)
+		g_drainFns[i]();
 }
 void usbTxBegin(void)
 {
-	// 512 words (2 KB): covers the deepest drain path (webusbSendBlob's 115 B frame + the tud_* call chain).
-	// TASK_PRIO_LOW = same as loop(): cooperative, won't preempt the RF poll timing; vTaskDelay yields each ms.
-	xTaskCreate(usbTxTask, "usbtx", 512, NULL, TASK_PRIO_LOW, NULL);
+	// Nothing to arm: usbTxPump() is driven directly from loop(). Kept for call-site stability.
 }

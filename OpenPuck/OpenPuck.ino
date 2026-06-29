@@ -311,6 +311,7 @@ void loop()
 	ledTask();
 	acc[6] += (uint32_t)(micros() - t);
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
+	usbTxPump(); // drain queued device->host reports HERE, in loop -- never off-loop (jitters the RF poll)
 	loops++;
 	if (millis() - secMs >= 1000) {
 		g_loopPeriodUs = loops ? (uint16_t)(1000000UL / loops) : 0;
@@ -338,5 +339,6 @@ void loop()
 	hapticTask();
 	ledTask();
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
+	usbTxPump(); // drain queued device->host reports HERE, in loop -- never off-loop (jitters the RF poll)
 #endif
 }

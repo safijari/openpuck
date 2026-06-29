@@ -25,10 +25,15 @@ class Adafruit_USBD_HID;
 void usbTxHid(Adafruit_USBD_HID *hid, uint8_t rid, const void *data,
 	      uint16_t len);
 
-// Arm the SOF-driven drain. Call once, after USBDevice.attach(), from setup(). Idempotent.
+// Kept for call-site stability; no longer does anything (the drain runs from loop() via usbTxPump). Call once.
 void usbTxBegin(void);
 
-// Drain pending reports (one ready report per destination per call). usbd-task only -- invoked by tud_sof_cb.
+// Drain all pending sends (HID rings + registered non-HID drains). MUST be called from loop() once per
+// iteration -- sends run in loop() context, sequentially with the RF poll, so they never interrupt its
+// timing-critical RX windows (which is what off-loop drain contexts did, dropping controllers).
+void usbTxPump(void);
+
+// Drain pending HID reports (one ready report per destination per call). Internal -- called by usbTxPump().
 void usbTxDrain(void);
 
 // Register a callback to run every USB frame ON THE usbd TASK (from tud_sof_cb, right after usbTxDrain()).
