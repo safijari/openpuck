@@ -74,15 +74,22 @@ arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra
 
 ## 5. Upload the firmware
 
-### macOS / Linux
-
-Find the board port:
+The quickest path is `make`. The serial port is a **required argument** (find it with `arduino-cli board list`):
 
 ```bash
-arduino-cli board list
+make flash /dev/cu.usbmodem1101    # upload the most recent build to that port
+make deploy /dev/cu.usbmodem1101   # build + flash in one step (same build overrides as `make build`)
 ```
 
-Upload:
+Use the port for your OS: macOS `/dev/cu.usbmodem*`, Linux `/dev/ttyACM0`, Windows `COM5`.
+
+> **DFU note:** in puck (Steam/Lizard) mode the firmware drops the CDC serial port to free a USB endpoint, so `arduino-cli` can't auto-reset the board into its bootloader. If the upload can't connect, put the board in DFU mode first by **double-tapping RST**, then `make flash <bootloader-port>` (re-check `arduino-cli board list` — the port can change in DFU mode). The drag-and-drop UF2 path in §5b also works.
+
+### Manual upload (without `make`)
+
+Find the board port with `arduino-cli board list`, then:
+
+### macOS / Linux
 
 ```bash
 arduino-cli upload \
