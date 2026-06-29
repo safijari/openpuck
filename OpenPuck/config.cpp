@@ -150,12 +150,8 @@ void loadCfg()
 
 			// 0 is a valid setting (rumble off)
 			g_rumbleScale = c.rumbleScale;
-			// Connection tunables: restore the poll RX window (0 = unset/old cfg -> keep boot default) and
-			// the post-connect haptic block (enable + duration in seconds).
-			if (c.rxWin10) {
-				uint32_t w = (uint32_t)c.rxWin10 * 10;
-				g_rxWin = w < 600 ? 600 : (w > 3000 ? 3000 : w);
-			}
+			// Connection tunables: the poll RX window is now FIXED (g_rxWin is const) -- any persisted
+			// rxWin10 is ignored. Restore the post-connect haptic block (enable + duration in seconds).
 			g_hapticBlockOn = c.hapticBlockOn ? 1 : 0;
 			// clamp seconds so s*1000 fits the uint16 ms field (max 60s)
 			g_hapticBlockMs = (uint16_t)((c.hapticBlockS > 60 ?

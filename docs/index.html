@@ -106,7 +106,8 @@
       <div class="statgrid">
         <div class="stat"><div class="k">Delivered</div><div class="v" id="stRate">—</div></div>
         <div class="stat"><div class="k">New reports</div><div class="v" id="stNew">—</div></div>
-        <div class="stat logonly"><div class="k">Polls/s</div><div class="v" id="stPolls">—</div></div>
+        <div class="stat"><div class="k">Polls/s</div><div class="v" id="stPolls">—</div></div>
+        <div class="stat"><div class="k">RF fails/s (crc·noRx·heal)</div><div class="v" id="stRfFail">—</div></div>
         <div class="stat logonly"><div class="k">Loop period</div><div class="v" id="stLoop">—</div></div>
         <div class="stat logonly"><div class="k">Slowest stage</div><div class="v" id="stWorst">—</div></div>
         <div class="stat logonly"><div class="k">Poll period act/want</div><div class="v" id="stPollPer">—</div></div>
@@ -120,10 +121,6 @@
       <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
       <div class="row" style="margin:14px 0 0;border-top:1px solid #272d3d;padding-top:14px">
         <strong style="flex-basis:100%">Connection tuning <span class="note">(persists across reboot)</span></strong>
-      </div>
-      <div class="row" style="margin:8px 0 0"><label style="min-width:150px">Poll RX window</label>
-        <input type="range" id="rxWin" min="60" max="300" step="10"><span class="val" id="rxWinV"></span>
-        <span class="note" style="flex:1">How long each poll waits for the controller's reply. Wider (↑) catches replies that arrive late under heavy haptics (fewer drops); narrower (↓) allows a higher poll rate. Default 2000 µs.</span>
       </div>
       <div class="row" style="margin:8px 0 0"><label style="min-width:150px">Block haptics on connect</label>
         <button id="hapBlockOn">off</button>
@@ -452,7 +449,11 @@ function applyBlob(p){
   // global stats
   $("#stRate").textContent = up? f1+" /s" : "—";
   $("#stNew").textContent = up? newps+" /s" : "—";
-  $("#stPolls").textContent = up? polls+" /s" : "—";
+  // Poll TX + RF-fail counts: shown ALWAYS (even when the link reads down) so a wedge is diagnosable --
+  // polls>0 here while Delivered is "—" means the puck is still polling but getting no usable replies.
+  $("#stPolls").textContent = polls+" /s";
+  { const crc=(p.length>113?p[113]:0), norx=(p.length>114?p[114]:0), heal=(p.length>115?p[115]:0);
+    $("#stRfFail").textContent = crc+" · "+norx+" · "+heal; }
   $("#stLoop").textContent = loopUs? loopUs+" µs" : "—";
   $("#stWorst").textContent = loopUs? (WORST[worstIdx]||worstIdx)+" "+worstUs+"µs" : "—";
   $("#stPollPer").textContent = up? (pollUs+" / "+pollIntended+" µs") : "—";
@@ -471,8 +472,8 @@ function applyBlob(p){
     if (el) el.textContent = "RESETREAS=0x"+raw.toString(16).padStart(8,"0");
   }
 
-  // Connection tuning: poll RX window /10us (p[110]), haptic-block enable (p[111]), block seconds (p[112]).
-  if (p.length>110) setSlider("rxWin", p[110]);
+  // Connection tuning: haptic-block enable (p[111]), block seconds (p[112]). (poll RX window p[110] is now
+  // fixed in firmware and no longer shown.)
   const hapBlockOn = (p.length>111?p[111]:0);
   $("#hapBlockOn").textContent = hapBlockOn?"on":"off"; $("#hapBlockOn").classList.toggle("active",!!hapBlockOn);
   if (p.length>112) setSlider("hapBlockS", p[112]);
@@ -510,7 +511,7 @@ function applyBlob(p){
   { const sel=$("#swGyro"); if(document.activeElement!==sel) sel.value=swGyro10; }
   for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
 }
-function fmtSlider(id,v){ return id==="rumble" ? v+"%" : id==="rxWin" ? (v*10)+" µs" : id==="hapBlockS" ? v+" s" : ""+v; }
+function fmtSlider(id,v){ return id==="rumble" ? v+"%" : id==="hapBlockS" ? v+" s" : ""+v; }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
 
 let inflight=false;
@@ -621,10 +622,10 @@ $("#factoryErase").onclick=async()=>{
   log("FACTORY ERASE sent — copycat is reformatting and rebooting to defaults. Re-pair the controller, then reconnect.");
 };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
-// Connection tuning: poll RX window /10us (field 25), post-connect haptic block on (field 27) + seconds (field 28)
+// Connection tuning: post-connect haptic block on (field 27) + seconds (field 28). (poll RX window is fixed.)
 $("#hapBlockOn").onclick=()=>{ const on=$("#hapBlockOn").classList.contains("active"); setField(27, on?0:1); };
-for(const id of ["mDiv","mFric","rumble","rxWin","hapBlockS"]){
-  const field={mDiv:1,mFric:2,rumble:22,rxWin:25,hapBlockS:28}[id];
+for(const id of ["mDiv","mFric","rumble","hapBlockS"]){
+  const field={mDiv:1,mFric:2,rumble:22,hapBlockS:28}[id];
   $("#"+id).addEventListener("input", ()=>{ $("#"+id+"V").textContent=fmtSlider(id,$("#"+id).value); });
   $("#"+id).addEventListener("change", ()=>setField(field, +$("#"+id).value));
 }

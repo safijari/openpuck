@@ -371,11 +371,9 @@ void serialConsolePoll()
 						g_slot[s].rec[7]);
 				}
 			} else if (line[0] == 'r') {
-				g_rxWin = strtoul(line + 1, 0, 10);
-				if (g_rxWin < 150)
-					g_rxWin = 150;
+				// poll RX-window is FIXED (not configurable) -- report only.
 				Serial.printf(
-					"# poll RX-window=%lu us (poll rate caps ~%lu/s)\n",
+					"# poll RX-window=%lu us (FIXED; poll rate caps ~%lu/s)\n",
 					(unsigned long)g_rxWin,
 					(unsigned long)(1000000 / g_rxWin));
 			} else if (line[0] == 'e') {

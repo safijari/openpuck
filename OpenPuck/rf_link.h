@@ -43,7 +43,9 @@ extern bool
 
 // full multi-line debug dump vs compact "I45 <hex>" stream
 extern bool g_connVerbose;
-extern uint32_t g_rxWin; // poll RX-window (us): caps poll rate (~1e6/rxWin)
+// poll RX-window (us): caps poll rate (~1e6/rxWin). FIXED, not configurable (like g_pollUs) -- raising it
+// drops the poll rate, so it's pinned at the 250 Hz value rather than exposed as a footgun knob.
+extern const uint32_t g_rxWin;
 
 // set on 0xF2 disconnect; pauses beacon+poll so a powering-off controller can sleep
 extern unsigned long g_connCooldown;
@@ -78,6 +80,12 @@ extern uint16_t g_newps;
 
 // last second's poll TX count (GET+relay) -- vs F1 tells starvation from reply-loss
 extern uint16_t g_pollsps;
+// last second's CRC-fail and no-reply counts: diagnose a wedge -- polls>0 + noRx high = RX dead / wrong
+// channel / controller silent; crc high = corrupt replies (interference); polls==0 = poll loop stopped.
+extern uint16_t g_crcps, g_norxps;
+// Count of RF-stall self-heals (radio power-cycle + reconnect) performed since boot. Non-zero means the
+// firmware caught and recovered from a full-link wedge that previously needed a manual puck replug.
+extern uint16_t g_rfStallRecover;
 
 // MEASURED avg us between GET-poll fires (compare to the intended g_pollUs=4000)
 extern uint16_t g_pollPeriodUs;

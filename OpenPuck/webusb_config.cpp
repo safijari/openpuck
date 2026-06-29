@@ -30,7 +30,8 @@ static volatile bool g_blobRequest = false;
 //                [v11: resetReason(RR_* code)][resetReas raw u32 LE][rxWin/10 us][hapticBlockOn][hapticBlock s]
 // p[6]/p[7]/p[8..11] mirror the ACTIVE type (legacy display). v11 extends to 113 bytes (115 total incl header);
 // browser reads with transferIn(128) to span the two USB-FS packets.
-#define WB_PAYLEN 113
+//                [diag: crc/s][noRx/s][rfStallRecover count]
+#define WB_PAYLEN 116
 static void webusbSendBlob()
 {
 	if (!usb_web.connected())
@@ -149,6 +150,11 @@ static void webusbSendBlob()
 	p[112] = (uint8_t)(g_rxWin / 10);
 	p[113] = g_hapticBlockOn;
 	p[114] = (uint8_t)(g_hapticBlockMs / 1000);
+	// RF wedge diagnostics (always populated, even when the link reads down): CRC-fail/s and no-reply/s,
+	// capped at 255. With Polls/s this distinguishes poll-loop-stopped vs RX-dead vs corrupt-replies.
+	p[115] = (uint8_t)(g_crcps > 255 ? 255 : g_crcps);
+	p[116] = (uint8_t)(g_norxps > 255 ? 255 : g_norxps);
+	p[117] = (uint8_t)(g_rfStallRecover > 255 ? 255 : g_rfStallRecover);
 	usb_web.write(p, sizeof p);
 	usb_web.flush();
 }
@@ -430,15 +436,7 @@ void webusbPoll()
 					persist = false;
 					break; // Switch Pro gyro scale x10
 
-				// connected-poll RX window, in 10us units: wider window catches a controller reply that
-				// lands late under haptic load; narrower allows a higher poll rate. Clamp 600..3000us.
-				case 25: {
-					uint32_t w = (uint32_t)v * 10;
-					g_rxWin = w < 600  ? 600 :
-						  w > 3000 ? 3000 :
-							     w;
-					break;
-				}
+				// (field 25, poll RX window, removed -- g_rxWin is now FIXED/not configurable)
 
 				// post-connect haptic block enable: drop Steam haptics for g_hapticBlockMs after a connect
 				case 27:
