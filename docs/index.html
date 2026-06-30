@@ -82,17 +82,6 @@
     </div>
 
     <div class="card">
-      <h2>Backup &amp; clone</h2>
-      <p class="note" style="margin-top:0">Save this puck's controller pairings <em>and</em> every setting to a file, then restore them onto another puck. The other puck becomes a clone — any controller paired to this one connects to it with <strong>no re-pairing</strong>. (Also a plain backup: re-import after a factory erase to get everything back.)</p>
-      <div class="row" style="margin:0;flex-wrap:wrap">
-        <button id="backupExport" class="primary">Export to file…</button>
-        <button id="backupImport">Import from file…</button>
-        <input type="file" id="backupFile" accept="application/json,.json" style="display:none">
-      </div>
-      <p class="note">Import <strong>overwrites</strong> all pairings and settings on the connected puck, then reboots it (~2 s — reconnect after). Tip: pair every controller to one puck, export once, then import onto each spare.</p>
-    </div>
-
-    <div class="card">
       <h2>Back4 + face button chords</h2>
       <p class="note" style="margin-top:0">Hold all four back paddles (L4+R4+L5+R5) plus a face button to switch mode without the WebUI. <strong>A is always Steam.</strong> B / X / Y are configurable below (defaults: B=Lizard, X=Xbox, Y=Switch HORIPAD).</p>
       <div class="row"><label>B + back4 →</label><select class="chord" data-i="0"></select></div>
@@ -186,6 +175,17 @@
       <h2>Button mapping</h2>
       <p class="note" style="margin-top:0">Separate mappings per emulated controller type — each only offers targets that exist on that controller. The type matching the current mode is highlighted. Steam &amp; Lizard are native puck modes (Steam does its own remapping) and aren't configured here.</p>
       <div id="typeCfgs"></div>
+    </div>
+
+    <div class="card">
+      <h2>Backup &amp; clone</h2>
+      <p class="note" style="margin-top:0">Save this puck's controller pairings <em>and</em> every setting to a file, then restore them onto another puck. The other puck becomes a clone — any controller paired to this one connects to it with <strong>no re-pairing</strong>. (Also a plain backup: re-import after a factory erase to get everything back.)</p>
+      <div class="row" style="margin:0;flex-wrap:wrap">
+        <button id="backupExport" class="primary">Export to file…</button>
+        <button id="backupImport">Import from file…</button>
+        <input type="file" id="backupFile" accept="application/json,.json" style="display:none">
+      </div>
+      <p class="note">Import <strong>overwrites</strong> all pairings and settings on the connected puck, then reboots it (~2 s — reconnect after). Tip: pair every controller to one puck, export once, then import onto each spare.</p>
     </div>
 
     <div class="card logonly">
