@@ -92,7 +92,7 @@ void serialConsolePoll()
 				Serial.println("# RF off");
 			}
 
-			// switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro 7=ps5-game/clean 8=ds4-game/clean
+			// switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro 7=ps5-game/clean 8=ds4-game/clean 9=ps3(dualshock3)
 			else if (line[0] == 'x') {
 				uint8_t m = strtoul(line + 1, 0, 10);
 				if (modeValid(m)) {

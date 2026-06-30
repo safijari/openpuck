@@ -37,14 +37,18 @@
 #define MODE_PS5_GAME 7
 // DS4, CLEAN single-HID (no wake/WebUSB) for game PlayStation classification
 #define MODE_DS4_GAME 8
-#define MODE_MAX 8
+// Sony DualShock 3 / Sixaxis (054C:0268) -- CLEAN single-HID so it enumerates on a REAL PS3 console (the
+// console wants a bare Sixaxis HID, not a composite). Answers the PS3's GET_REPORT(0xF2/0xF5/0xEF/0x01)
+// enable handshake. + gyro/accel + rumble.
+#define MODE_PS3 9
+#define MODE_MAX 9
 
 // The two "game" personalities drop the wake-mouse + WebUSB interfaces so the device is a genuine single-HID PS
 // controller (some PC games -- e.g. Fortnite/UE GameInput -- refuse PS classification when extra interfaces are
 // present). Cost: no config panel / host-wake while in these modes; chord back to Steam (back4 + A) for the panel.
 static inline bool modeIsCleanPS(uint8_t m)
 {
-	return m == MODE_PS5_GAME || m == MODE_DS4_GAME;
+	return m == MODE_PS5_GAME || m == MODE_DS4_GAME || m == MODE_PS3;
 }
 
 static inline bool modeIsPuck(uint8_t m)
@@ -76,6 +80,7 @@ static inline uint8_t etypeForMode(uint8_t m)
 		return ET_SWITCH;
 	case MODE_HIDGYRO:
 	case MODE_DS4_GAME:
+	case MODE_PS3: // DS3 shares the PlayStation face layout / button config
 		return ET_DS4;
 	case MODE_PS5:
 	case MODE_PS5_GAME:

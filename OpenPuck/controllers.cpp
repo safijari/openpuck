@@ -6,6 +6,7 @@
 #include "mode_switch_pro.h"
 #include "mode_ps5.h"
 #include "mode_hidgyro.h"
+#include "mode_ps3.h"
 
 IController *g_active = nullptr;
 
@@ -36,6 +37,8 @@ IController *controllerFor(uint8_t mode)
 
 		// same DS4 controller; setup() drops wake/WebUSB for clean enum
 		return &g_hidGyroCtl;
+	case MODE_PS3:
+		return &g_ps3Ctl;
 	default:
 		return &g_steamPuck;
 	}
