@@ -21,6 +21,9 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 #   CFG_TUD_HID=4            -- four HID interfaces (Steam mode exposes four puck slots); core default is 2.
 #   CFG_TUD_TASK_QUEUE_SZ=64 -- deeper usbd event queue; the default 16 deadlocks the loop task under comms
 #                               load -> watchdog reset (see OpenPuck.ino + docs/BUILD_AND_DEPLOY.md).
+#   CFG_TUD_VENDOR_TX_BUFSIZE=256 -- the WebUSB status blob is ~118 B; the core default 64 can't hold it whole,
+#                               so the panel send (which drops rather than blocks when the FIFO is full) could
+#                               never fit a frame -> blank panel. Sized to hold a full blob with headroom.
 # They're baked in here so a normal build is just `make build` -- no need to remember the flags. Override any
 # on the command line, e.g.   make build CFG_TUD_HID=6 CFG_TUD_TASK_QUEUE_SZ=128
 # or add your own defines:     make build EXTRA_FLAGS="-DOPK_LOG=1"
@@ -29,9 +32,12 @@ CFG_TUD_HID ?= 4
 # Deep so a loop()-context sendReport never blocks on a full usbd event queue (the watchdog path). Sends run
 # from loop() now (usbTxPump) for stable RF timing, so this depth is what keeps that block from happening.
 CFG_TUD_TASK_QUEUE_SZ ?= 512
+# Must hold a whole WebUSB status blob (~118 B) so the drop-on-full panel send can fit one; core default 64 is
+# too small and would silently drop every frame (blank panel / stale mappings).
+CFG_TUD_VENDOR_TX_BUFSIZE ?= 256
 EXTRA_FLAGS ?=
 # {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
-USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) $(EXTRA_FLAGS)
+USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
 
 # `flash`/`deploy` take the serial port as a REQUIRED POSITIONAL arg: `make flash /dev/cu.usbmodem1101`.
 # (No auto-detect -- uploading to a guessed serial port risks writing to the wrong device. List with

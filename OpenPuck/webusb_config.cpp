@@ -32,6 +32,13 @@ static volatile bool g_blobRequest = false;
 // browser reads with transferIn(128) to span the two USB-FS packets.
 //                [diag: crc/s][noRx/s][rfStallRecover count]
 #define WB_PAYLEN 116
+// The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
+// -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
+// panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
+// that flag (or a future blob that outgrows the FIFO) fails loudly instead of shipping a dead panel.
+static_assert(CFG_TUD_VENDOR_TX_BUFSIZE >= 2 + WB_PAYLEN,
+	      "CFG_TUD_VENDOR_TX_BUFSIZE too small to hold a WebUSB blob in one "
+	      "write -- build via `make build` (sets 256), or raise the flag.");
 static void webusbSendBlob()
 {
 	if (!usb_web.connected())
@@ -155,8 +162,18 @@ static void webusbSendBlob()
 	p[115] = (uint8_t)(g_crcps > 255 ? 255 : g_crcps);
 	p[116] = (uint8_t)(g_norxps > 255 ? 255 : g_norxps);
 	p[117] = (uint8_t)(g_rfStallRecover > 255 ? 255 : g_rfStallRecover);
-	usb_web.write(p, sizeof p);
-	usb_web.flush();
+	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
+	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
+	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
+	// that spin hangs loop() until the ~8s watchdog resets us (RESETREAS=watchdog/hang). This is the ONE
+	// cross-task tud_ call the marshalling refactor left able to block loop() (HID goes through the drop-oldest
+	// ring; this didn't). So DROP the blob whenever the FIFO can't take it whole -- a status panel missing an
+	// occasional frame is invisible, and loop() can never stall here again. (Matches the closing-the-panel
+	// "fix": that just flips _connected=false to break the same spin.)
+	if (tud_vendor_write_available() >= sizeof p) {
+		usb_web.write(p, sizeof p);
+		usb_web.flush();
+	}
 }
 
 // Runs on the usbd task (registered via usbTxRegisterDrain -> tud_sof_cb). Sends the blob if loop() asked for
@@ -215,9 +232,14 @@ static void webusbDrainCapture()
 	uint32_t ms = 0;
 	uint8_t slot = 0, rid = 0, nb = 0, b[16];
 	uint16_t budget = 128;
-	while (budget-- && hapLogPull(&ms, &slot, &rid, &nb, b))
+	// Same anti-hang rule as the blob: webusbCapFrame's usb_web.write() spins until the FIFO drains, so stop
+	// pulling the moment the FIFO can't hold a max-size frame (2+9+16=27 B) -- the panel resumes the drain on
+	// its next 0x06 poll. Never let a backed-up panel hang loop() here.
+	while (budget-- && tud_vendor_write_available() >= 27 &&
+	       hapLogPull(&ms, &slot, &rid, &nb, b))
 		webusbCapFrame(ms, slot, rid, nb, b);
-	webusbCapEnd();
+	if (tud_vendor_write_available() >= 3)
+		webusbCapEnd();
 }
 #endif // OPK_LOG
 void webusbPoll()
