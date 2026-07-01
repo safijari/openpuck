@@ -1,3 +1,6 @@
+> [!WARNING]
+> EXTREMELY IMPORTANT PLEASE READ: We're finding that stability of this software across different versions of copycat nrf pro micros varies wildly. If you're coming into this project fresh then please be warned that you might encounter disconnection issues depending on which board you buy. I'm actively working on testing multiple brands and will post a list of known working well boards soon.
+
 # OpenPuck
 Opensource firmware for NRF52840 Pro Micro that copycats the Steam Controller 2 Puck and adds an Xbox and Switch mode.
 
