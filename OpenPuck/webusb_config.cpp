@@ -363,10 +363,15 @@ void webusbPoll()
 			else if (op == 0x09) {
 				g_bondExportRequest = true;
 			}
-			// 0x0F: stability test on/off -- when on, the puck buzzes all controllers every 10s to keep them
-			// awake so an unattended uptime-until-hang measurement isn't ended by a controller idle-sleeping.
+			// 0x0F: stability test on/off. Puck->controller haptics do NOT reset the controller's own
+			// user-input idle auto-off (we already poll it every 4ms without keeping it awake), so instead
+			// signal host-awake: enable the E7 announce (0xE7 00 00 = host-awake vs 00 01 = suspended, per
+			// the RE) so the controller is told the host is active and (hopefully) doesn't power-save. The
+			// 10s buzz stays -- it also exercises the haptic-relay path that correlates with the hang.
 			else if (op == 0x0F) {
 				g_stabTest = (buf[1] != 0);
+				g_e7b = 0; // byte2=0 => host-awake
+				g_e7announce = g_stabTest;
 			}
 #if OPK_LOG
 
