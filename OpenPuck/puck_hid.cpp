@@ -369,28 +369,26 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// this interface's bond record (rec[8..24], the same 16-byte serial 0xA3 returns). Captured: Steam
 		// hammered this read (AE x39 on rid1) exactly because the identity never matched. rid 2 = puck (unchanged).
 		// idx 0/1/4 = board/unit/alt serial (real controller returns the SAME serial for 0 and 4; the clone
-		// was returning "NA" for idx 4, which failed Steam's read -> retry). idx 3 = the fixed BT-MAC-style
-		// string the real controller reports.
-		char ctrl[17];
-		const char *s;
-		if (rid == 1 && slot >= 0 && slot < NSLOT &&
-		    g_slot[slot].used) {
-			memcpy(ctrl, g_slot[slot].rec + 8, 16);
-			ctrl[16] = 0;
-			s = (idx == 0 || idx == 1 || idx == 4) ? ctrl :
-			    (idx == 3) ? "7054257d2da7" :
-					 "NA";
-		} else {
-			s = (idx == 0 || idx == 4) ? g_board :
-			    (idx == 1)		   ? g_unit :
-			    (idx == 3)		   ? "7054257d2da7" :
-						     "NA";
-		}
+		// was returning "NA" for idx 4, which failed Steam's read -> retry).
 		S.resp[0] = 0xAE;
 		S.resp[1] = 0x14;
 		S.resp[2] = idx;
 		memset(S.resp + 3, 0, 60);
-		memcpy(S.resp + 3, s, strlen(s));
+		if (rid == 1 && slot >= 0 && slot < NSLOT &&
+		    g_slot[slot].used && (idx == 0 || idx == 1 || idx == 4)) {
+			// THIS slot's paired-controller serial, straight from its bond record (rec[8..24], the same
+			// 16-byte serial 0xA3 returns) -- per device, nothing hardcoded. Copied without a stack temp
+			// (this runs on the fragile 800B usbd task; every byte off the stack helps under a Steam
+			// re-enumeration burst).
+			memcpy(S.resp + 3, g_slot[slot].rec + 8, 16);
+		} else {
+			// rid 2 = the puck's own board/unit serials (device-derived). Any other idx -> "NA".
+			const char *s = (rid == 1)	       ? "NA" :
+					(idx == 0 || idx == 4) ? g_board :
+					(idx == 1)	       ? g_unit :
+								 "NA";
+			memcpy(S.resp + 3, s, strlen(s));
+		}
 		S.resp_len = 63;
 		break;
 	}
