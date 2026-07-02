@@ -363,13 +363,20 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						ttype = rfrx[idx + 1];
 					if (tlen == 0)
 						break;
-					// Only a FULL 0x45 report that fits entirely in rfrx: a short or late/garbled TLV must not let the
-					// decode read past the RF buffer (corrupts rftx/RAM -> eventual crash).
+					// Only a FULL input report that fits entirely in rfrx: a short or late/garbled TLV must not let
+					// the decode read past the RF buffer (corrupts rftx/RAM -> eventual crash).
+					// Main input report id: 0x45 (legacy, 45B body) OR 0x42 (SC2 beta update ~2026-07, 53B body).
+					// VERIFIED from live captures of both: the 0x42 body [0..45] is byte-for-byte the SAME layout as
+					// 0x45 (buttons/triggers/sticks/pads/IMU at identical offsets) -- it just adds 8 trailing bytes
+					// ([46..47]=0x7FFF const, [48..53]=0) and sets two extra always-on status bits (28/29) that no
+					// mode reads. So both decode through this ONE path unchanged; rep[0] carries the id downstream
+					// (Steam forwards it verbatim under the right id/length in onReport45).
 					if (ttype == 6 && tlen >= 28 &&
 					    (size_t)(idx + 2) + tlen <=
 						    sizeof(rfrx) &&
-					    rfrx[idx + 2] == 0x45) {
-						// report 0x45: [0x45][seq][buttons u32]...
+					    (rfrx[idx + 2] == 0x45 ||
+					     rfrx[idx + 2] == 0x42)) {
+						// report 0x45/0x42: [id][seq][buttons u32]...
 						const uint8_t *rep =
 							&rfrx[idx + 2];
 						bool fresh =
@@ -582,6 +589,79 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 								rep[0], rep + 1,
 								(uint8_t)(tlen -
 									  1));
+					} else if (ttype == 6 && tlen >= 46 &&
+						   (size_t)(idx + 2) + tlen <=
+							   sizeof(rfrx) &&
+						   rfrx[idx + 2] == 0x42) {
+						// NEW-FIRMWARE main input report (SC2 beta update ~2026-07): the controller moved
+						// its gamepad input from report 0x45 (45B body) to 0x42 (53B body). The IMU tail
+						// [34..45] is byte-identical to 0x45; the FRONT section [2..29] (buttons/sticks/
+						// triggers/pads) is a different layout still being reversed. Interim handling:
+						//  (a) forward 0x42 VERBATIM to Steam -- onReport45 reads rep[0] for the id, and
+						//      report 0x42 is already declared in PUCK_HID_DESC (53B), so this is exactly
+						//      what the real puck does -> restores Steam for new-fw controllers;
+						//  (b) decode the (identical) IMU into g_in so gyro-reading stream modes stay right.
+						// TODO(front-section): once the 0x42 [2..29] layout is captured, decode buttons/
+						// sticks/pads into g_in here (and drive the Steam-wake / Steam+Y-shutdown / mode
+						// chord like the 0x45 branch) so emulated modes (Switch/PS/Xbox/lizard) work too.
+						// The proven 0x45 branch above is left untouched so OLD controllers cannot regress.
+						const uint8_t *rep = &rfrx[idx + 2];
+						bool fresh =
+							(rep[1] != g_lastSeq[g_curSlot]);
+						if (fresh) {
+							g_stNew++;
+							g_lastSeq[g_curSlot] = rep[1];
+						}
+						g_connF1++;
+						imuFrom45(rep, &g_in[g_curSlot].ax,
+							  &g_in[g_curSlot].ay,
+							  &g_in[g_curSlot].az,
+							  &g_in[g_curSlot].gx,
+							  &g_in[g_curSlot].gy,
+							  &g_in[g_curSlot].gz);
+						if (g_active)
+							g_active->onReport45(g_curSlot,
+									     rep, fresh,
+									     tlen);
+						// RE capture aid: dump the full 0x42 report so the front-section [2..29] layout
+						// can be reversed by holding one control at a time. ~20/s, non-blocking. Remove
+						// once the layout is pinned.
+						{
+							static unsigned long lastI42 =
+								0;
+							if (Serial.availableForWrite() >
+								    120 &&
+							    millis() - lastI42 >= 50) {
+								lastI42 = millis();
+								Serial.print("I42 ");
+								for (uint8_t i = 0;
+								     i < tlen; i++)
+									Serial.printf(
+										"%02X",
+										rep[i]);
+								Serial.println();
+							}
+						}
+					} else if (ttype == 6 &&
+						   (size_t)(idx + 2) + tlen <=
+							   sizeof(rfrx) &&
+						   tlen >= 1) {
+						// DIAGNOSTIC (beta-update RE): a type-6 HID-report TLV whose report id we
+						// DON'T decode (not 0x45 input, not 0x43/0x44 status). If the new controller
+						// firmware moved input off 0x45, its record shows up here. Log rid + full body,
+						// rate-limited + non-blocking so it can't stall the loop. Remove once pinned.
+						static unsigned long lastUnk = 0;
+						if (Serial.availableForWrite() > 110 &&
+						    millis() - lastUnk >= 200) {
+							lastUnk = millis();
+							Serial.printf("UNK rid=%02X tlen=%u: ",
+								      rfrx[idx + 2], tlen);
+							for (uint8_t i = 0; i < tlen; i++)
+								Serial.printf(
+									"%02X",
+									rfrx[idx + 2 + i]);
+							Serial.println();
+						}
 					}
 					idx += tlen + 2;
 				}

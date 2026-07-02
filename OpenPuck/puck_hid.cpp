@@ -449,22 +449,31 @@ void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 		return;
 	if (!g_slot[slot].used)
 		return;
-	if (lizardActive()) {
+	// Report id: 0x45 = legacy main input; 0x42 = new-firmware (SC2 beta ~2026-07) main input (53B). Forward
+	// whichever the controller actually sent, verbatim, under its own id -- both are declared in PUCK_HID_DESC
+	// and this is exactly what the real puck does. rep[0] is the id byte (rep points at it in the F1 TLV).
+	const uint8_t rid = rep[0];
+	if (lizardActive() && rid == 0x45) {
 		// Every connected controller drives keyboard+mouse on ITS OWN slot interface; the OS merges the
 		// multiple HID mice/keyboards onto the one desktop. (Was hardcoded to slot 0, which went silent
 		// whenever the live controller bonded to a non-zero slot -- e.g. slot 0 holding a stale/phantom
 		// bond from a cloned backup.) rfLizard keeps its glide/edge state per-slot so they don't clobber.
+		// NOTE: rfLizard decodes 0x45 field offsets; the 0x42 front layout isn't reversed yet, so a
+		// new-firmware controller has no driverless lizard output until that decode lands (Steam still works).
 		rfLizard(slot, rep, &hid[slot], &hid[slot], 0x40, 0x41);
-	} else {
+	} else if (!lizardActive()) {
+		// body length after the id byte, clamped to the descriptor's declared size for this report id
+		// (0x42 = 53B vendor input, 0x45 = 45B input).
+		uint8_t maxb = (rid == 0x42) ? 53 : 45;
 		uint8_t blen = bodyTlen - 1;
-		if (blen > 45)
-			blen = 45; // body after the 0x45 id byte
+		if (blen > maxb)
+			blen = maxb;
 		// forward the puck's raw pad coords untouched (Steam does its own interpolation/smoothing). Forward
 		// only FRESH reports: the real puck dedupes, so stale repeats make Steam's velocity/smoothing
 		// stair-step. g_fwdNewOnly toggles for A/B.
 		if ((fresh || !g_fwdNewOnly) && hid[slot].ready())
-			usbTxHid(&hid[slot], 0x45, rep + 1,
-				 blen); // Steam/SDL Triton: input report 0x45
+			usbTxHid(&hid[slot], rid, rep + 1,
+				 blen); // Steam/SDL Triton: input report 0x45 (old) / 0x42 (new fw)
 	}
 }
 

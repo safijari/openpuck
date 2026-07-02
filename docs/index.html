@@ -65,6 +65,7 @@
   <span id="connState" class="pill dn">disconnected</span>
   <button id="connectBtn" class="primary">Connect</button>
   <span class="spacer"></span>
+  <button id="debugCdc" title="Reboot ONCE with the CDC serial console enabled (WebUSB goes away for that boot); auto-reverts on the next boot">Debug CDC</button>
   <button id="dfuSerial" title="Reboot into serial DFU (adafruit-nrfutil), then replug">Serial DFU</button>
   <button id="dfuUf2" title="Reboot into the UF2 mass-storage bootloader; drop a .uf2 on the drive">UF2 DFU</button>
   <button id="factoryErase" class="danger" title="Wipe ALL bonds + settings and reboot to defaults. You must re-pair. Cannot be undone.">⚠ Factory erase</button>
@@ -857,6 +858,11 @@ $("#hangCsv").onclick=()=>{
 };
 $("#hapClear").onclick=async()=>{ if(dev){ await send([0x07]); log("haptic re-init sent (clear stuck buzz)"); } };
 $("#ctlrOff").onclick=async()=>{ if(dev){ await send([0x08]); log("controller power-off attempt sent — watch link status"); } };
+$("#debugCdc").onclick=async()=>{
+  if(!dev){ log("not connected"); return; }
+  if(!confirm("Reboot with the CDC serial console enabled?\n\nThe puck reboots and comes back with a serial port (115200 baud) instead of WebUSB — this panel will disconnect and NOT reconnect until the next reboot.\n\nConnect a serial monitor to capture logs, then replug (or reboot) to return to normal WebUSB mode. The debug console auto-reverts after one boot.")) return;
+  await send([0x02,20,1]); log("debug-CDC reboot sent — device disconnecting; reconnect a serial monitor at 115200 baud");
+};
 $("#dfuSerial").onclick=async()=>{
   if(!dev){ log("not connected"); return; }
   if(!confirm("Reboot into serial DFU?\n\nThe puck will disconnect immediately. Flash with adafruit-nrfutil, then replug.")) return;
