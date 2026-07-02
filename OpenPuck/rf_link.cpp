@@ -363,13 +363,17 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						ttype = rfrx[idx + 1];
 					if (tlen == 0)
 						break;
-					// Only a FULL 0x45 report that fits entirely in rfrx: a short or late/garbled TLV must not let the
-					// decode read past the RF buffer (corrupts rftx/RAM -> eventual crash).
+					// Only a FULL 0x45/0x42 report that fits entirely in rfrx: a short or late/garbled TLV must not
+					// let the decode read past the RF buffer (corrupts rftx/RAM -> eventual crash).
+					// A controller firmware update was observed re-numbering this embedded report from 0x45 to
+					// 0x42 (and appending 8 new trailing bytes, tlen 46->54) with the buttons/sticks/pads/IMU
+					// layout otherwise byte-identical -- accept both ids so older/unpatched controllers still work.
 					if (ttype == 6 && tlen >= 28 &&
 					    (size_t)(idx + 2) + tlen <=
 						    sizeof(rfrx) &&
-					    rfrx[idx + 2] == 0x45) {
-						// report 0x45: [0x45][seq][buttons u32]...
+					    (rfrx[idx + 2] == 0x45 ||
+					     rfrx[idx + 2] == 0x42)) {
+						// report 0x45 (or the post-update 0x42): [id][seq][buttons u32]...
 						const uint8_t *rep =
 							&rfrx[idx + 2];
 						bool fresh =
