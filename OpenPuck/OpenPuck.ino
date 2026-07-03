@@ -229,7 +229,7 @@ void setup()
 		"STEAM(puck)",	       "XBOX(xinput+mouse)",
 		"SWITCH(horipad)",     "LIZARD(puck kb/mouse)",
 		"SWITCH(pro+gyro)",    "PS5(dualsense)",
-		"HIDGYRO(ds4+motion)", "PS5(dualsense,game/clean)",
+		"HIDGYRO(ds4+motion)", "PS5(dualsense,games)",
 		"DS4(ds4,game/clean)", "PS3(dualshock3/sixaxis)"
 	};
 	Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit,

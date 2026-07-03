@@ -213,7 +213,11 @@ uint8_t Ps5Controller::maxSlots() const
 void Ps5Controller::usbIdentity()
 {
 	USBDevice.setID(0x054C, 0x0CE6);
-	USBDevice.setDeviceVersion(0x0110);
+	// Clean mode (no wake mouse, no WebUSB) matches the real wired DualSense's
+	// single-HID layout -> use 0x0100 to match it. Normal MODE_PS5 (with wake
+	// mouse + WebUSB) uses 0x0110 so Windows re-reads the descriptor on
+	// a mode switch between the two (per the bcdDevice caching rule).
+	USBDevice.setDeviceVersion(modeIsCleanPS(g_usbMode) ? 0x0100 : 0x0110);
 	USBDevice.setManufacturerDescriptor("Sony Interactive Entertainment");
 	USBDevice.setProductDescriptor("DualSense Wireless Controller");
 }

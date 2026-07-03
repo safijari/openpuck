@@ -84,6 +84,7 @@
         <button data-mode="3" class="modebtn">Lizard (always)</button>
         <button data-mode="4" class="modebtn">Switch Pro + gyro</button>
         <button data-mode="5" class="modebtn">PS5 DualSense</button>
+        <button data-mode="7" class="modebtn">PS5 DualSense (for games)</button>
         <button data-mode="6" class="modebtn">HID gyro (DS4)</button>
         <button data-mode="9" class="modebtn">PS3 (DualShock 3)</button>
       </div>
@@ -242,7 +243,7 @@
 </div>
 
 <script>
-const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)"];
+const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 DualSense (for games)","DS4 (game/clean)","PS3 (DualShock 3)"];
 const CHORD_FIELD = [17, 18, 19];
 let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false, backupBusy=false;
 let lastP=null; // most recent status-blob payload (config source for Export)
