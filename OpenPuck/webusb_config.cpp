@@ -111,8 +111,8 @@ static void webusbSendBlob()
 	p[39] = g_linkRssi[g_curSlot >= 0 && g_curSlot < NSLOT ?
 				   g_curSlot :
 				   0]; // RAW signal strength |dBm| (0=no sample)
-	// Build ID + dirty flag from build_info.h/gen_version.sh. Prefer semver when
-	// present, otherwise fall back to the git hash.
+	// Release builds are tagged and easier to trace by semver; local/dev builds
+	// still expose git hash when no version tag is available.
 	p[40] = OPK_GIT_DIRTY ? 1 : 0;
 	memset(&p[41], 0, 12); // 12B ASCII build ID, NUL-padded
 	{

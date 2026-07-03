@@ -42,7 +42,6 @@ jobs:
           )"
 
           if [ -z "$LAST" ]; then
-            # Bootstrap the first semver release tag at 0.9.1.
             NEXT="0.9.1"
           else
             MAJOR="${LAST%%.*}"

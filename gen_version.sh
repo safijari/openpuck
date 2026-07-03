@@ -1,10 +1,8 @@
 #!/bin/sh
-# gen_version.sh -- write OpenPuck/git_version.h with build provenance for the WebUSB panel:
-#   - semantic version (when OPK_BUILD_VERSION is set, or HEAD has a semver tag),
-#   - git short hash,
-#   - dirty flag.
-# Run this BEFORE `arduino-cli compile` (it's a no-op to re-run). The generated header is git-ignored, so
-# generating it never itself marks the tree dirty.
+# gen_version.sh -- write OpenPuck/git_version.h with the release/build identity shown in WebUSB.
+# Keep both semver + hash so local untagged builds still expose provenance.
+# Run this BEFORE `arduino-cli compile`. The generated header is git-ignored, so generating it never itself
+# marks the tree dirty.
 set -e
 cd "$(dirname "$0")"
 
