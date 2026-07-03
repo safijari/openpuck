@@ -9,9 +9,10 @@ cd "$(dirname "$0")"
 HASH=$(git rev-parse --short=8 HEAD 2>/dev/null || echo unknown)
 VERSION="${OPK_BUILD_VERSION:-}"
 if [ -z "$VERSION" ]; then
+	SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
 	VERSION="$(
 		git tag --points-at HEAD 2>/dev/null \
-			| grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+			| grep -E "$SEMVER_RE" \
 			| sort -V \
 			| tail -n1 || true
 	)"
