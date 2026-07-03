@@ -205,6 +205,16 @@
     </div>
 
     <div class="card wide">
+      <h2>Loop-state trail</h2>
+      <p class="note" style="margin-top:0">Every change of the <em>Loop</em> pill, timestamped — stall episodes, live wedge reports, heartbeat loss (hard wedge, USB silent), recoveries, disconnects and the reset cause on reconnect — so an unattended hang is recorded even if you weren't watching. Saved in this browser (localStorage): it <strong>survives page refreshes</strong> and device reboots, and clears only with the button.</p>
+      <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
+        <span class="v" id="trailSummary" style="flex:1">no events yet</span>
+        <button id="trailClear">Clear</button>
+      </div>
+      <pre id="trailOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin:0;max-height:260px;overflow:auto;white-space:pre-wrap">—</pre>
+    </div>
+
+    <div class="card wide">
       <h2>Flight recorder</h2>
       <p class="note" style="margin-top:0">The trail of events the firmware recorded in the seconds before its most recent <b>watchdog hang</b> — the ring survives the reset in <code>.noinit</code> RAM (like the hang PC), so it's the post-mortem of what wedged the board. Loads automatically after a hang reconnects; click to reload. Same data the console <code>FR</code> command prints. <span id="flightWedge" style="font-family:ui-monospace,Menlo,monospace"></span></p>
       <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
@@ -267,6 +277,28 @@ function updateStabUI(){
 setInterval(updateStabUI, 500);
 const $ = s=>document.querySelector(s);
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
+
+// ---- Loop-state trail (persistent) ----
+// Every transition of the Loop pill lands here with a wall-clock timestamp, persisted in localStorage --
+// unlike the pill (live-only) and the in-page logs (a refresh wipes them), this survives page refreshes and
+// device reboots, so a hang that happened while nobody was watching is still on record. Newest first, capped;
+// cleared only by the Clear button.
+const TRAIL_KEY="opk_loop_trail", TRAIL_MAX=400;
+let loopTrail=[]; try{ loopTrail=JSON.parse(localStorage.getItem(TRAIL_KEY))||[]; }catch(e){ loopTrail=[]; }
+function trailAdd(m){
+  loopTrail.unshift({t:Date.now(), m});
+  if(loopTrail.length>TRAIL_MAX) loopTrail.length=TRAIL_MAX;
+  try{ localStorage.setItem(TRAIL_KEY, JSON.stringify(loopTrail)); }catch(e){}
+  renderTrail();
+}
+function renderTrail(){
+  const out=$("#trailOut"), sum=$("#trailSummary"); if(!out) return;
+  sum.textContent = loopTrail.length ? (loopTrail.length+" event(s) — newest first") : "no events yet";
+  out.textContent = loopTrail.length
+    ? loopTrail.map(e=>new Date(e.t).toLocaleString()+"  "+e.m).join("\n") : "—";
+}
+$("#trailClear").onclick=()=>{ loopTrail=[]; try{ localStorage.removeItem(TRAIL_KEY); }catch(e){} renderTrail(); log("loop-state trail cleared"); };
+renderTrail();
 
 // Per-emulated-type config (must match firmware ET_* order: Xbox=0, Switch=1, DS4=2, DS5=3). Each type lists
 // only the remap targets that exist on that controller. Field id sent to firmware = 40 + et*8 + k
@@ -454,9 +486,20 @@ function onGone(){
   // (kept in-page so it survives the reset + reconnect, shown next to Last reset).
   let up=null;
   if(stabArmed && stabStart){ up=(Date.now()-stabStart)/1000; stabLastRun={secs:up}; log("⏱ stability: stayed up "+fmtDur(up)+", then reset"); stabStart=0; }
+  // if the PREVIOUS reset was never classified (no full blob landed between two resets), flush it as
+  // "unclassified" instead of silently overwriting it -- every reset must leave a row.
+  if(pendingHang){
+    hangLog.unshift({ time:new Date(pendingHang.t).toLocaleTimeString(), uptime:pendingHang.uptimeSecs,
+      reason:"unclassified", stage:"", pc:"", lr:"", usbd:null });
+    renderHangLog();
+    trailAdd("note: the previous reset was never classified — no full status blob arrived before this disconnect");
+  }
   // queue a hang-log entry; the reason/PC/stack are filled from the first blob after reconnect
   pendingHang = { t: Date.now(), uptimeSecs: up };
+  trailAdd("device disconnected"+(up!=null?(" after "+fmtDur(up)+" up"):"")+" — reset or replug; reason logged on reconnect");
   window._flightAuto=false; // re-arm the one-shot flight-trail auto-load for the next reconnect
+  window._wedgeEp=false; window._wedgePeak=0; // re-arm the live wedge logger for the next wedge episode
+  window._lastBlobTs=0; window._hbLostEp=false; // re-arm the heartbeat watchdog (don't fire on a stale pre-reset timestamp)
   polling=false; dev=null; tabInited=false; // re-default the config tab to the mode on next connect
   $("#connState").textContent="reconnecting…"; $("#connState").className="pill dn";
   $("#panel").classList.add("hide");
@@ -482,15 +525,26 @@ async function readFrame(marker, minLen){
     const r = await dev.transferIn(epIn, 192);
     if(r.status!=="ok"||r.data.byteLength<2) return null;
     const d=new Uint8Array(r.data.buffer);
+    // Live wedge reporter (0xA9): emitted from the firmware's SOF callback (usbd task) while loop() is stalled --
+    // the ONLY signal that survives a loop wedge on boards that wipe retained RAM across the reset. Scan for it
+    // in every read so it surfaces regardless of which frame we were after. Payload: [stage][stallMs u16].
+    for(let w=0; w+4<d.length; w++){
+      if(d[w]===0xA9 && d[w+1]===3){ onWedge(d[w+2], d[w+3]|(d[w+4]<<8)); break; }
+    }
     let i=0; while(i<d.length && d[i]!==marker) i++;
     if(i+2>d.length) return null;
-    const len=d[i+1]; const p=d.slice(i+2, i+2+len);
+    const len=d[i+1];
+    // truncated read (transfer ended mid-frame): applying a half blob silently skips every late field --
+    // reset cause, pendingHang classification, stack stats -- so drop the whole frame and retry next poll.
+    if(i+2+len>d.length) return null;
+    const p=d.slice(i+2, i+2+len);
     return p.length>=(minLen||0) ? p : null;
   }catch(e){ if(dev) log("read err: "+e.message); return null; }
 }
 async function readBlob(){ return readFrame(0xA5, 12); }
 function applyBlob(p){
   lastP=p; // remember for Export (carries every config field the panel shows)
+  window._lastBlobTs=Date.now(); // feeds the host-side heartbeat watchdog (hard-wedge detection)
   const mode=p[1], mDiv=p[2], mFric=p[3]; // p[4..11] mirror the active type (per-type block below is authoritative)
   const slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
@@ -603,6 +657,7 @@ function applyBlob(p){
     const cur=p[123], stallMs=p[124]*40, name=(STAGE[cur]||("stage "+cur));
     if(stallMs>=200){
       $("#stLoopState").innerHTML='<span class="pill dn">STALLED @ '+name+' '+stallMs+'ms</span>';
+      if(!window._stallEpisode) trailAdd("STALLED @ "+name+" ("+stallMs+"ms, soft wedge — usbd still alive)");
       // Latch+log the stall so it survives the imminent watchdog reset + panel reconnect (host-side log
       // persists). Log once per episode + keep escalating if it climbs toward the ~8s watchdog.
       if(!window._stallEpisode || stallMs>window._stallPeak+800){
@@ -610,6 +665,7 @@ function applyBlob(p){
         log("⚠ LOOP STALL @ "+name+" ("+stallMs+"ms) — watchdog reset imminent");
       }
     } else {
+      if(window._stallEpisode) trailAdd("running again — stall recovered without a reset (peaked "+window._stallPeak+"ms)");
       window._stallEpisode=false; window._stallPeak=0;
       $("#stLoopState").innerHTML='<span class="pill up">running</span>';
     }
@@ -655,7 +711,21 @@ function applyBlob(p){
       hangLog.unshift({ time:new Date(pendingHang.t).toLocaleTimeString(), uptime:pendingHang.uptimeSecs,
         reason:name, stage:(hangStage!==0xFF)?(STAGE_NAMES[hangStage]||("stage"+hangStage)):"",
         pc:hpc?hx(hpc):"", lr:hlr?hx(hlr):"", usbd:usbdW2 });
+      trailAdd("reconnected — last reset: "+name
+        +(hangStage!==0xFF?(" @ "+(STAGE_NAMES[hangStage]||("stage "+hangStage))):"")
+        +(hpc?(" PC="+hx(hpc)):"")
+        +(pendingHang.uptimeSecs!=null?("  (up "+fmtDur(pendingHang.uptimeSecs)+" before it)"):""));
+      try{ localStorage.setItem("opk_trail_rrfp", code+"/"+raw.toString(16)+"/"+hangStage+"/"+hpc.toString(16)); }catch(e){}
       pendingHang=null; renderHangLog();
+    }
+    // Page wasn't open when it reset (refresh / closed browser): a fault-class boot still lands in the trail,
+    // once per distinct reset -- fingerprinted + persisted so every later page load doesn't re-log the same one.
+    else if (RR_FAULT.has(code)){
+      const fp=code+"/"+raw.toString(16)+"/"+hangStage+"/"+hpc.toString(16);
+      if(localStorage.getItem("opk_trail_rrfp")!==fp){
+        try{ localStorage.setItem("opk_trail_rrfp", fp); }catch(e){}
+        trailAdd("connected — last boot was a "+label+(hpc?(" PC="+hx(hpc)):"")+" (page wasn't open to catch it live)");
+      }
     }
     // Auto-load the flight-recorder trail once per connection when the last boot was a real crash (watchdog/
     // lockup/hardfault) -- the trail is the post-mortem of what wedged the board. Deferred to the poll loop so
@@ -705,8 +775,11 @@ function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ e
 let inflight=false;
 async function refresh(){
   if(!dev||inflight||capturing||backupBusy||flightBusy) return; inflight=true;
-  await send([0x01]); const p=await readBlob(); if(p) applyBlob(p);
-  inflight=false;
+  // try/finally: an exception anywhere in here (applyBlob included) must never leave inflight latched true --
+  // that would silently kill all future polls and read as a fake "heartbeat lost".
+  try{ await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
+  catch(e){ log("refresh err: "+e.message); }
+  finally{ inflight=false; }
 }
 
 // ---- Backup / clone ----
@@ -854,6 +927,42 @@ async function drainTick(){
   draining=false;
   if(liveTimer){ const el=$("#capOut"); const atBottom=el.scrollTop+el.clientHeight>=el.scrollHeight-4; renderCap(); if(atBottom) el.scrollTop=el.scrollHeight; }
 }
+// ---- Live wedge reporter (0xA9) ----
+// The firmware's SOF callback streams this while loop() is stuck. On boards that wipe retained RAM across the
+// watchdog reset (so the flight recorder / hang stage come back blank), this is the only way to see WHERE it
+// hung -- captured live, over the panel, in the ~8s before the watchdog fires. Log once per wedge episode.
+const WEDGE_STAGE=["webusb","ctrl.task","serial","rfdiag","rflink","haptic","led","usbmount","usbtx"];
+function onWedge(stage, stallMs){
+  const name=WEDGE_STAGE[stage]||("stage "+stage);
+  if(!window._wedgeEp) trailAdd("WEDGED @ "+name+" ("+stallMs+"ms — live 0xA9 report; watchdog reset imminent)");
+  if(!window._wedgeEp || stallMs > (window._wedgePeak||0)+500){
+    window._wedgeEp=true; window._wedgePeak=stallMs;
+    log("🛑 LOOP WEDGED @ "+name+" (stuck "+stallMs+"ms) — this is where it hangs; watchdog reset imminent");
+    const el=$("#flightWedge"); if(el) el.innerHTML=' &nbsp;<span class="pill dn">last wedge: '+name+' ('+stallMs+'ms)</span>';
+  }
+}
+// ---- Host-side heartbeat watchdog (hard-wedge detection) ----
+// The STALLED pill and the 0xA9 reporter both rely on the puck still SENDING while loop() is wedged -- which
+// only holds for soft wedges where the usbd task + SOF IRQ stay alive. The LOCKUP/hardfault-class hangs (#72)
+// kill the whole MCU: USB goes silent, transferIn just pends, and the panel would freeze forever showing the
+// last state it rendered ("running"). Only the host can see that class of hang, so detect it here: connected
+// but no status blob for >2.5s (poll cadence is 600ms) => flip the pill and log the episode. The capture /
+// backup / flight paths pause the blob poll legitimately, so they're excluded.
+setInterval(()=>{
+  if(!dev || !window._lastBlobTs || capturing || backupBusy || flightBusy) return;
+  const age=Date.now()-window._lastBlobTs;
+  if(age>2500){
+    const secs=Math.round(age/1000);
+    $("#stLoopState").innerHTML='<span class="pill dn">NO HEARTBEAT '+secs+'s — hard wedge</span>';
+    if(!window._hbLostEp){ window._hbLostEp=true;
+      log("🛑 heartbeat lost — no status blob for "+secs+"s: hard wedge (USB stack dead too, so the live wedge reporter can't run) — check the flight trail after the reset");
+      trailAdd("HEARTBEAT LOST — no status for "+secs+"s (hard wedge: USB silent, whole MCU likely stopped)");
+      const el=$("#flightWedge"); if(el) el.innerHTML=' &nbsp;<span class="pill dn">last wedge: hard (no heartbeat)</span>';
+    }
+  } else if(window._hbLostEp){ window._hbLostEp=false;
+    trailAdd("heartbeat back — status blobs resumed without a reset");
+  }
+}, 1000);
 // ---- Flight recorder (0xA8 stream) ----
 // The firmware keeps a .noinit ring of the last high-level events (usbd SET/GET, relays, RF up/down, radio
 // self-heal, USB mount/suspend, bond flash writes, per-250ms heartbeats) that survives a watchdog reset. On
@@ -956,8 +1065,8 @@ $("#capStop").onclick=stopCapture;
 $("#stabBtn").onclick=async()=>{
   if(!dev){ log("connect first"); return; }
   stabArmed=!stabArmed;
-  if(stabArmed){ await send([0x0F,1]); stabStart=Date.now(); stabLastRun=null; log("stability test STARTED — buzzing every 10s, timing uptime until reset"); }
-  else { await send([0x0F,0]); stabStart=0; log("stability test stopped"); }
+  if(stabArmed){ await send([0x0F,1]); stabStart=Date.now(); stabLastRun=null; log("stability test STARTED — buzzing every 10s, timing uptime until reset"); trailAdd("stability test started (buzz every 10s)"); }
+  else { await send([0x0F,0]); stabStart=0; log("stability test stopped"); trailAdd("stability test stopped"); }
   updateStabUI();
 };
 $("#hangClear").onclick=()=>{ hangLog=[]; renderHangLog(); };
@@ -970,7 +1079,8 @@ $("#hangCsv").onclick=()=>{
   a.download="openpuck-hanglog.csv"; a.click();
 };
 $("#hapClear").onclick=async()=>{ if(dev){ await send([0x07]); log("haptic re-init sent (clear stuck buzz)"); } };
-$("#ctlrOff").onclick=async()=>{ if(dev){ await send([0x08]); log("controller power-off attempt sent — watch link status"); } };
+$("#ctlrOff").onclick=async()=>{ if(dev){ await send([0x08]); log("controller power-off attempt sent — watch link status");
+  trailAdd("power-off sent to controller (panel button) — stress action, correlate with what follows"); } };
 $("#debugCdc").onclick=async()=>{
   if(!dev){ log("not connected"); return; }
   if(!confirm("Reboot with the CDC serial console enabled?\n\nThe puck reboots and comes back with a serial port (115200 baud) instead of WebUSB — this panel will disconnect and NOT reconnect until the next reboot.\n\nConnect a serial monitor to capture logs, then replug (or reboot) to return to normal WebUSB mode. The debug console auto-reverts after one boot.")) return;

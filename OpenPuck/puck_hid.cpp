@@ -142,6 +142,9 @@ static void fcPush(uint8_t dir, int iface, uint8_t rid, uint8_t cmd,
 }
 void puckCmdLogDrain(void)
 {
+	// boosted: runs at Steam's feature-storm rate and CDC flush enters the same TinyUSB DMA claim window
+	// as HID sends (the issue-72 livelock; see usb_tx.cpp)
+	usbTxBoost();
 	while (g_fcHead != g_fcTail) {
 		if (Serial.availableForWrite() < 70)
 			break; // don't stall loop on CDC backpressure; resume next iteration
@@ -154,6 +157,7 @@ void puckCmdLogDrain(void)
 			Serial.printf(" %02X", r.b[i]);
 		Serial.println();
 	}
+	usbTxUnboost();
 }
 
 // ===================== seamless LIZARD decision =====================

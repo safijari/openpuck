@@ -62,6 +62,10 @@ const char *faultDiagStageStr(uint8_t s);
 // watchdog hang, faultDiagHangPC()/LR() return the PC/LR of the stuck code (0 if the hang hard-masked
 // interrupts so the capture ISR couldn't run). Map the PC with addr2line on the build .elf.
 void faultDiagArmHangCapture();
+// Flash black box: 4 Hz TIMER4 watchdog-of-the-watchdog; at ~6s of loop stall it dumps both tasks' stacked
+// PCs + vitals to a reserved flash page (survives ANY reset, incl. boards that wipe .noinit/GPREGRET2).
+// Reported + consumed by faultDiagBoot on the next boot. Arm once from setup(), after the WDT starts.
+void faultDiagBlackBoxArm();
 uint32_t faultDiagHangPC();
 uint32_t faultDiagHangLR();
 

@@ -114,6 +114,30 @@ void usbTxRegisterDrain(usbTxDrainFn fn)
 		g_drainFns[g_nDrain++] = fn;
 }
 
+// ---- priority-inversion guard (BLACK BOX capture 3, 2026-07-03) --------------------------------------------
+// TinyUSB's nrf5x dcd claims the chip's ONE EasyDMA slot (dma_running test_and_set) and only a few
+// instructions LATER writes TASKS_STARTEPIN -- and loop-context sends reach that window at TASK_PRIO_LOW.
+// Preempted right there during a Steam OUT flood (0x82 haptic storm), the flag is held by a task that never
+// runs again: the TASK_PRIO_HIGH usbd task livelocks re-deferring xact_out_dma around the never-started DMA
+// (caught live: loopPC=start_dma:139, irqPC=xact_out_dma re-defer) -> USB dead -> watchdog. The fix needs no
+// library patch: run loop's USB-TX windows at the usbd task's own priority. Equal priority = no preemption on
+// interrupt exit = the claim+start pair completes atomically w.r.t. the usbd task. Depth-counted so nested
+// boosted sections (pump -> drain callbacks) stay balanced; only ever used from the loop task.
+static UBaseType_t g_boostSaved;
+static uint8_t g_boostDepth;
+void usbTxBoost(void)
+{
+	if (!g_boostDepth++) {
+		g_boostSaved = uxTaskPriorityGet(NULL);
+		vTaskPrioritySet(NULL, TASK_PRIO_HIGH);
+	}
+}
+void usbTxUnboost(void)
+{
+	if (g_boostDepth && !--g_boostDepth)
+		vTaskPrioritySet(NULL, g_boostSaved);
+}
+
 // Drain everything from loop() -- NOT from a SOF callback, a dedicated task, or report_complete. All three of
 // those were tried and all fight the RF poll, which is a microsecond-precise busy-wait running in loop(): SOF
 // got silently disabled by bus resets; the high-priority usbd task (report_complete) preempted the RF RX
@@ -125,9 +149,13 @@ void usbTxRegisterDrain(usbTxDrainFn fn)
 // Call once per loop() iteration.
 void usbTxPump(void)
 {
+	// Whole pump (HID sends + vendor/WebUSB drains) runs boosted -- every dcd claim window in here is
+	// then atomic against the usbd task (see usbTxBoost above).
+	usbTxBoost();
 	usbTxDrain();
 	for (uint8_t i = 0; i < g_nDrain; i++)
 		g_drainFns[i]();
+	usbTxUnboost();
 }
 void usbTxBegin(void)
 {

@@ -767,6 +767,14 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 // instead of every cycle. This keeps the online controllers at full 250 Hz while barely touching offline ones.
 #define SLOT_COLD_MS 5000u
 #define SLOT_COLD_RETRY_MS 2000u
+// Quiet tier: a slot that WAS replying but has been silent past SLOT_QUIET_MS (controller powering off, out
+// of range) backs off to SLOT_QUIET_RETRY_MS retries instead of full-rate polling until SLOT_COLD_MS demotes
+// it. Without this, a power-off left the slot at 250 Hz for 5 s with EVERY poll burning the whole g_rxWin
+// (~2 ms) waiting for a reply that never comes -- with two controllers powered off together that is ~100%
+// radio duty, the churn window the power-off watchdog hang (issue #72 repro) lives in. Recovery stays snappy:
+// the first reply re-warms the slot to full rate, so a controller returning from a fade waits <= one retry.
+#define SLOT_QUIET_MS 300u
+#define SLOT_QUIET_RETRY_MS 50u
 static unsigned long g_slotLastAttemptMs[NSLOT] = {};
 
 // Drive the connected-mode sequence. The cycle gate fires once per g_pollUs (250 Hz); each fire
@@ -883,11 +891,15 @@ static void rfConnStep()
 		if (!g_slot[k].used)
 			continue;
 		bool everReplied = g_connReplyMs[k] != 0;
-		bool cold = everReplied &&
-			    (nowMs - g_connReplyMs[k] > SLOT_COLD_MS);
+		unsigned long silentMs =
+			everReplied ? (nowMs - g_connReplyMs[k]) : 0;
+		bool cold = everReplied && silentMs > SLOT_COLD_MS;
+		bool quiet = everReplied && !cold && silentMs > SLOT_QUIET_MS;
 		bool phantom = !everReplied && linkUp;
-		if ((cold || phantom) &&
-		    nowMs - g_slotLastAttemptMs[k] < SLOT_COLD_RETRY_MS)
+		unsigned long retry = (cold || phantom) ? SLOT_COLD_RETRY_MS :
+				      quiet		? SLOT_QUIET_RETRY_MS :
+							  0;
+		if (retry && nowMs - g_slotLastAttemptMs[k] < retry)
 			continue;
 		doPoll(k);
 	}

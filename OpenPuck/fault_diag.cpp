@@ -185,6 +185,261 @@ static const char *frEvtStr(uint8_t e)
 	return e < FR_STR_COUNT ? FR_STR[e] : "?";
 }
 
+// ---- flash black box (pre-watchdog dump) -------------------------------------------------------------------
+// On boards whose bootloader wipes .noinit + GPREGRET2 across a watchdog reset (Teyleten-class), EVERY
+// post-mortem channel above is destroyed -- hangs on those boards were unforensicable. Flash survives any
+// reset, so: a 4 Hz TIMER4 interrupt (priority 1, above FreeRTOS BASEPRI masking, below the WDT capture's 0)
+// watches the loop heartbeat; when loop() has been frozen ~6 s (the WDT resets at 8 s), it walks the loop and
+// usbd tasks' TCBs for their stacked PCs (both tasks BLOCKED = the suspected mutual-deadlock class) plus the
+// PC it interrupted (covers the one-task-spinning class), and writes one record to a reserved raw flash page.
+// Next boot reports it on CDC and feeds the existing hangPC/hangStage panel channels. Caveats: fires only if
+// priority-1 interrupts still run (PRIMASK-off hangs leave no record -- same caveat as the WDT capture, and
+// itself a signal); a task that is RUNNING (not blocked) has a stale TCB pxTopOfStack, so cross-check its PC
+// against irqPC.
+#define BB_ADDR \
+	0xE8000UL // raw page: app image (~170 KB, ends < 0x60000) < here < InternalFS (0xED000)
+#define BB_MAGIC 0x62627831u // "bbx1"
+#define BB_WORDS 12
+static TaskHandle_t g_hLoop,
+	g_hUsbd; // captured by faultDiagStackTick's 1 Hz sweep
+// non-static (like g_hangFrame): the naked ISR's `ldr =symbol` needs external linkage to resolve
+extern "C" {
+volatile uint32_t g_bbIrqPC,
+	g_bbIrqLR; // stacked frame of whatever TIMER4 preempted
+}
+static void bbBootReport(
+	bool isHang); // defined below faultDiagBlackBoxArm; called from faultDiagBoot
+static void bbErase(void); // dump-time lazy erase (see bbTimerBody)
+
+static void bbFlashWord(uint32_t addr, uint32_t v)
+{
+	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen << NVMC_CONFIG_WEN_Pos;
+	__DMB();
+	*(volatile uint32_t *)addr = v;
+	while (!NRF_NVMC->READY) {
+	}
+	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
+	__DMB();
+}
+// Stacked PC/LR of a BLOCKED FreeRTOS task. pxTopOfStack is the first TCB member (portable-layer invariant);
+// the CM4F PendSV push order is [r4-r11, EXC_RETURN] then (s16-s31 iff the FPU frame was live) then the
+// hardware frame [r0-r3, r12, lr, pc, xpsr]. EXC_RETURN bit4 = 0 means the FPU frame is present.
+static void bbTaskPc(TaskHandle_t h, uint32_t *pc, uint32_t *lr)
+{
+	*pc = *lr = 0;
+	if (!h)
+		return;
+	uint32_t *tos = *(uint32_t **)h;
+	uint32_t a = (uint32_t)tos;
+	if (a < 0x20000000u || a >= 0x20040000u - (26 + 8) * 4)
+		return; // corrupt TCB/stack -> don't fault inside the black box
+	uint32_t excret = tos[8];
+	uint32_t hw = 9 + ((excret & 0x10) ? 0 : 16);
+	*pc = tos[hw + 6];
+	*lr = tos[hw + 5];
+}
+extern "C" void bbTimerBody(void)
+{
+	NRF_TIMER4->EVENTS_COMPARE[0] = 0;
+	(void)NRF_TIMER4->EVENTS_COMPARE[0]; // readback: event write is posted
+	static uint32_t lastBeat;
+	static uint16_t stuck;
+	static bool dumped;
+	uint32_t b = g_loopBeatMs;
+	if (b != lastBeat) {
+		lastBeat = b;
+		stuck = 0;
+		return;
+	}
+	if (dumped)
+		return;
+	if (++stuck <
+	    24) { // 24 ticks @ 4 Hz = 6 s frozen; WDT reset lands at 8 s
+		// USBD self-heal kick before giving up. The black-boxed wedge (2026-07-03, loopPC=start_dma,
+		// usbdPC=idle xQueueReceive) is a USB EasyDMA whose END event/interrupt got swallowed (clone
+		// USBD silicon under concurrent RADIO EasyDMA): TinyUSB's dma_running never clears, every next
+		// transfer re-defers on the TASK_PRIO_HIGH usbd task (livelock), and TASK_PRIO_LOW loop starves.
+		// If the END EVENT is latched but its IRQ was lost, re-pending the USBD IRQ makes the ISR run
+		// edpt_dma_end -> the defer chain unwinds -> FULL recovery, no reset (the panel trail shows a
+		// recovered stall episode). Harmless when nothing is pending: a spurious USBD ISR just returns.
+		// >=500ms of frozen loop heartbeat is never legitimate (bond flash saves are ms-class).
+		if (stuck >= 2) {
+			NVIC_SetPendingIRQ(USBD_IRQn);
+			faultDiagTrace(
+				FR_HEAL,
+				0x05Bu); // arg 0x5B = USBD kick (radio heal passes its own count)
+		}
+		return;
+	}
+	dumped = true;
+	// Lazy erase: the page still holds the PREVIOUS hang's (already-reported) record -- boot no longer
+	// erases it, so its CDC banner stays re-printable on any later debug boot. An in-ISR page erase is
+	// ~85ms of CPU stall, irrelevant here: the system is already dead and the WDT reset is ~2s away.
+	bbErase();
+	// Record v2, written in TWO PHASES: phase 1 (PCs + vitals) commits BEFORE any USBD register is
+	// touched -- if the USBD peripheral has wedged the AHB matrix, reading its registers could bus-stall
+	// this ISR forever (the WDT still resets: its reset path is hardware, not CPU). A record with phase 1
+	// present and phase 2 erased (0xFFFFFFFF) is therefore itself the proof of an AHB/USBD bus wedge.
+	uint32_t lpc, llr, upc, ulr;
+	bbTaskPc(g_hLoop, &lpc, &llr);
+	bbTaskPc(g_hUsbd, &upc, &ulr);
+	uint32_t w1[8] = {
+		BB_MAGIC,
+		(2u << 24) | ((uint32_t)g_curStage << 16), // ver 2
+		lpc, // w2: loop task stacked PC (where it starved/blocked)
+		g_bbIrqPC, // w3: what TIMER4 preempted = the code RUNNING at dump time
+		upc, // w4: usbd task stacked PC
+		((uint32_t)g_flight.usbdStackFree << 16) |
+			g_flight.loopStackFree, // w5
+		((uint32_t)g_flight.relayps << 16) | g_flight.pollsps, // w6
+		g_flight.vMs, // w7: millis at last healthy vitals ~= wedge time
+	};
+	(void)llr;
+	(void)ulr;
+	for (int i = 0; i < 8; i++)
+		bbFlashWord(BB_ADDR + 4u * i, w1[i]);
+	// phase 2: USBD peripheral state -- did the DMA END event ever latch? are its interrupts enabled?
+	uint32_t endmask = 0;
+	for (int i = 0; i < 8; i++) {
+		if (NRF_USBD->EVENTS_ENDEPIN[i])
+			endmask |= (1u << i);
+		if (NRF_USBD->EVENTS_ENDEPOUT[i])
+			endmask |= (1u << (8 + i));
+	}
+	if (NRF_USBD->EVENTS_EPDATA)
+		endmask |= (1u << 16);
+	if (NRF_USBD->EVENTS_USBEVENT)
+		endmask |= (1u << 17);
+	if (NRF_USBD->EVENTS_EP0DATADONE)
+		endmask |= (1u << 18);
+	if (NRF_USBD->EVENTS_SOF)
+		endmask |= (1u << 19);
+	if (NVIC_GetPendingIRQ(USBD_IRQn))
+		endmask |= (1u << 20); // IRQ pending but not being serviced
+	if (NVIC_GetEnableIRQ(USBD_IRQn))
+		endmask |= (1u << 21);
+	uint32_t w2[4] = {
+		endmask, // w8: latched-event bitmap (ENDEPIN 0-7, ENDEPOUT 8-15, EPDATA/USBEVENT/EP0DD/SOF, NVIC)
+		NRF_USBD->INTEN, // w9: which USBD interrupts are enabled
+		NRF_USBD->EPDATASTATUS, // w10: per-endpoint data-ready flags
+		((uint32_t)NRF_USBD->EPINEN << 16) |
+			(NRF_USBD->EPOUTEN & 0xFFFF), // w11
+	};
+	for (int i = 0; i < 4; i++)
+		bbFlashWord(BB_ADDR + 4u * (8 + i), w2[i]);
+}
+// Naked shim: grab the interrupted context's stacked PC/LR (like the WDT capture), then tail-branch to the C
+// body -- LR still holds EXC_RETURN, so the body's return IS the exception return.
+extern "C" __attribute__((naked)) void TIMER4_IRQHandler(void)
+{
+	__asm volatile("tst lr, #4            \n"
+		       "ite eq                \n"
+		       "mrseq r0, msp         \n"
+		       "mrsne r0, psp         \n"
+		       "ldr r1, [r0, #24]     \n"
+		       "ldr r2, =g_bbIrqPC    \n"
+		       "str r1, [r2]          \n"
+		       "ldr r1, [r0, #20]     \n"
+		       "ldr r2, =g_bbIrqLR    \n"
+		       "str r1, [r2]          \n"
+		       "b bbTimerBody         \n"
+		       ".ltorg                \n");
+}
+void faultDiagBlackBoxArm()
+{
+	NRF_TIMER4->TASKS_STOP = 1;
+	NRF_TIMER4->MODE = TIMER_MODE_MODE_Timer << TIMER_MODE_MODE_Pos;
+	NRF_TIMER4->BITMODE = TIMER_BITMODE_BITMODE_32Bit
+			      << TIMER_BITMODE_BITMODE_Pos;
+	NRF_TIMER4->PRESCALER = 9; // 16 MHz / 512 = 31250 Hz
+	NRF_TIMER4->CC[0] = 31250u / 4u; // 4 Hz
+	NRF_TIMER4->SHORTS = TIMER_SHORTS_COMPARE0_CLEAR_Msk;
+	NRF_TIMER4->EVENTS_COMPARE[0] = 0;
+	NRF_TIMER4->INTENSET = TIMER_INTENSET_COMPARE0_Msk;
+	NVIC_SetPriority(TIMER4_IRQn,
+			 1); // above BASEPRI masking, below the WDT capture
+	NVIC_ClearPendingIRQ(TIMER4_IRQn);
+	NVIC_EnableIRQ(TIMER4_IRQn);
+	NRF_TIMER4->TASKS_START = 1;
+}
+static void bbErase()
+{
+	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een << NVMC_CONFIG_WEN_Pos;
+	__DMB();
+	NRF_NVMC->ERASEPAGE = BB_ADDR;
+	while (!NRF_NVMC->READY) {
+	}
+	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
+	__DMB();
+}
+// Boot-side: report the record. Runs from faultDiagBoot AFTER the .noinit hangPC/hangStage recovery, so on
+// boards where those survive the black box only fills the gaps; on RAM-wiping boards it IS the evidence.
+// Lifecycle: the record is NOT erased here -- a normal boot often has no CDC attached, so erasing on first
+// boot would destroy the register words unread. Instead it persists (the banner re-prints on ANY later boot,
+// e.g. a debug-CDC reboot) and the NEXT dump erases the page itself. A "seen" marker at word 12 keeps the
+// panel adoption one-shot so a stale record can't masquerade as a later, unrelated hang's evidence.
+static void bbBootReport(bool isHang)
+{
+	const volatile uint32_t *w = (const volatile uint32_t *)BB_ADDR;
+	bool fresh = (w[12] == 0xFFFFFFFFu);
+	if (w[0] != BB_MAGIC) {
+		// garbage/partial page (interrupted dump or pre-feature content): clean it so the next dump
+		// writes onto erased flash. All-blank needs no erase.
+		bool blank = true;
+		for (int i = 0; i < BB_WORDS; i++)
+			if (w[i] != 0xFFFFFFFFu)
+				blank = false;
+		// keep a half-written phase-1 record (magic present handled below); anything else non-blank
+		// without magic is garbage
+		if (!blank)
+			bbErase();
+		return;
+	}
+	{
+		uint8_t stage = (uint8_t)(w[1] >> 16);
+		Serial.printf(
+			"# BLACK BOX v%lu (flash dump written ~6s into the last hang):\n",
+			(unsigned long)(w[1] >> 24));
+		Serial.printf(
+			"#   stage=%s  loopPC=%08lX  irqPC=%08lX (running at dump)  usbdPC=%08lX\n",
+			faultDiagStageStr(stage), (unsigned long)w[2],
+			(unsigned long)w[3], (unsigned long)w[4]);
+		Serial.printf(
+			"#   stkFree usbd=%luw loop=%luw  polls/s=%lu relay/s=%lu  tWedge~%lums\n",
+			(unsigned long)(w[5] >> 16),
+			(unsigned long)(w[5] & 0xFFFF),
+			(unsigned long)(w[6] & 0xFFFF),
+			(unsigned long)(w[6] >> 16), (unsigned long)w[7]);
+		// phase 2 = USBD peripheral state; all-FF here with phase 1 present = reading USBD registers
+		// bus-stalled the dump ISR = the peripheral wedged the AHB matrix (decisive by itself).
+		if (w[8] == 0xFFFFFFFFu && w[9] == 0xFFFFFFFFu)
+			Serial.printf(
+				"#   USBD regs: UNREADABLE (dump died reading them -> AHB/USBD bus wedge)\n");
+		else
+			Serial.printf(
+				"#   USBD: events=%08lX (ENDEPIN0-7,ENDEPOUT8-15,EPDATA16,USBEVT17,EP0DD18,SOF19,NVICpend20,NVICen21)"
+				" INTEN=%08lX EPDATASTATUS=%08lX EPINEN=%04lX EPOUTEN=%04lX\n",
+				(unsigned long)w[8], (unsigned long)w[9],
+				(unsigned long)w[10],
+				(unsigned long)(w[11] >> 16),
+				(unsigned long)(w[11] & 0xFFFF));
+		// feed the existing panel channels (hangLog / Last-reset tile) when the .noinit path came back
+		// blank -- i.e. exactly the RAM-wiping boards this exists for. loopPC is the primary suspect
+		// location; irqPC (the code actually RUNNING while loop starved) rides the LR slot. One-shot:
+		// only a FRESH record (seen-marker still erased) may claim this boot's hang.
+		if (isHang && fresh) {
+			if (!g_reportHangPC && w[2]) {
+				g_reportHangPC = w[2];
+				g_reportHangLR = w[3];
+			}
+			if (g_hangStage == 0xFF && stage < STAGE_COUNT)
+				g_hangStage = stage;
+		}
+		if (fresh)
+			bbFlashWord(BB_ADDR + 4u * 12, 1u); // stamp "seen"
+	}
+}
+
 void faultDiagBoot()
 {
 	uint32_t rr =
@@ -245,6 +500,10 @@ void faultDiagBoot()
 		Serial.printf("# hang PC=0x%08lX LR=0x%08lX\n",
 			      (unsigned long)g_reportHangPC,
 			      (unsigned long)g_reportHangLR);
+
+	// Flash black box: report + consume last hang's pre-watchdog dump (fills hangPC/stage on boards whose
+	// bootloader wiped the .noinit/GPREGRET2 evidence above).
+	bbBootReport(isHang);
 
 	// Flight recorder: if the pre-reset trail survived (.noinit), snapshot it into ordinary RAM so the live
 	// session can start a fresh ring while the console can still re-dump the old trail ("FR"). On a hang, dump
@@ -546,11 +805,16 @@ void faultDiagStackTick()
 	UBaseType_t n = uxTaskGetSystemState(st, 12, NULL);
 	for (UBaseType_t i = 0; i < n; i++) {
 		uint16_t hw = (uint16_t)st[i].usStackHighWaterMark;
-		if (!strcmp(st[i].pcTaskName, "usbd") && hw < g_usbdStackMin)
-			g_usbdStackMin = hw;
-		else if (!strcmp(st[i].pcTaskName, "loop") &&
-			 hw < g_loopStackMin)
-			g_loopStackMin = hw;
+		if (!strcmp(st[i].pcTaskName, "usbd")) {
+			g_hUsbd =
+				st[i].xHandle; // black box: TCB to walk at dump time
+			if (hw < g_usbdStackMin)
+				g_usbdStackMin = hw;
+		} else if (!strcmp(st[i].pcTaskName, "loop")) {
+			g_hLoop = st[i].xHandle;
+			if (hw < g_loopStackMin)
+				g_loopStackMin = hw;
+		}
 	}
 }
 uint16_t faultDiagUsbdStackFree()

@@ -36,6 +36,13 @@ void usbTxPump(void);
 // Drain pending HID reports (one ready report per destination per call). Internal -- called by usbTxPump().
 void usbTxDrain(void);
 
+// Priority-inversion guard: run a loop-context USB TX window (HID/vendor/CDC writes) at the usbd task's
+// priority so TinyUSB's dcd DMA claim+start can't be preempted mid-claim (the issue-72 livelock; see
+// usb_tx.cpp). Depth-counted; loop task only, always in a balanced pair. usbTxPump() boosts itself; wrap
+// direct Serial/usb_web writes that can run at flood rate (e.g. per-relay logging).
+void usbTxBoost(void);
+void usbTxUnboost(void);
+
 // Register a callback to run every USB frame ON THE usbd TASK (from tud_sof_cb, right after usbTxDrain()).
 // This is how senders that DON'T go through Adafruit_USBD_HID get their transmits off the loop task too:
 //   - mode_xinput flushes its raw custom-class IN endpoints;

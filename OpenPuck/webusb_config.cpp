@@ -56,7 +56,11 @@ static void webusbSendBlob()
 	// every ~250ms in normal use.
 	int cs = (g_curSlot >= 0 && g_curSlot < NSLOT) ? g_curSlot : 0;
 	bool up = (g_curSlot >= 0 && (millis() - g_connReplyMs[cs]) < 300);
-	uint8_t p[2 + WB_PAYLEN];
+	// STATIC, not stack: this runs on the usbd task, whose 800B stack (hardcoded USBD_STACK_SZ in the
+	// Adafruit core, not growable from the sketch) is the prime overflow suspect behind the issue-72
+	// watchdog hangs (hang boots report usbd stack free = 0). A 178B frame on that stack was the single
+	// biggest consumer. Single-writer (SOF drain only), so a static buffer is race-free.
+	static uint8_t p[2 + WB_PAYLEN];
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
@@ -251,7 +255,8 @@ static void webusbSendBondExport()
 {
 	if (!usb_web.connected())
 		return;
-	uint8_t p[2 + WB_BOND_PAYLEN];
+	// static for the same reason as the status blob: keep the 100B frame off the 800B usbd-task stack.
+	static uint8_t p[2 + WB_BOND_PAYLEN];
 	p[0] = 0xA7;
 	p[1] = WB_BOND_PAYLEN;
 	p[2] = 1; // format version
@@ -280,10 +285,23 @@ static void webusbSendBondExport()
 // The panel sends 0x10 with buf[1]=1 to (re)start (emits the header + rewinds the cursor), then 0x10 buf[1]=0
 // repeatedly; each call streams a budgeted chunk and the final call appends the end frame.
 #define WB_FLIGHT_HDR 29
+// RAII boost: these drains run from loop() and push many usb_web.write()s per call -- each enters TinyUSB's
+// dcd DMA claim window (the issue-72 livelock; see usb_tx.cpp), so the whole burst runs boosted.
+struct TxBoostScope {
+	TxBoostScope()
+	{
+		usbTxBoost();
+	}
+	~TxBoostScope()
+	{
+		usbTxUnboost();
+	}
+};
 static void webusbDrainFlight(bool restart)
 {
 	if (!usb_web.connected())
 		return;
+	TxBoostScope boost;
 	if (restart) {
 		faultDiagFlightDrainReset();
 		if (tud_vendor_write_available() >= 2 + WB_FLIGHT_HDR) {
@@ -381,11 +399,49 @@ static void webusbSofDrain(void)
 		webusbSendBondExport();
 	}
 }
+// ---- live wedge reporter (0xA9) --------------------------------------------------------------------------
+// THE one channel that survives a loop() wedge on boards that wipe .noinit/GPREGRET across the watchdog reset
+// (Teyleten): tud_sof_cb runs on the usbd task, which is HIGHER priority than the loop() task, so the USB
+// stack keeps dispatching it even while loop() is wedged (spinning or blocked) -- as long as interrupts aren't
+// hard-masked (PRIMASK). When loop() has been stuck a while, emit a tiny frame carrying the stuck loop stage so
+// the panel can log WHERE it hung, live, during the ~8s before the watchdog fires. Zero traffic when healthy
+// (returns immediately unless stalled); rate-limited; drop-on-full so it never spins the usbd task.
+//   frame: [0xA9][3][stuck stage][stallMs lo][stallMs hi]
+extern "C" void tud_sof_cb(uint32_t frame_count)
+{
+	(void)frame_count;
+	uint32_t stall = faultDiagStallMs();
+	if (stall <
+	    1000) // loop() healthy -> nothing to report (the common case: near-zero overhead)
+		return;
+	static uint32_t lastMs = 0;
+	uint32_t now = millis();
+	if ((uint32_t)(now - lastMs) < 200) // ~5 Hz cap
+		return;
+	lastMs = now;
+	if (!usb_web.connected())
+		return;
+	uint8_t f[2 + 3];
+	f[0] = 0xA9;
+	f[1] = 3;
+	f[2] = faultDiagCurStage();
+	uint16_t s = (stall > 0xFFFFu) ? 0xFFFFu : (uint16_t)stall;
+	f[3] = (uint8_t)s;
+	f[4] = (uint8_t)(s >> 8);
+	if (tud_vendor_write_available() >= sizeof f) {
+		usb_web.write(f, sizeof f);
+		usb_web.flush();
+	}
+}
+
 // Register the SOF drain. Call once from setup() (harmless even if WebUSB isn't enumerated -- webusbSendBlob
 // no-ops while disconnected, and g_blobRequest is only ever set by panel traffic, which needs a connection).
 void webusbInit(void)
 {
 	usbTxRegisterDrain(webusbSofDrain);
+	// Enable SOF-callback dispatch so tud_sof_cb() above fires -- our only live view into a loop() wedge on
+	// boards whose bootloader wipes retained RAM. Cheap: the callback no-ops unless loop() is already stalled.
+	tud_sof_cb_enable(true);
 }
 #if OPK_LOG
 // Stream the capture ring (haptics / relayed host commands) to the panel as 0xA6 frames. Frame formats:
@@ -425,6 +481,8 @@ static void webusbDrainCapture()
 {
 	if (!usb_web.connected())
 		return;
+	TxBoostScope
+		boost; // capture streams at flood rate through the same dcd DMA window
 	uint32_t ms = 0;
 	uint8_t slot = 0, rid = 0, nb = 0, b[16];
 	uint16_t budget = 128;

@@ -273,6 +273,9 @@ void setup()
 	NRF_WDT->TASKS_START = 1;
 	// Capture the stuck PC on the WDT's pre-reset interrupt (software stand-in for SWD on the clone hangs).
 	faultDiagArmHangCapture();
+	// Flash black box: at ~6s of loop stall (2s before the WDT reset) dump both tasks' stacked PCs + vitals
+	// to a reserved flash page -- the post-mortem channel that survives even the boards that wipe .noinit.
+	faultDiagBlackBoxArm();
 }
 
 // loop-timing diagnostics: poll rate is capped by loop ITERATION time (pacing wants 4000us but the poll only

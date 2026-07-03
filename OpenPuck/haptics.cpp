@@ -2,6 +2,7 @@
 #include "bonds.h"
 #include "config.h"
 #include "rf_link.h"
+#include "usb_tx.h" // usbTxBoost/Unboost -- flood-rate CDC prints share the dcd DMA claim window
 #include "puck_hid.h" // puckLizardActive() -- gate the lizard-suppression keepalive
 
 #include "fault_diag.h" // faultDiagTrace() -- flight recorder
@@ -357,14 +358,22 @@ void hapticStabTask()
 	static const uint8_t off[3] = { 0x01, 0x01, 0x00 };
 	static unsigned long lastOn = 0, offAt = 0;
 	unsigned long now = millis();
+	// Buzz only slots whose controller is actually answering polls (same 300ms liveness the panel/0x79 use).
+	// The old 0xFF broadcast kept stuffing a powered-off controller's relay ring -- pure eviction churn plus
+	// wasted TX at a radio that can't hear it, right inside the power-off hang window (issue #72 repro).
+	auto enqLive = [&](const uint8_t *p) {
+		for (uint8_t s = 0; s < NSLOT; s++)
+			if (g_slot[s].used && g_connReplyMs[s] &&
+			    (unsigned long)(now - g_connReplyMs[s]) < 300u)
+				relayEnqueue(0x82, p, 3, s);
+	};
 	if (lastOn == 0 || (uint32_t)(now - lastOn) >= 10000u) {
 		lastOn = now;
-		relayEnqueue(0x82, on, 3,
-			     0xFF); // broadcast buzz-on to all slots
+		enqLive(on);
 		offAt = now + 150;
 	}
 	if (offAt && (int32_t)(now - offAt) >= 0) {
-		relayEnqueue(0x82, off, 3, 0xFF);
+		enqLive(off);
 		offAt = 0;
 	}
 }
@@ -477,12 +486,16 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// latches -- the piece the I45 stream (controller->us) can't show. Low rate outside a haptic
 			// burst; guarded so it never blocks the loop. cur = target slot.
 			if (Serial.availableForWrite() > 60) {
+				// boosted: this print runs at relay-flood rate and CDC flush enters the same
+				// TinyUSB DMA claim window as HID sends (the issue-72 livelock; see usb_tx.cpp)
+				usbTxBoost();
 				Serial.printf("# TX t=%lu slot%d %s rid=%02X:",
 					      (unsigned long)millis(), cur,
 					      land01 ? "L01" : "l05", m.rid);
 				for (uint8_t i = 0; i < rl && i < 8; i++)
 					Serial.printf(" %02X", m.data[i]);
 				Serial.println();
+				usbTxUnboost();
 			}
 			// slot was already consumed under the critical section above.
 			// s1 carries a PID distinct from the GET poll (caller cycles it) so the controller's ESB
