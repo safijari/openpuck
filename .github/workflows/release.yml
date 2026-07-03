@@ -30,7 +30,8 @@ jobs:
           git fetch --force --tags origin
 
           if git tag --points-at "$GITHUB_SHA" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "semver tag already exists on this commit; skipping"
+            echo "semver tag already exists on this commit; skipping bump"
+            echo "Tag already present on ${GITHUB_SHA}; release build runs from the tag event." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
@@ -42,6 +43,7 @@ jobs:
           )"
 
           if [ -z "$LAST" ]; then
+            # Baseline requested for the current main line.
             NEXT="0.9.1"
           else
             MAJOR="${LAST%%.*}"
