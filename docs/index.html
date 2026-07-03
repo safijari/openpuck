@@ -140,16 +140,16 @@
       <p class="note" style="margin-top:8px"><strong>IMU (raw):</strong> <span id="stImu" style="font-family:ui-monospace,Menlo,monospace">—</span><br>
         Raw SC2 accel (before scaling). This controller is a ±2 g sensor (~16384 = 1 g); the Switch report divides it by 4 to present the genuine ±8 g (4096 = 1 g) scale so the console's gravity-correction engages and the gyro stops drifting.</p>
       <p class="note logonly">Polls/s ≈ 250 expected; it's capped by Loop period (≈4000 µs needed). "Slowest stage" is the loop section eating the most time per iteration.</p>
-      <div class="row" style="margin:14px 0 0;border-top:1px solid #272d3d;padding-top:14px"><button id="hapClear">Clear stuck buzz</button>
+      <div class="row debugonly" style="margin:14px 0 0;border-top:1px solid #272d3d;padding-top:14px"><button id="hapClear">Clear stuck buzz</button>
         <span class="note" style="flex:1">If the controller's haptics get stuck/buzzing, this re-inits them (same as pressing Steam).</span>
       </div>
       <div class="row" style="margin:10px 0 0"><button id="ctlrOff">Turn off controller</button>
         <span class="note" style="flex:1">Fires the controller power-off (0x9F "off!", x3) — the same path Steam's "turn off controller" and host-suspend use. Watch the link status to see it disconnect.</span>
       </div>
-      <div class="row" style="margin:10px 0 0"><button id="landAll87">off</button>
+      <div class="row debugonly" style="margin:10px 0 0"><button id="landAll87">off</button>
         <span class="note" style="flex:1"><strong>Land all 0x87 (experiment).</strong> Relay Steam's full haptic/settings config to the controller verbatim (like the real puck) instead of discarding it. Testing whether the connect buzz is caused by the controller's haptic engine being left misconfigured. If the <em>gyro freezes</em> in Steam, turn this back off.</span>
       </div>
-      <div class="row" style="margin:10px 0 0;border-top:1px solid #272d3d;padding-top:14px"><button id="stabBtn">Test stability</button>
+      <div class="row debugonly" style="margin:10px 0 0;border-top:1px solid #272d3d;padding-top:14px"><button id="stabBtn">Test stability</button>
         <span class="v" id="stabStatus" style="flex:0 0 auto;min-width:120px">—</span>
         <span class="note" style="flex:1">Buzzes the controllers every 10 s (keeps them awake) and times how long the puck stays up. On a reset it records the uptime and shows it by <em>Last reset</em>; it auto-resumes after the puck reconnects. The count is kept in this tab (a page refresh clears it).</span>
       </div>
@@ -193,7 +193,7 @@
       <p class="note">Import <strong>overwrites</strong> all pairings and settings on the connected puck, then reboots it (~2 s — reconnect after). Tip: pair every controller to one puck, export once, then import onto each spare.</p>
     </div>
 
-    <div class="card wide">
+    <div class="card wide debugonly">
       <h2>Hang log</h2>
       <p class="note" style="margin-top:0">One row per reset: uptime before it, reason, the stuck loop stage and captured PC (when the watchdog ISR could run), and usbd stack free. Accumulates across resets in this tab — a page refresh clears it. Pair with <em>Test stability</em> above for unattended runs.</p>
       <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
@@ -204,7 +204,7 @@
       <pre id="hangOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin:0;max-height:260px;overflow:auto;white-space:pre"></pre>
     </div>
 
-    <div class="card wide">
+    <div class="card wide debugonly">
       <h2>Loop-state trail</h2>
       <p class="note" style="margin-top:0">Every change of the <em>Loop</em> pill, timestamped — stall episodes, live wedge reports, heartbeat loss (hard wedge, USB silent), recoveries, disconnects and the reset cause on reconnect — so an unattended hang is recorded even if you weren't watching. Saved in this browser (localStorage): it <strong>survives page refreshes</strong> and device reboots, and clears only with the button.</p>
       <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
@@ -214,7 +214,7 @@
       <pre id="trailOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin:0;max-height:260px;overflow:auto;white-space:pre-wrap">—</pre>
     </div>
 
-    <div class="card wide">
+    <div class="card wide debugonly">
       <h2>Flight recorder</h2>
       <p class="note" style="margin-top:0">The trail of events the firmware recorded in the seconds before its most recent <b>watchdog hang</b> — the ring survives the reset in <code>.noinit</code> RAM (like the hang PC), so it's the post-mortem of what wedged the board. Loads automatically after a hang reconnects; click to reload. Same data the console <code>FR</code> command prints. <span id="flightWedge" style="font-family:ui-monospace,Menlo,monospace"></span></p>
       <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
@@ -276,6 +276,12 @@ function updateStabUI(){
 }
 setInterval(updateStabUI, 500);
 const $ = s=>document.querySelector(s);
+// Debug UI gate: developer/diagnostic controls (stability test, clear-stuck-buzz, land-all-0x87) and the
+// forensic cards (Hang log, Loop-state trail, Flight recorder) only show with ?debug=true in the URL.
+// Everything still RUNS regardless (the trail keeps recording to localStorage, stability auto-resume works)
+// -- only the UI is hidden, so adding ?debug=true after an unattended incident still shows the history.
+const DEBUG_UI = new URLSearchParams(location.search).get("debug")==="true";
+if(!DEBUG_UI) for(const el of document.querySelectorAll(".debugonly")) el.style.display="none";
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
 
 // ---- Loop-state trail (persistent) ----
