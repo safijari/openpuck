@@ -65,6 +65,8 @@ Switching slots requires turning the controller off (Steam + Y if steam is runni
 # Configuration
 A webusb based configuration UI is available [here](https://safijari.github.io/openpuck/). It allows Switching the mode manually and changing the back button mapping for other modes among other things. This will likely only work in Chrome and Edge and needs the pro micro to be connected via USB to the same computer for it to function. Note that it might not work in all modes on all machines but should always work in the Steam Controller mode (which you can revert to with back-4 + A).
 
+If you're running Linux and your browser still shows "disconnected" after selecting the OpenPuck in the device selector, it's probably a permissions issue. Check [this document](./docs/WEBUSB_LINUX.md) for more details. 
+
 # 3D Printed Cases
 - [jaki-gh](https://github.com/jaki-gh) has contributed a 3D printable housing with OpenPuck written on it alongside a Steam logo. You can find that [here](https://www.thingiverse.com/thing:7371668).
 - [StonnedModder](https://www.printables.com/model/1760684-openpuck-promicro-nrf52840-case) built a case meant to accomodate a USB C to USB A adapter which you can find [here](https://www.printables.com/model/1760684-openpuck-promicro-nrf52840-case).
