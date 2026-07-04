@@ -941,6 +941,35 @@ void rfLinkTask()
 		rfConnStep();
 	} // connected-mode: poll controller, read input
 
+	// Release stale input on a per-slot link-drop edge. g_in[s] is refreshed ONLY
+	// by the 0x45 decode on a fresh reply, so once a controller goes silent the
+	// last-decoded input is frozen in place: STREAM modes (Switch Hori/Pro, PS5,
+	// DS4-gyro) keep emitting it every cycle, and PUSH modes (Steam/puck, Xbox)
+	// leave the host holding their last report -- a feathered trigger, or a
+	// "release" frame that was the one lost in the gap, stays asserted for the
+	// whole outage (the stuck / false-trigger symptom, most visible on the analog
+	// triggers). On the up->down edge, zero g_in[s] (neutralizes the stream modes)
+	// and push one synthetic neutral 0x45 through the active push mode's normal
+	// build path (neutralizes Steam/puck -- including held lizard keys/mouse --
+	// and Xbox; a no-op for stream modes, which don't override onReport45). The
+	// next real 0x45 on reconnect refills everything. PS3 already streams its own
+	// neutral when no slot is live, so it needs nothing here.
+	{
+		static bool wasUp[NSLOT] = {};
+		static const uint8_t neutral45[46] = { 0x45 };
+		for (int s = 0; s < NSLOT; s++) {
+			bool up = g_slot[s].used && g_connReplyMs[s] != 0 &&
+				  (millis() - g_connReplyMs[s] < 300u);
+			if (wasUp[s] && !up) {
+				memset(&g_in[s], 0, sizeof g_in[s]);
+				if (g_active)
+					g_active->onReport45(s, neutral45, true,
+							     sizeof neutral45);
+			}
+			wasUp[s] = up;
+		}
+	}
+
 	// ---- RF stall self-heal -------------------------------------------------------------------------------
 	// Field wedge: the controllers stay powered and show a SOLID (connected) light, the puck keeps issuing E3
 	// polls + E1 beacons (radio TX is provably alive -- a power-cycled controller still re-adopts the session

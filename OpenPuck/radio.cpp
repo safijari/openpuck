@@ -126,8 +126,16 @@ void rfConfig(uint8_t ch)
 	NRF_RADIO->EVENTS_DISABLED = 0;
 	NRF_RADIO->MODE = ((uint32_t)g_mode << RADIO_MODE_MODE_Pos);
 	NRF_RADIO->FREQUENCY = ch;
+	// +8dBm = the nRF52840's max TX power (was 0dBm). The link margin is thin on
+	// the Pro Micro's PCB-trace antenna (RSSI reads ~20dB below a real puck), and
+	// 2.4GHz is crowded, so weak polls the controller can't hear -> no reply ->
+	// the reply gaps that read as intermittent disconnects. This only lifts the
+	// puck->controller side (poll/beacon reach); the controller's own TX (the F1
+	// reply) is fixed -- but the poll MUST land for the controller to answer, so
+	// the extra 8dB of headroom directly cuts missed-poll dropouts. USB-powered,
+	// so the higher current draw is free.
 	NRF_RADIO->TXPOWER =
-		(RADIO_TXPOWER_TXPOWER_0dBm << RADIO_TXPOWER_TXPOWER_Pos);
+		(RADIO_TXPOWER_TXPOWER_Pos8dBm << RADIO_TXPOWER_TXPOWER_Pos);
 #if defined(RADIO_MODECNF0_RU_Fast)
 	NRF_RADIO->MODECNF0 = (RADIO_MODECNF0_RU_Fast << RADIO_MODECNF0_RU_Pos);
 #endif

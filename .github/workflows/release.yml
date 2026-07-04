@@ -157,7 +157,7 @@ jobs:
 
           find build/openpuck build/openpuck-recovery \
             -maxdepth 1 -type f \
-            \( -name '*.uf2' -o -name '*.zip' \) \
+            \( -name '*.uf2' -o -name '*.hex' \) \
             -print | while read -r f; do
             # Keep only the extension; the arduino base name (OpenPuck.ino.*)
             # is redundant once we prefix with OpenPuck-<version>-<flavor>.
@@ -173,7 +173,7 @@ jobs:
 
           find build/reversepuck \
             -maxdepth 1 -type f \
-            \( -name '*.uf2' -o -name '*.zip' \) \
+            \( -name '*.uf2' -o -name '*.hex' \) \
             -print | while read -r f; do
             ext="${f##*.}"
             cp "$f" "release_assets/ReversePuckFirmware-${VERSION}.${ext}"
@@ -199,7 +199,7 @@ jobs:
             - `OpenPuck-*-standard.*` — puck firmware (standard)
             - `OpenPuck-*-factory-reset.*` — puck firmware (factory reset)
             - `ReversePuckFirmware-*.*` — reverse-puck firmware (controller emulator)
-            - `.zip` files for Adafruit DFU tool
             - `.uf2` files for drag-and-drop flashing (BOOT/UF2 drive)
+            - `.hex` files for direct flashing workflows
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
