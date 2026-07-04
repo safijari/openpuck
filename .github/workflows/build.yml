@@ -69,13 +69,16 @@ jobs:
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             VERSION="${BASE_VERSION}-pr${PR_NUMBER_SAFE}+${SHORT_SHA}"
+            ARTIFACT_VERSION="${BASE_VERSION}-pr${PR_NUMBER_SAFE}-${SHORT_SHA}"
           else
             VERSION="${BASE_VERSION}"
+            ARTIFACT_VERSION="${BASE_VERSION}-${SHORT_SHA}"
           fi
 
           echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
           echo "pr_number=$PR_NUMBER_SAFE" >> "$GITHUB_OUTPUT"
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "artifact_version=$ARTIFACT_VERSION" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Generate version header
@@ -120,9 +123,7 @@ jobs:
 
       - name: Stage build artifacts
         env:
-          BASE_VERSION: ${{ steps.build_version.outputs.base_version }}
-          PR_NUMBER: ${{ steps.build_version.outputs.pr_number }}
-          SHORT_SHA: ${{ steps.build_version.outputs.short_sha }}
+          ARTIFACT_VERSION: ${{ steps.build_version.outputs.artifact_version }}
         run: |
           set -eu
           mkdir -p build/artifacts
@@ -130,13 +131,13 @@ jobs:
           for f in build/openpuck/*.{uf2,bin,hex,elf,map,zip}; do
             [ -f "$f" ] || continue
             ext="${f##*.}"
-            cp "$f" "build/artifacts/OpenPuck-${BASE_VERSION}-pr${PR_NUMBER}-${SHORT_SHA}.${ext}"
+            cp "$f" "build/artifacts/OpenPuck-${ARTIFACT_VERSION}.${ext}"
           done
 
           for f in build/reversepuck/*.{uf2,bin,hex,elf,map,zip}; do
             [ -f "$f" ] || continue
             ext="${f##*.}"
-            cp "$f" "build/artifacts/ReversePuckFirmware-${BASE_VERSION}-pr${PR_NUMBER}-${SHORT_SHA}.${ext}"
+            cp "$f" "build/artifacts/ReversePuckFirmware-${ARTIFACT_VERSION}.${ext}"
           done
 
           ls -la build/artifacts
