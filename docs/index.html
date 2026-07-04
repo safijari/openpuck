@@ -1085,7 +1085,7 @@ async function startPolling(){
 $("#connectBtn").onclick=connect;
 $("#uf2Pick").onclick=()=>{ $("#uf2File").click(); };
 $("#uf2File").onchange=(e)=>{
-  selectedUf2File = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+  selectedUf2File = e.target.files?.[0] || null;
   updateUf2UI();
   if(selectedUf2File) log("UF2 selected: " + selectedUf2File.name);
 };
@@ -1110,7 +1110,7 @@ $("#uf2Flash").onclick=async()=>{
     log("UF2 copied: " + selectedUf2File.name + " (" + sizeKiB
       + " KiB). Device should reboot automatically within a few seconds.");
   }catch(e){
-    if(e && e.name === "AbortError")
+    if(e.name === "AbortError")
       log("UF2 copy canceled.");
     else
       log("UF2 copy failed: " + e.message);
@@ -1160,7 +1160,7 @@ $("#uf2Next").onclick=async()=>{
   if(!dev){ log("not connected"); return; }
   const on=$("#uf2Next").classList.contains("active");
   await setField(30, on?0:1);
-  log(on?"UF2-on-reboot cleared":"UF2-on-reboot armed — next reboot enters UF2 bootloader");
+  log(on?"UF2-on-reboot cleared":"UF2-on-reboot armed - next reboot enters UF2 bootloader");
 };
 $("#factoryErase").onclick=async()=>{
   if(!dev){ log("not connected"); return; }

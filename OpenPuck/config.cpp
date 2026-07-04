@@ -20,7 +20,8 @@ bool g_debugCdcThisBoot = false;
 
 // persisted one-shot arm, stored in Cfg.rsvd0 (1 = keep CDC for the next boot)
 static uint8_t g_debugCdc = 0;
-// one-shot UF2 arm token, stored in Cfg.rxWin10 (legacy field no longer used)
+// one-shot UF2 arm token, stored in Cfg.rxWin10 (legacy field no longer used). Chosen so typical legacy
+// rxWin10 values (small 10us units) never collide and accidentally arm the updater path.
 static const uint8_t BOOT_UF2_ARM = 0xA5;
 
 int g_mDiv = 64, g_mFric = 94;
@@ -80,9 +81,13 @@ const uint32_t g_pollUs = POLL_US_DEFAULT;
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
 		bootMode, chordBtn[3], rumbleScale;
-	// rxWin10: one-shot UF2 boot arm token (legacy RF tunable slot, window now fixed). lizKeep: the id9=0 hold
-	// enable (see
-	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
+	// rxWin10: one-shot UF2 boot arm token (legacy RF tunable slot, window
+	// now fixed).
+	//
+	// lizKeep: id9=0 hold enable (see haptics.h LIZKEEP_MS).
+	//
+	// landAll87: verbatim-0x87-relay experiment toggle
+	// (haptics.h g_landAll87).
 	uint8_t rxWin10, lizKeep, landAll87;
 	TypeCfg type[ET_COUNT]; // per-emulated-type back/qam/abSwap/padHaptics
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
@@ -132,6 +137,7 @@ void loadCfg()
 				g_debugCdc = 0;
 				consume = true;
 			}
+
 			// one-shot UF2 boot (Cfg.rxWin10): honor once, then clear.
 			g_bootUf2ThisBoot = (c.rxWin10 == BOOT_UF2_ARM);
 			if (g_bootUf2ThisBoot) {
@@ -169,7 +175,9 @@ void loadCfg()
 			// verbatim-0x87-relay experiment toggle (0/1; default off)
 			if (c.landAll87 <= 1)
 				g_landAll87 = c.landAll87;
-			// Keep only our explicit arm token; old legacy values never arm UF2 by accident.
+
+			// Keep only our explicit arm token; legacy rxWin10 values
+			// were small 10us units, so they do not collide with 0xA5.
 			if (c.rxWin10 == BOOT_UF2_ARM)
 				g_bootUf2 = BOOT_UF2_ARM;
 			else
