@@ -185,7 +185,7 @@ def read_slots(puck):
     return slots
 
 
-def pair(slot=None):
+def pair(slot=None, pkey=None):
     devs = enumerate_devices()
     pucks = sorted(devs["puck"], key=lambda d: d.node)
     ctrls = sorted(devs["ctrl"], key=lambda d: d.node)
@@ -203,7 +203,11 @@ def pair(slot=None):
     if slot >= len(pucks):
         raise SystemExit("slot %d has no puck control interface" % slot)
 
-    r = os.urandom(8)
+    if pkey is None: 
+        r = os.urandom(8)
+    else: 
+        r = pkey
+
     key = b"esb/bond\x00" if slot == 0 else b"esb/bond_2\x00"
     print("pairing puck %s slot %d <-> controller %s  key=%s" %
           (puck_serial, slot, ctrl_serial, r.hex()))
@@ -217,6 +221,74 @@ def pair(slot=None):
     # reboot controller into wireless mode (magic 0xA427AF52)
     ctrl.set_feature(1, 0x95, bytes([0x52, 0xAF, 0x27, 0xA4]))
     print("paired. controller rebooting into wireless — move the puck to your host.")
+
+def write_puck_slot(slot=None, ctrl_serial=None, pkey=None):
+    devs = enumerate_devices()
+    pucks = sorted(devs["puck"], key=lambda d: d.node)
+    if not pucks:
+        raise SystemExit("no puck (28DE:1304) control interface found")
+
+    if slot is None:
+        slots = read_slots(pucks)
+        slot = next((s["idx"] for s in slots if not s["used"]), 0)
+    if slot >= len(pucks):
+        raise SystemExit("slot %d has no puck control interface" % slot)
+
+    
+    if ctrl_serial is None and pkey is None: 
+        print("wiping puck slot %d" % (slot))
+        pucks[slot].set_feature(2, 0xA2, b"\x00" * 24)
+    else:
+        if pkey is None: 
+            raise SystemExit("No key provided!")
+        
+        print("writing to puck slot %d: controller %s key=%s" %
+          (slot, ctrl_serial, pkey.hex()))
+        # puck slot: 0xA2 [r1 r2][ctrl serial]
+        pucks[slot].set_feature(2, 0xA2, pkey + _ser16(ctrl_serial))
+
+    print("done")
+
+def write_controller_slot(slot=0, puck_serial=None, pkey=None):
+    devs = enumerate_devices()
+    ctrls = sorted(devs["ctrl"], key=lambda d: d.node)
+    if not ctrls:
+        raise SystemExit("no controller (28DE:1302) control interface found — plug the ReversePuck controller in")
+    
+    if slot not in [0, 1]:
+        raise SystemExit("invalid controller slot %d" % (slot))
+
+
+    ctrl = ctrls[0]
+
+    if pkey is None: 
+        r = os.urandom(8)
+    else: 
+        r = pkey
+
+    key = b"esb/bond\x00" if slot == 0 else b"esb/bond_2\x00"
+
+    if puck_serial is None and pkey is None: 
+        print("Wiping controller slot %d" % (slot))
+        try:
+            ctrl.set_feature(1, 0xEE, key + b"\x00" * 24)
+            ctrl.set_feature(1, 0xEF, key)
+            print("Slot wiped.")
+        except Exception:
+            print("Slot wipe failed.")
+        
+    else: 
+
+        print("Writing controller slot %d: puck serial %s key=%s" %
+          (slot, puck_serial, r.hex()))
+
+        # controller esb/bond: 0xEE [key\0][r1 r2][puck serial] + 0xEF [key\0]
+        ctrl.set_feature(1, 0xEE, key + r + _ser16(puck_serial))
+        ctrl.set_feature(1, 0xEF, key)
+        time.sleep(0.1)
+        # reboot controller into wireless mode (magic 0xA427AF52)
+        ctrl.set_feature(1, 0x95, bytes([0x52, 0xAF, 0x27, 0xA4]))
+        print("paired. controller rebooting into wireless — move the puck to your host.")
 
 
 def unpair(slot):
@@ -232,8 +304,9 @@ def unpair(slot):
             ctrl.set_feature(1, 0xEE, key + b"\x00" * 24)
             ctrl.set_feature(1, 0xEF, key)
         except Exception:
-            pass
+            print("Slot wipe on controller failed.")
     print("cleared slot %d" % slot)
+
 
 
 def cmd_list():
@@ -244,9 +317,21 @@ def cmd_list():
     if pucks:
         print("puck:", pucks[0].read_serial(2))
         for s in read_slots(pucks):
-            print("  slot %d: %s" % (s["idx"], (s["serial"] + " (bonded)") if s["used"] else "empty"))
+            if s["used"]:
+                print("  slot %d: %s (key %s)" % (s["idx"], s["serial"], s["rec"][:8].hex()))
+            else: 
+                print("  slot %d: Empty" % (s["idx"]))
     else:
         print("puck: (none)")
+
+
+def steam_key_check(key):
+    try: 
+        key = bytes.fromhex(key)
+        if len(key) == 8: 
+            return key
+    except: 
+        raise argparse.ArgumentTypeError("Invalid pairing key!")
 
 
 def main():
@@ -255,15 +340,34 @@ def main():
     sub.add_parser("list")
     p = sub.add_parser("pair")
     p.add_argument("--slot", type=int, default=None)
+    p.add_argument("--key", type=steam_key_check, default=None)
     u = sub.add_parser("unpair")
     u.add_argument("--slot", type=int, required=True)
+
+    s = sub.add_parser("write-puck")
+    s.add_argument("--slot", type=int, default=None)
+    s.add_argument("--serial", type=str, default=None)
+    s.add_argument("--key", type=steam_key_check, default=None)
+
+    c = sub.add_parser("write-controller")
+    c.add_argument("--slot", type=int, default=None)
+    c.add_argument("--serial", type=str, default=None)
+    c.add_argument("--key", type=steam_key_check, default=None)
+
+
+    
     args = ap.parse_args()
     if args.cmd == "list":
         cmd_list()
     elif args.cmd == "pair":
-        pair(args.slot)
+        pair(args.slot, args.key)
     elif args.cmd == "unpair":
         unpair(args.slot)
+    elif args.cmd == "write-puck":
+        write_puck_slot(args.slot, args.serial, args.key)
+    elif args.cmd == "write-controller":
+        write_controller_slot(args.slot, args.serial, args.key)
+
 
 
 if __name__ == "__main__":
