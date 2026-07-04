@@ -65,7 +65,7 @@
   <span id="connState" class="pill dn">disconnected</span>
   <button id="connectBtn" class="primary">Connect</button>
   <span class="spacer"></span>
-  <input id="uf2File" type="file" accept=".uf2,application/octet-stream" style="display:none">
+  <input id="uf2File" class="hide" type="file" accept=".uf2,application/octet-stream">
   <button id="uf2Pick" title="Choose a local .uf2 firmware file">Pick UF2 file</button>
   <button id="uf2Flash" disabled title="Copy the selected .uf2 onto the UF2BOOT/NRF52BOOT drive">Write UF2 file</button>
   <button id="debugCdc" title="Reboot ONCE with the CDC serial console enabled (WebUSB goes away for that boot); auto-reverts on the next boot">Debug CDC</button>
@@ -252,7 +252,7 @@ let lastP=null; // most recent status-blob payload (config source for Export)
 // Stability test: armed = active across reconnects; stabStart = ms of the current run; stabLastRun = last
 // completed run {secs} (ended by a reset). Kept in-page so it survives the device reset (not a page refresh).
 let stabArmed=false, stabStart=0, stabLastRun=null;
-let uf2Picked=null;
+let selectedUf2File=null;
 // Running hang log: one entry per reset (persists in-page across the device reset; a page refresh clears it).
 // pendingHang is set at disconnect and enriched with reason/PC/stack from the first blob after reconnect.
 let hangLog=[], pendingHang=null;
@@ -270,15 +270,15 @@ function fmtDur(s){ s=Math.round(s); return s>=60 ? (Math.floor(s/60)+"m "+(s%60
 function updateUf2UI(){
   const pick=$("#uf2Pick"), flash=$("#uf2Flash");
   if(!pick || !flash) return;
-  const okFs = typeof window.showDirectoryPicker === "function";
-  flash.disabled = !uf2Picked || !okFs;
-  pick.textContent = uf2Picked ? ("UF2: " + uf2Picked.name) : "Pick UF2 file";
-  if(!okFs){
+  const supportsDirectoryPicker = typeof window.showDirectoryPicker === "function";
+  flash.disabled = !selectedUf2File || !supportsDirectoryPicker;
+  pick.textContent = selectedUf2File ? ("UF2: " + selectedUf2File.name) : "Pick UF2 file";
+  if(!supportsDirectoryPicker){
     flash.title = "Your browser does not support writing files from the panel";
-  } else if(!uf2Picked){
+  } else if(!selectedUf2File){
     flash.title = "Pick a .uf2 file first";
   } else {
-    flash.title = "Copy " + uf2Picked.name + " onto the UF2BOOT/NRF52BOOT drive";
+    flash.title = "Copy " + selectedUf2File.name + " onto the UF2BOOT/NRF52BOOT drive";
   }
 }
 function updateStabUI(){
@@ -1082,27 +1082,35 @@ async function startPolling(){
 $("#connectBtn").onclick=connect;
 $("#uf2Pick").onclick=()=>{ $("#uf2File").click(); };
 $("#uf2File").onchange=(e)=>{
-  uf2Picked = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+  selectedUf2File = e.target.files && e.target.files[0] ? e.target.files[0] : null;
   updateUf2UI();
-  if(uf2Picked) log("UF2 selected: " + uf2Picked.name);
+  if(selectedUf2File) log("UF2 selected: " + selectedUf2File.name);
 };
 $("#uf2Flash").onclick=async()=>{
-  if(!uf2Picked){ log("pick a UF2 file first"); return; }
+  if(!selectedUf2File){ log("Pick a UF2 file first"); return; }
   if(typeof window.showDirectoryPicker !== "function"){
-    log("browser file-write API unavailable — use UF2 DFU then drag/drop manually");
+    log("Browser file-write API unavailable. Use UF2 DFU, then drag/drop manually.");
     return;
   }
-  if(!confirm("Copy " + uf2Picked.name + " to the UF2BOOT/NRF52BOOT drive?\n\nIf the puck is not already in UF2 bootloader mode, click UF2 DFU first.")) return;
+  const msg =
+    "Copy " + selectedUf2File.name + " to the UF2BOOT/NRF52BOOT drive?\n\n"
+    + "If the puck is not already in UF2 bootloader mode, click UF2 DFU first.";
+  if(!confirm(msg)) return;
   try{
     const dir = await window.showDirectoryPicker({mode:"readwrite"});
-    const buf = await uf2Picked.arrayBuffer();
-    const fh = await dir.getFileHandle(uf2Picked.name, {create:true});
+    const buf = await selectedUf2File.arrayBuffer();
+    const fh = await dir.getFileHandle(selectedUf2File.name, {create:true});
     const wr = await fh.createWritable();
     await wr.write(buf);
     await wr.close();
-    log("UF2 copied: " + uf2Picked.name + " (" + Math.round(buf.byteLength/1024) + " KiB). Device should reboot after copy.");
+    const sizeKiB = Math.round(buf.byteLength / 1024);
+    log("UF2 copied: " + selectedUf2File.name + " (" + sizeKiB
+      + " KiB). Device should reboot automatically within a few seconds.");
   }catch(e){
-    log("UF2 copy failed: " + e.message);
+    if(e && e.name === "AbortError")
+      log("UF2 copy canceled.");
+    else
+      log("UF2 copy failed: " + e.message);
   }
 };
 $("#backupExport").onclick=exportBackup;
