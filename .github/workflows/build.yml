@@ -121,36 +121,34 @@ jobs:
         run: |
           find build/openpuck build/reversepuck -maxdepth 1 -type f -print | sort
 
-      - name: Stage build artifacts
-        env:
-          ARTIFACT_VERSION: ${{ steps.build_version.outputs.artifact_version }}
-        run: |
-          set -eu
-          shopt -s nullglob
-          mkdir -p build/artifacts
-
-          for ext in uf2 bin hex elf map zip; do
-            for f in build/openpuck/*.${ext}; do
-              base="$(basename "$f")"
-              stem="${base%.*}"
-              cp "$f" "build/artifacts/${stem}-${ARTIFACT_VERSION}.${ext}"
-            done
-          done
-
-          for ext in uf2 bin hex elf map zip; do
-            for f in build/reversepuck/*.${ext}; do
-              base="$(basename "$f")"
-              stem="${base%.*}"
-              cp "$f" "build/artifacts/${stem}-${ARTIFACT_VERSION}.${ext}"
-            done
-          done
-
-          ls -la build/artifacts
-
-      - name: Upload build artifacts
+      - name: Upload OpenPuck UF2 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: openpuck-firmware
+          name: OpenPuck-${{ steps.build_version.outputs.artifact_version }}-standard.uf2
           retention-days: 7
-          path: |
-            build/artifacts/*
+          if-no-files-found: error
+          path: build/openpuck/OpenPuck.ino.uf2
+
+      - name: Upload OpenPuck HEX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OpenPuck-${{ steps.build_version.outputs.artifact_version }}-standard.hex
+          retention-days: 7
+          if-no-files-found: error
+          path: build/openpuck/OpenPuck.ino.hex
+
+      - name: Upload ReversePuckFirmware UF2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReversePuckFirmware-${{ steps.build_version.outputs.artifact_version }}.uf2
+          retention-days: 7
+          if-no-files-found: error
+          path: build/reversepuck/ReversePuckFirmware.ino.uf2
+
+      - name: Upload ReversePuckFirmware HEX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ReversePuckFirmware-${{ steps.build_version.outputs.artifact_version }}.hex
+          retention-days: 7
+          if-no-files-found: error
+          path: build/reversepuck/ReversePuckFirmware.ino.hex
