@@ -64,14 +64,18 @@ jobs:
           if [ -z "$BASE_VERSION" ]; then
             BASE_VERSION="0.9.1"
           fi
+          SHORT_SHA="$(git rev-parse --short=8 "${HEAD_SHA}")"
+          PR_NUMBER_SAFE="${PR_NUMBER:-0}"
 
-          if [ "${{ github.event_name }}" = "pull_request" ] || [ "${{ github.event_name }}" = "pull_request_review" ]; then
-            SHORT_SHA="$(git rev-parse --short=8 "${HEAD_SHA}")"
-            VERSION="${BASE_VERSION}-pr${PR_NUMBER}+${SHORT_SHA}"
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            VERSION="${BASE_VERSION}-pr${PR_NUMBER_SAFE}+${SHORT_SHA}"
           else
             VERSION="${BASE_VERSION}"
           fi
 
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER_SAFE" >> "$GITHUB_OUTPUT"
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Generate version header
@@ -114,21 +118,33 @@ jobs:
         run: |
           find build/openpuck build/reversepuck -maxdepth 1 -type f -print | sort
 
+      - name: Stage build artifacts
+        env:
+          BASE_VERSION: ${{ steps.build_version.outputs.base_version }}
+          PR_NUMBER: ${{ steps.build_version.outputs.pr_number }}
+          SHORT_SHA: ${{ steps.build_version.outputs.short_sha }}
+        run: |
+          set -eu
+          mkdir -p build/artifacts
+
+          for f in build/openpuck/*.{uf2,bin,hex,elf,map,zip}; do
+            [ -f "$f" ] || continue
+            ext="${f##*.}"
+            cp "$f" "build/artifacts/OpenPuck-${BASE_VERSION}-pr${PR_NUMBER}-${SHORT_SHA}.${ext}"
+          done
+
+          for f in build/reversepuck/*.{uf2,bin,hex,elf,map,zip}; do
+            [ -f "$f" ] || continue
+            ext="${f##*.}"
+            cp "$f" "build/artifacts/ReversePuckFirmware-${BASE_VERSION}-pr${PR_NUMBER}-${SHORT_SHA}.${ext}"
+          done
+
+          ls -la build/artifacts
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: openpuck-firmware
           retention-days: 7
           path: |
-            build/openpuck/*.uf2
-            build/openpuck/*.bin
-            build/openpuck/*.hex
-            build/openpuck/*.elf
-            build/openpuck/*.map
-            build/openpuck/*.zip
-            build/reversepuck/*.uf2
-            build/reversepuck/*.bin
-            build/reversepuck/*.hex
-            build/reversepuck/*.elf
-            build/reversepuck/*.map
-            build/reversepuck/*.zip
+            build/artifacts/*
