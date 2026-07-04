@@ -129,20 +129,20 @@ jobs:
           shopt -s nullglob
           mkdir -p build/artifacts
 
-          for f in build/openpuck/*.{uf2,bin,hex,elf,map,zip}; do
-            [ -f "$f" ] || continue
-            base="$(basename "$f")"
-            stem="${base%.*}"
-            ext="${f##*.}"
-            cp "$f" "build/artifacts/${stem}-${ARTIFACT_VERSION}.${ext}"
+          for ext in uf2 bin hex elf map zip; do
+            for f in build/openpuck/*.${ext}; do
+              base="$(basename "$f")"
+              stem="${base%.*}"
+              cp "$f" "build/artifacts/${stem}-${ARTIFACT_VERSION}.${ext}"
+            done
           done
 
-          for f in build/reversepuck/*.{uf2,bin,hex,elf,map,zip}; do
-            [ -f "$f" ] || continue
-            base="$(basename "$f")"
-            stem="${base%.*}"
-            ext="${f##*.}"
-            cp "$f" "build/artifacts/${stem}-${ARTIFACT_VERSION}.${ext}"
+          for ext in uf2 bin hex elf map zip; do
+            for f in build/reversepuck/*.${ext}; do
+              base="$(basename "$f")"
+              stem="${base%.*}"
+              cp "$f" "build/artifacts/${stem}-${ARTIFACT_VERSION}.${ext}"
+            done
           done
 
           ls -la build/artifacts
