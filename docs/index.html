@@ -1044,8 +1044,8 @@ async function importBackup(file){
     await sf(1,c.mDiv); await sf(2,c.mFric); await sf(22,c.rumble); await sf(16,c.persistMode?1:0);
     await sf(17,c.chord[0]); await sf(18,c.chord[1]); await sf(19,c.chord[2]);
     await sf(23,c.swProRate); await sf(24,c.swGyro10);
-    // c.types is absent in pre-lizard-map backups (version 1 before per-type config was
-    // added); guard so a missing or malformed field never crashes the import mid-flight.
+    // c.types is absent in some very old backups created before per-type paddle/haptic config
+    // was added to the panel export; guard so a missing field never crashes the import mid-flight.
     if(Array.isArray(c.types)){
       for(let et=0; et<c.types.length && et<4; et++){ const t=c.types[et];
         for(let k=0;k<4;k++) await sf(40+et*8+k, t.back[k]);
