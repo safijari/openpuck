@@ -223,15 +223,24 @@ static void jcPackStick(uint8_t s[3], int16_t x, int16_t y)
 	s[1] = (uint8_t)(((Y & 0x0F) << 4) | ((X >> 8) & 0x0F));
 	s[2] = (uint8_t)((Y >> 4) & 0xFF);
 }
+
+#define JC_BATTERY_MAX 8u
+#define JC_BATTERY_PERCENT_MAX 100u
+
+// Round battery % up onto the 0..8 Switch scale so 1..12% stays at level 1.
 static uint8_t jcBatteryNibble(uint8_t bond)
 {
 	if (bond >= NSLOT)
-		return 8;
+		return 0;
 	uint8_t pct = g_battery[bond];
 	if (!pct)
-		return 8;
-	uint8_t lvl = (uint8_t)((pct + 12) / 13);
-	return (lvl > 8) ? 8 : lvl;
+		return 0;
+
+	// Ceiling division so non-zero percentages don't truncate to 0 on the 0..8 scale.
+	uint8_t lvl = (uint8_t)(((uint16_t)pct * JC_BATTERY_MAX +
+				 (JC_BATTERY_PERCENT_MAX - 1u)) /
+				JC_BATTERY_PERCENT_MAX);
+	return (lvl > JC_BATTERY_MAX) ? JC_BATTERY_MAX : lvl;
 }
 // Standard input-report prefix [0..11] (timer, battery/conn, 3 button bytes, both packed sticks, vibrator),
 // shared by the streamed 0x30 report and the 0x21 subcommand-reply reports the host reads during init.
@@ -295,7 +304,8 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 		jc |= codeToJc(g_qamMap, fA, fB, fX, fY);
 	out[0] = g_jcTimer[slot]++;
 
-	// [7:4]=battery (0..8), [3:0]=connection_info. Keep it connected (1), but never set charging.
+	// [7:4]=battery (0..8), [3:0]=connection_info. Keep it connected (1), but never set charging so the
+	// Switch UI doesn't pin the emulated pad in the charging state.
 	out[1] = (uint8_t)((jcBatteryNibble(bond) << 4) | 0x01);
 	out[2] = (uint8_t)(jc);
 	out[3] = (uint8_t)(jc >> 8);
