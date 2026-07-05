@@ -563,17 +563,17 @@ void webusbPoll()
 			// Command length (fixed per opcode). 0x0D = write-one-bond-slot (27 B); 0x05/0x0E/0x0F/0x10 carry
 			// one value byte; 0x02 a field+value; 0x0A a 3-byte magic. Firmware update: 0x20 begin
 			// [size u32][crc32 u32], 0x21 data (6 B header + payload), 0x22/0x23/0x24 bare.
-			uint8_t need = (op == 0x0D) ? 27 :
-				       (op == 0x02) ? 3 :
-				       (op == 0x03 || op == 0x05 ||
-					op == 0x0E || op == 0x0F ||
-					op == 0x10) ?
-						      2 :
-				       (op == 0x0A) ? 4 :
-				       (op == 0x20) ? 9 :
-				       (op == 0x21) ?
-						      (uint8_t)(6 + (n >= 6 ? buf[5] : 0)) :
-						      1;
+			uint8_t need =
+				(op == 0x0D) ? 27 :
+				(op == 0x02) ? 3 :
+				(op == 0x03 || op == 0x05 || op == 0x0E ||
+				 op == 0x0F || op == 0x10) ?
+					       2 :
+				(op == 0x0A) ? 4 :
+				(op == 0x20) ? 9 :
+				(op == 0x21) ? (uint8_t)(6 + (n >= 6 ? buf[5] :
+								       0)) :
+					       1;
 			if (n < need)
 				break; // wait for more bytes
 			if (op == 0x01) {

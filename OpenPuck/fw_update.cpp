@@ -138,7 +138,8 @@ uint8_t fwupBegin(uint32_t size, uint32_t crc32)
 	s_crc = crc32;
 	s_base = base;
 	s_off = 0;
-	s_erased = base; // pages erased lazily, one per chunk at most (85 ms CPU stall each)
+	s_erased =
+		base; // pages erased lazily, one per chunk at most (85 ms CPU stall each)
 	s_active = true;
 	return FWUP_OK;
 }
@@ -172,9 +173,10 @@ uint8_t fwupEnd(void)
 	if (!s_active) {
 		// duplicate END (the panel retried because our ack got lost): if the commit it is asking about
 		// is exactly the one already on the meta page, re-report success instead of ERR_STATE.
-		const volatile FwupMeta *m = (const volatile FwupMeta *)FWUP_META;
-		if (s_size && m->magic == FWUP_META_MAGIC && m->size == s_size &&
-		    m->crc == s_crc)
+		const volatile FwupMeta *m =
+			(const volatile FwupMeta *)FWUP_META;
+		if (s_size && m->magic == FWUP_META_MAGIC &&
+		    m->size == s_size && m->crc == s_crc)
 			return FWUP_OK;
 		return FWUP_ERR_STATE;
 	}
@@ -211,7 +213,8 @@ void fwupAbort(void)
 // 1..N-1 are written forward, then the vector page is written BACKWARD so word 0 -- the app-validity marker
 // the bootloader checks -- is the final word written anywhere in the app. Interrupt the sequence at any
 // point and the board reads as app-less: the UF2 bootloader keeps it, drag-and-drop recovers it.
-#define FWUP_RAMFUNC __attribute__((used, noinline, section(".data.opk_ramfunc")))
+#define FWUP_RAMFUNC \
+	__attribute__((used, noinline, section(".data.opk_ramfunc")))
 FWUP_RAMFUNC static void ramApply(uint32_t dst, uint32_t src, uint32_t size,
 				  uint32_t metaPage, uint32_t blSettings)
 {
@@ -334,8 +337,10 @@ void fwupApplyIfArmed(void)
 		  (uint32_t)~crc32Step(0xFFFFFFFFUL, (const uint8_t *)&v, 16);
 	ok = ok && v.size && v.size <= FWUP_MAX_IMG && (v.size & 3) == 0;
 	ok = ok && v.staged >= FWUP_APP_BASE + FWUP_MAX_IMG &&
-	     v.staged + v.size <= FWUP_META && (v.staged & (FWUP_PAGE - 1)) == 0;
-	ok = ok && crc32Flash(v.staged, v.size) == v.crc; // staged bytes still intact?
+	     v.staged + v.size <= FWUP_META &&
+	     (v.staged & (FWUP_PAGE - 1)) == 0;
+	ok = ok && crc32Flash(v.staged, v.size) ==
+			   v.crc; // staged bytes still intact?
 	ok = ok && vectorsPlausible(v.staged, v.size);
 	if (!ok) {
 		nvmcErasePage(FWUP_META);
@@ -346,8 +351,9 @@ void fwupApplyIfArmed(void)
 	// a fault inside the copier resets into the safe app-less/bootloader state instead of hanging forever.
 	__disable_irq();
 	if (!NRF_WDT->RUNSTATUS) {
-		NRF_WDT->CONFIG = (WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) |
-				  (WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos);
+		NRF_WDT->CONFIG =
+			(WDT_CONFIG_HALT_Pause << WDT_CONFIG_HALT_Pos) |
+			(WDT_CONFIG_SLEEP_Run << WDT_CONFIG_SLEEP_Pos);
 		NRF_WDT->CRV = 8UL * 32768UL - 1; // ~8 s, same as the app's own
 		NRF_WDT->RREN = WDT_RREN_RR0_Msk;
 		NRF_WDT->TASKS_START = 1;

@@ -28,18 +28,28 @@
 // ACK status codes, echoed to the panel in the 0xAB frame ([0xAB][5][status][nextOff u32 LE]).
 enum {
 	FWUP_OK = 0,
-	FWUP_ERR_STATE = 1, // command out of sequence (no BEGIN, or END before all bytes)
-	FWUP_ERR_BOUNDS = 2, // image too big / would collide with the running app or config region
-	FWUP_ERR_OFFSET = 3, // chunk offset mismatch (ack carries the expected offset -- resync and resend)
+	FWUP_ERR_STATE =
+		1, // command out of sequence (no BEGIN, or END before all bytes)
+	FWUP_ERR_BOUNDS =
+		2, // image too big / would collide with the running app or config region
+	FWUP_ERR_OFFSET =
+		3, // chunk offset mismatch (ack carries the expected offset -- resync and resend)
 	FWUP_ERR_CRC = 4, // staged bytes don't match the announced CRC32
-	FWUP_ERR_VECTOR = 5, // staged image doesn't start with a plausible Cortex-M vector table
+	FWUP_ERR_VECTOR =
+		5, // staged image doesn't start with a plausible Cortex-M vector table
 };
 
-uint8_t fwupBegin(uint32_t size, uint32_t crc32); // 0x20: announce image; disarms any previous staged update
-uint8_t fwupChunk(uint32_t off, const uint8_t *d, uint8_t len); // 0x21: sequential data (len%4==0, <=128)
-uint8_t fwupEnd(void); // 0x22: verify staged CRC32 + vectors, commit the meta page (ARMS the update)
-void fwupAbort(void); // 0x24: disarm + drop any transfer state (staged bytes become inert garbage)
-uint32_t fwupNextOff(void); // next expected chunk offset (returned in every ack for panel resync)
+uint8_t fwupBegin(
+	uint32_t size,
+	uint32_t crc32); // 0x20: announce image; disarms any previous staged update
+uint8_t fwupChunk(uint32_t off, const uint8_t *d,
+		  uint8_t len); // 0x21: sequential data (len%4==0, <=128)
+uint8_t
+fwupEnd(void); // 0x22: verify staged CRC32 + vectors, commit the meta page (ARMS the update)
+void fwupAbort(
+	void); // 0x24: disarm + drop any transfer state (staged bytes become inert garbage)
+uint32_t fwupNextOff(
+	void); // next expected chunk offset (returned in every ack for panel resync)
 
 // Apply a committed staged update. Call FIRST in setup(): if a valid meta page is present this never returns
 // (copies staged->app from RAM and resets). Invalid/stale meta is erased and ignored.
