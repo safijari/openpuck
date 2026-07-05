@@ -980,9 +980,15 @@ function buildBackup(p, bp){
   const types=[];
   for(let et=0; et<TYPE_DEFS.length; et++){ const q=73+et*8;
     types.push({back:[p[q],p[q+1],p[q+2],p[q+3]], qam:p[q+4], abSwap:p[q+5], pad:p[q+6], led:p[q+7]}); }
-  return { magic:"openpuck-backup", version:1, bonds,
-    config:{ mode:p[1], mDiv:p[2], mFric:p[3], persistMode:p[22], chord:[p[23],p[24],p[25]],
-             rumble:p[51], swProRate:p[52], swGyro10:p[53], types } };
+  const cfg={ mode:p[1], mDiv:p[2], mFric:p[3], persistMode:p[22], chord:[p[23],p[24],p[25]],
+              rumble:p[51], swProRate:p[52], swGyro10:p[53], types };
+  // version 2: include the lizard map so it survives a backup/restore cycle.
+  // Guard on !lizardBusy to avoid a race with the one-shot lazy load (lizardExchange sets
+  // lizardBusy while the initial 0x11 fetch is in flight); if the load is still pending the
+  // map snapshot would be empty, which would incorrectly clear bindings on restore.
+  if(lizardLoaded && lizardCapable() && !lizardBusy)
+    cfg.lizardMap=lizardBindings.map(b=>({outType:b.outType,od:b.od.slice(),trig:b.trig>>>0,hold:b.hold>>>0}));
+  return { magic:"openpuck-backup", version:(cfg.lizardMap?2:1), bonds, config:cfg };
 }
 function downloadBackup(obj){
   const ts=new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
@@ -1018,32 +1024,68 @@ async function importBackup(file){
   if(!confirm("Restore this backup onto the CONNECTED puck (serial "+(dev.serialNumber||"?")+")?\n\nMake sure this is the TARGET puck, not the one you exported from — the panel only talks to the puck you last connected.\n\nThis OVERWRITES its "+bondedN+" controller pairing(s) and ALL settings, then reboots it.\n\nResult: any controller paired to the original puck will connect to this one with no re-pairing.")) return;
   log("importing onto puck "+(dev.serialNumber||"?"));
   backupBusy=true; await waitIdle();
+  // Blocking progress modal (same surface the firmware updater uses): covers the page so nothing else can be
+  // driven while the import replays every setting onto the puck, then closes on Done / on error.
+  modalOpen("Restore backup");
+  const c=obj.config;
+  // Pre-count every write so the bar tracks real progress: settings (9 base fields), per-type config
+  // (8 each), the lizard bindings, 4 bond slots, and the final commit.
+  const typeN=Array.isArray(c.types)?Math.min(c.types.length,4):0;
+  const lizardN=(Array.isArray(c.lizardMap) && lizardCapable())?Math.min(c.lizardMap.length,LZ_MAX):0;
+  const total=9 + typeN*8 + lizardN + 4 + 1;
+  let step=0, stage="";
+  const tick=()=>modalStage(stage, Math.min(99,Math.floor(step*100/total)));
   try{
     // Capability probe: the connected puck MUST run firmware new enough to answer 0x09 with a 0xA7 frame,
     // otherwise it will silently ignore the 0x0D bond-import below. This is the #1 import failure: the panel
     // is connected to a puck still on old firmware. Catch it loudly instead of "nothing happened".
+    modalStage("Checking puck firmware", null);
     await send([0x09]);
     let probe=null; for(let t=0;t<8 && !probe;t++) probe=await readFrame(0xA7, 2+4*24);
     if(!probe){
       log("import ABORTED — the connected puck does not support import (old firmware).");
-      alert("This puck's firmware is too old to import a backup.\n\nFlash it with the latest OpenPuck build (the same one that produced the export), reconnect, then import again.");
+      modalDone(false, "This puck's firmware is too old to import a backup. Flash it with the latest "
+        +"OpenPuck build (the same one that produced the export), reconnect, then import again.", "Import failed");
       return;
     }
-    const c=obj.config;
     // Every step is a write-then-read transaction (same shape as the proven 0x02 sliders): the firmware acks
     // each with a status blob, which we read back to keep the OUT pipe flowing and naturally pace the writes.
-    const w=async(bytes)=>{ await send(bytes); await readBlob(); };
+    const w=async(bytes)=>{ await send(bytes); await readBlob(); step++; tick(); };
     const sf=async(f,v)=>{ await w([0x02, f, (v|0)&0xff]); };
     // replay every setting (each persists; none reboot). mode is applied by the 0x0E commit below.
+    stage="Restoring settings"; tick();
     await sf(1,c.mDiv); await sf(2,c.mFric); await sf(22,c.rumble); await sf(16,c.persistMode?1:0);
     await sf(17,c.chord[0]); await sf(18,c.chord[1]); await sf(19,c.chord[2]);
     await sf(23,c.swProRate); await sf(24,c.swGyro10);
-    for(let et=0; et<c.types.length && et<4; et++){ const t=c.types[et];
-      for(let k=0;k<4;k++) await sf(40+et*8+k, t.back[k]);
-      await sf(40+et*8+4, t.qam); await sf(40+et*8+5, t.abSwap?1:0);
-      await sf(40+et*8+6, t.pad?1:0); await sf(40+et*8+7, t.led); }
-    log("settings replayed ("+(9+c.types.length*8)+" fields)");
+    // c.types is absent in some very old backups created before per-type paddle/haptic config
+    // was added to the panel export; guard so a missing field never crashes the import mid-flight.
+    if(typeN){
+      for(let et=0; et<typeN; et++){ const t=c.types[et];
+        for(let k=0;k<4;k++) await sf(40+et*8+k, t.back[k]);
+        await sf(40+et*8+4, t.qam); await sf(40+et*8+5, t.abSwap?1:0);
+        await sf(40+et*8+6, t.pad?1:0); await sf(40+et*8+7, t.led); }
+      log("settings replayed ("+(9+typeN*8)+" fields)");
+    } else { log("settings replayed (9 fields — no per-type config in this backup)"); }
+    // restore the lizard map if the backup includes it (version 2+) and the puck speaks v16+.
+    // pre-lizard-map backups simply lack c.lizardMap; skip silently so they still import cleanly.
+    if(lizardN){
+      stage="Restoring button map"; tick();
+      const map=c.lizardMap.slice(0,LZ_MAX);
+      await send([0x13, map.length&0xff]); // begin edit (set count)
+      for(let i=0;i<map.length;i++){
+        const b=map[i], od=(b.od||[]).slice(0,7); while(od.length<7) od.push(0);
+        const t=(b.trig||0)>>>0, h=(b.hold||0)>>>0;
+        await send([0x12, i, (b.outType||0)&0xff, ...od.map(x=>(x||0)&0xff),
+          t&0xff,(t>>>8)&0xff,(t>>>16)&0xff,(t>>>24)&0xff,
+          h&0xff,(h>>>8)&0xff,(h>>>16)&0xff,(h>>>24)&0xff]);
+        step++; tick();
+      }
+      await send([0x14]); // commit + persist to flash
+      await readLizard(); // drain the 0xAA echo so the pipe is clean for bond writes
+      log("lizard map restored — "+map.length+" bindings");
+    }
     // write each bond slot with its own small command [0x0D][slot][used][24-byte rec]
+    stage="Restoring controller pairings"; tick();
     let n=0;
     for(let s=0;s<4;s++){
       const b=obj.bonds.find(x=>x.slot===s) || {used:false, rec:""};
@@ -1054,8 +1096,13 @@ async function importBackup(file){
     }
     log("wrote "+n+" bond slot(s) — committing + rebooting");
     // commit: persist bonds, apply mode, reboot (no ack — the device reboots)
+    stage="Committing + rebooting"; step++; tick();
     await send([0x0E, (c.mode!==undefined?c.mode:0xFF)&0xff]);
     log("import sent — puck is cloning and rebooting. Reconnect after it returns.");
+    modalDone(true, "Backup restored — the puck is cloning and rebooting. Reconnect after it returns.");
+  } catch(e){
+    log("import FAILED — "+e.message);
+    modalDone(false, e.message+" — the import stopped partway; reconnect and retry.", "Import failed");
   } finally { backupBusy=false; }
 }
 async function setField(field,value){
@@ -1538,12 +1585,12 @@ function modalOpen(title){
   $("#updModal").classList.remove("hide");
   modalStage("Preparing…",null);
 }
-function modalDone(ok,msg){
+function modalDone(ok,msg,failTitle){
   const f=$("#updFill");
   f.classList.remove("pulse");
   f.style.width="100%";
   f.classList.toggle("bad",!ok);
-  $("#updStage").textContent = ok ? "Done" : "Update failed";
+  $("#updStage").textContent = ok ? "Done" : (failTitle||"Update failed");
   $("#updPct").textContent="";
   $("#updDetail").textContent=msg;
   $("#updClose").classList.remove("hide");
