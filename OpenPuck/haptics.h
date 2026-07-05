@@ -62,6 +62,9 @@ extern uint8_t g_landAll87;
 // Land Steam's amp/haptic-config 0x87 (regs 0x18/0x2E/0x34/0x35, not gyro 0x30) so haptics play as clean
 // ticks not a default-amp buzz. On by default; console "AMP" toggles.
 extern uint8_t g_landAmp;
+// Master enable for the puck->controller haptic relay (Steam 0x80-0x86 rumble/pad-feedback). Console "HR"
+// toggles it to isolate the drag-smoothness cost of relaying Steam's trackpad haptics. See haptics.cpp.
+extern bool g_hapticRelay;
 
 // Post-connect haptic block (persisted, panel-controlled): when g_hapticBlockOn, Steam haptics are dropped for
 // g_hapticBlockMs after a (re)connect so the controller's haptic engine settles before the first real haptic.

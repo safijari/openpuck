@@ -156,16 +156,26 @@ extern uint8_t g_swGyroScale10;
 // persist g_swProRate + g_swGyroScale10 to their flash file
 void swProSaveCfg();
 
-// 250 Hz -- matches SC2 input report rate (1000000/250 = 4000 us)
-#define POLL_US_DEFAULT 4000u
+// RF poll cadence: 333 Hz (3000 us). The controller does NOT stream on its own -- the RE air capture
+// (nrf-sniffer HANDOFF.md) shows the puck POLLS (short frame) and the controller auto-ACKs one input
+// frame ~90 us later, so the controller's observed ~137-270 Hz "packet counter" IS the real puck's poll
+// rate (peaking ~270 Hz during a fast trackpad drag). We poll slightly above that peak so a fast drag is
+// never undersampled, without the wasteful stale-ACK repeats that a much higher rate produces (polling
+// faster than the controller refreshes just re-reads the same ACK payload, deduped by seq -> burned
+// airtime, no new samples). The old 250 Hz default sat BELOW the drag peak -> dropped pad samples ->
+// Steam's pad->mouse velocity mapping stair-stepped ("feels like it misses inputs"). Multi-controller
+// degrades gracefully via the rfConnStep catch-up reset.
+#define POLL_US_DEFAULT 3000u
 // host-side HID stream cadence for translated modes (~250 Hz)
 #define USB_STREAM_MS 4u
 // How long a USB suspend must PERSIST before we power the controllers off. A brief selective-suspend
 // (host idle power-management) resumes in <1s and must not trigger a self-inflicted power-off -> the
 // resulting disconnect/reconnect churn looked like random controller drops. Real host sleep persists.
 #define SUSPEND_OFF_MS 4000u
-// RF poll cadence (us). FIXED -- not configurable (see loadCfg).
-extern const uint32_t g_pollUs;
+// RF poll cadence (us). Defaults to POLL_US_DEFAULT; live-adjustable via the console "PR<hz>" command
+// (session-only -- NOT persisted; loadCfg always forces the default on boot) so the sweet spot can be
+// swept on hardware while watching the delivered report rate.
+extern uint32_t g_pollUs;
 
 // loop-timing diagnostics (defined in OpenPuck.ino) -- surfaced in the WebUSB status blob to find what caps
 // the poll rate: avg loop period, slowest section index, and that section's avg us/iteration.

@@ -231,8 +231,9 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// path, so this OUTPUT form was still leaking through and clicking. OpenPuck doesn't need it.
 		bool dropOut81 =
 			(g_drop81 && g_usbMode == MODE_STEAM && rid == 0x81);
-		if (rid >= 0x80 && rid <= 0x86 && !dropOut81 && n >= 1 &&
-		    hapticRelaySlotOk(slot) && !lizardActive() && !muted) {
+		if (g_hapticRelay && rid >= 0x80 && rid <= 0x86 && !dropOut81 &&
+		    n >= 1 && hapticRelaySlotOk(slot) && !lizardActive() &&
+		    !muted) {
 			if (!haptic82Blocked(slot)) {
 				relayEnqueue(rid, b,
 					     (uint8_t)(n > RELAY_MAXP ?
@@ -315,10 +316,15 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		bool localAnswer = (cmd == 0x83 || cmd == 0x89 || cmd == 0xAE ||
 				    cmd == 0xA2 || cmd == 0xA3 || cmd == 0xAD ||
 				    cmd == 0xB4 || cmd == 0xED || cmd == 0xA4);
-		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop)
+		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop).
+		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
+		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
+		// smoothness. Config (0x87/0x88) and power-off (0x9F) still relay so nothing else regresses.
+		bool hapticCmd = (cmd >= 0x80 && cmd <= 0x86);
 		bool relayOk = hapticRelaySlotOk(slot) && !drop &&
 			       !localAnswer &&
-			       !(haptic82 && (lizardActive() || muted));
+			       !(haptic82 && (lizardActive() || muted)) &&
+			       !(hapticCmd && !g_hapticRelay);
 		if (relayOk && (!haptic82 || !haptic82Blocked(slot))) {
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
@@ -713,7 +719,14 @@ void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 		// forward the puck's raw pad coords untouched (Steam does its own interpolation/smoothing). Forward
 		// only FRESH reports: the real puck dedupes, so stale repeats make Steam's velocity/smoothing
 		// stair-step. g_fwdNewOnly toggles for A/B.
-		if ((fresh || !g_fwdNewOnly) && hid[slot].ready())
+		//
+		// Do NOT gate on hid[slot].ready() here: usbTxHid enqueues into a ring buffer (drop-oldest)
+		// that exists precisely to hold a report while the endpoint is briefly busy -- usbTxDrain
+		// sends it the instant the host next polls. Gating on ready() at enqueue time DROPPED every
+		// fresh report that landed while the endpoint was busy (~1 ms after each send), which at
+		// 300+ captured reports/s silently discarded ~a third of them (measured: RF new/s ~313 but
+		// host delivered ~180). Always enqueue; the ring paces delivery to the host without loss.
+		if (fresh || !g_fwdNewOnly)
 			usbTxHid(
 				&hid[slot], rid, rep + 1,
 				blen); // Steam/SDL Triton: input report 0x45 (old) / 0x42 (new fw)

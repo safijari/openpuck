@@ -43,8 +43,9 @@ extern bool
 
 // full multi-line debug dump vs compact "I45 <hex>" stream
 extern bool g_connVerbose;
-// poll RX-window (us): caps poll rate (~1e6/rxWin). FIXED, not configurable (like g_pollUs) -- raising it
-// drops the poll rate, so it's pinned at the 250 Hz value rather than exposed as a footgun knob.
+// poll RX-window (us): the full window is paid only on a no-reply poll (a reply returns early), so it must
+// stay < g_pollUs to fit inside the 333 Hz cycle. FIXED, not configurable (like g_pollUs) -- raising it
+// starves the poll cycle, so it's pinned rather than exposed as a footgun knob.
 extern const uint32_t g_rxWin;
 
 // set on 0xF2 disconnect; pauses beacon+poll so a powering-off controller can sleep
@@ -95,7 +96,7 @@ extern uint8_t g_slotCrcps[NSLOT], g_slotNoRxps[NSLOT], g_slotRelayps[NSLOT];
 // firmware caught and recovered from a full-link wedge that previously needed a manual puck replug.
 extern uint16_t g_rfStallRecover;
 
-// MEASURED avg us between GET-poll fires (compare to the intended g_pollUs=4000)
+// MEASURED avg us between GET-poll fires (compare to the intended g_pollUs=3000)
 extern uint16_t g_pollPeriodUs;
 
 // Smoothed controller->puck signal strength, sampled by the radio (RSSISAMPLE) on each CRC-good controller

@@ -39,6 +39,13 @@ uint8_t g_landAll87 = 0;
 // amplifier is configured and haptics play as clean ticks instead of a default-amp buzz. On by default;
 // console "AMP" toggles for A/B. See the land01 whitelist in rfConnFlushRelay.
 uint8_t g_landAmp = 1;
+// Master enable for the puck->controller haptic RELAY (Steam OUTPUT reports 0x80-0x86, incl. the trackpad
+// texture-feedback stream Steam pushes WHILE you drag). Each relayed frame is an extra TX that precedes the
+// E3 poll and steals its reply window, and the controller must stop to process it -- both can depress the
+// input rate exactly during a drag. On by default; console "HR" toggles it so the drag-smoothness cost of
+// haptics can be isolated on hardware (drag with it OFF vs ON). OFF only affects Steam-driven rumble/pad
+// feedback; it does NOT touch settings/config (0x87) or power-off (0x9F) relays.
+bool g_hapticRelay = true;
 // Per-slot reconnect block. 0 = idle; non-zero = drop haptics aimed at this slot until millis() catches up.
 unsigned long g_hapticBlockUntil[NSLOT] = { 0 };
 
@@ -500,12 +507,23 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			}
 			// slot was already consumed under the critical section above.
 			// s1 carries a PID distinct from the GET poll (caller cycles it) so the controller's ESB
-			// dedup never treats the GET as a retransmit of this relay. 80us RX: relay is NO-ACK.
+			// dedup never treats the GET as a retransmit of this relay.
+			//
+			// HARVEST the relay's reply as INPUT. Like any frame we send, the controller auto-ACKs a
+			// relay with its current input in the ACK payload (~90us later, per the RE poll->ACK
+			// capture). The old 80us window closed BEFORE that reply arrived, so every relay's input was
+			// discarded -- and yet HW A/B showed the delivered input rate RISING when haptics relay
+			// (an extra frame/cycle during a trackpad drag), because each frame makes the controller
+			// refresh its ACK payload and the following E3 poll caught the fresher value. Reading the
+			// reply directly turns each relay into a SECOND input sample per cycle: rfConnTx runs the
+			// full F1 decode (seq-dedup guards double-forward), so a drag streaming haptics now collects
+			// ~2x the samples, closing the gap to the real puck. A present reply returns early (~90us);
+			// only a genuine no-reply pays the bounded 400us window, so airtime stays in budget.
 			rfConnTx(ch, s1, p, plen,
-				 80); // one relay per poll cycle
+				 400); // one relay per poll cycle -- reply harvested as input
 		}
 	}
-	return have; // true = a relay frame went out this cycle (steals a reply window from the E3 poll)
+	return have; // true = a relay frame went out this cycle (its reply is harvested as input, above)
 }
 
 // Haptic-subsystem re-init: the captured sequence Steam sends when it (re)takes control (0x81 reset + 0x87
