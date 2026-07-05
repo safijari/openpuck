@@ -10,6 +10,7 @@
 #include "fault_diag.h"
 #include "fw_update.h"
 #include "usb_tx.h"
+#include "ble_host.h" // BLE controllers: ops 0x16..0x19, 0xAC status frame, blob state byte
 #include <Arduino.h>
 #include <string.h>
 
@@ -31,6 +32,8 @@ static volatile bool g_bondExportRequest = false;
 static volatile bool g_fwupAckPend = false;
 static volatile uint8_t g_fwupAckStatus = 0;
 static volatile uint32_t g_fwupAckOff = 0;
+// BLE-controllers status frame (0xAC), same deferred-send shape as the blob: 0x19 sets it, the SOF drain sends.
+static volatile bool g_bleFrameRequest = false;
 static void fwupAckPost(uint8_t status)
 {
 	g_fwupAckStatus = status;
@@ -54,7 +57,8 @@ static void fwupAckPost(uint8_t status)
 //                [v13: per-slot link stats, 4x9B from p[141]: {pollsps u16, f1ps u16, newps u16, crc/s u8,
 //                 noRx/s u8, relay/s u8} -- each controller's own rates (the v4 aggregates are their sums)]
 //                [v14: p[177] landAll87 (verbatim-0x87-relay experiment toggle)]
-#define WB_PAYLEN 176
+//                [v16: p[178] BLE state (BLE_ST_*; panel shows the BLE-controllers card when ver >= 16)]
+#define WB_PAYLEN 177
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -79,10 +83,11 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (15 = +staged firmware-update ops 0x20..0x24, payload unchanged; 14 = +landAll87
-	// toggle; 13 = +per-slot link stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 =
-	// +ledBright per type; 9 = +per-type cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 15;
+	// protocol version (16 = +BLE controllers (state byte p[178], ops 0x16..0x19, frame 0xAC); 15 = +staged
+	// firmware-update ops 0x20..0x24, payload unchanged; 14 = +landAll87 toggle; 13 = +per-slot link stats;
+	// 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type cfg;
+	// 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
+	p[2] = 16;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -250,6 +255,7 @@ static void webusbSendBlob()
 	}
 	// v14: verbatim-0x87-relay experiment toggle (panel reflects + toggles it)
 	p[177] = g_landAll87;
+	p[178] = bleState(); // v16: BLE controllers lifecycle (BLE_ST_*)
 	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
 	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
 	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
@@ -433,6 +439,18 @@ static void webusbSofDrain(void)
 		g_bondExportRequest = false;
 		webusbSendBondExport();
 	}
+	if (g_bleFrameRequest) {
+		// BLE-controllers status frame (0xAC): bonded list + live scan table. Built into a static
+		// buffer (off the 800B usbd stack) and drop-on-full like the blob -- a panel poll re-asks.
+		static uint8_t bf[2 + 250];
+		uint8_t n = bleStatusFrame(bf, sizeof bf);
+		if (n && tud_vendor_write_available() >= n) {
+			usb_web.write(bf, n);
+			usb_web.flush();
+			g_bleFrameRequest = false;
+		} else if (!n)
+			g_bleFrameRequest = false;
+	}
 }
 // ---- live wedge reporter (0xA9) --------------------------------------------------------------------------
 // THE one channel that survives a loop() wedge on boards that wipe .noinit/GPREGRET across the watchdog reset
@@ -585,7 +603,7 @@ void webusbPoll()
 			if (n == 0)
 				break;
 			uint8_t op = buf[0];
-			if ((op < 0x01 || op > 0x15) &&
+			if ((op < 0x01 || op > 0x19) &&
 			    (op < 0x20 || op > 0x24)) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
@@ -603,15 +621,19 @@ void webusbPoll()
 			// binding (18 B); 0x05/0x0E/0x0F/0x10/0x13 carry one value byte; 0x02 a field+value; 0x0A a
 			// 3-byte magic. Firmware update: 0x20 begin [size u32][crc32 u32], 0x21 data (6 B header +
 			// payload), 0x22/0x23/0x24 bare. (0x11/0x14/0x15 are bare lizard opcodes -> default 1.)
+			// BLE block: 0x16 control [sub], 0x17 pair / 0x18 forget [addrType][addr6], 0x19 = bare
+			// "send the 0xAC status frame".
 			uint8_t need =
 				(op == 0x0D) ? 27 :
 				(op == 0x12) ? 18 :
 				(op == 0x02) ? 3 :
 				(op == 0x03 || op == 0x05 || op == 0x0E ||
-				 op == 0x0F || op == 0x10 || op == 0x13) ?
+				 op == 0x0F || op == 0x10 || op == 0x13 ||
+				 op == 0x16) ?
 					       2 :
-				(op == 0x0A) ? 4 :
-				(op == 0x20) ? 9 :
+				(op == 0x0A)		   ? 4 :
+				(op == 0x17 || op == 0x18) ? 8 :
+				(op == 0x20)		   ? 9 :
 				(op == 0x21) ? (uint8_t)(6 + (n >= 6 ? buf[5] :
 								       0)) :
 					       1;
@@ -640,6 +662,41 @@ void webusbPoll()
 			// webusbDrainFlight is drop-on-full so it never blocks. Always available (recorder isn't OPK_LOG).
 			else if (op == 0x10) {
 				webusbDrainFlight(buf[1] != 0);
+			}
+			// ---- BLE controllers (ble_host.h) ----
+			// 0x16 control: 0 = disable (persist + reboot for a clean SoftDevice teardown), 1 = enable
+			// (persist + start live -- no reboot needed), 2 = UI scan start, 3 = UI scan stop.
+			else if (op == 0x16) {
+				if (buf[1] == 0) {
+					g_bleEn = 0;
+					saveCfg();
+					usb_web.flush();
+					delay(40);
+					faultDiagArmIntentionalReset();
+					NVIC_SystemReset();
+				} else if (buf[1] == 1) {
+					g_bleEn = 1;
+					saveCfg();
+					bleHostBegin();
+				} else if (buf[1] == 2) {
+					bleScanUi(true);
+				} else if (buf[1] == 3) {
+					bleScanUi(false);
+				}
+				g_bleFrameRequest =
+					true; // ack with fresh state
+			}
+			// 0x17 pair to a scanned device / 0x18 forget a bond: [op][addrType][addr6]
+			else if (op == 0x17) {
+				blePairTo(buf[1], buf + 2);
+				g_bleFrameRequest = true;
+			} else if (op == 0x18) {
+				bleForget(buf[1], buf + 2);
+				g_bleFrameRequest = true;
+			}
+			// 0x19: send the BLE status frame (0xAC) -- the panel polls this while its BLE card is open
+			else if (op == 0x19) {
+				g_bleFrameRequest = true;
 			}
 #if OPK_LOG
 

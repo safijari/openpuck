@@ -65,6 +65,9 @@ void applyActiveType()
 // rumble strength % (200 = double); adjustable from the WebUSB panel
 uint8_t g_rumbleScale = 200;
 
+// BLE controllers enable (rides the legacy rxWin10 byte -- see config.h)
+uint8_t g_bleEn = 0;
+
 // poll rate is fixed. Faster than the controller can refresh wastes airtime; slower adds latency. Any rate
 // persisted by an older build is ignored and overwritten with the default on boot (see loadCfg).
 const uint32_t g_pollUs = POLL_US_DEFAULT;
@@ -76,8 +79,9 @@ const uint32_t g_pollUs = POLL_US_DEFAULT;
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
 		bootMode, chordBtn[3], rumbleScale;
-	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
-	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
+	// rxWin10: ex-RF-window tunable, REUSED as the BLE-controllers enable (g_bleEn). Old configs hold stale
+	// window values here, so only an exact 1 loads as enabled. lizKeep: the id9=0 hold enable (see haptics.h
+	// LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
 	uint8_t rxWin10, lizKeep, landAll87;
 	TypeCfg type[ET_COUNT]; // per-emulated-type back/qam/abSwap/padHaptics
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
@@ -94,7 +98,7 @@ void saveCfg()
 		  g_bootMode,
 		  { g_chordBtn[0], g_chordBtn[1], g_chordBtn[2] },
 		  g_rumbleScale,
-		  (uint8_t)(g_rxWin / 10),
+		  (uint8_t)(g_bleEn ? 1 : 0),
 		  g_lizKeep,
 		  g_landAll87,
 		  {} };
@@ -158,7 +162,9 @@ void loadCfg()
 			// verbatim-0x87-relay experiment toggle (0/1; default off)
 			if (c.landAll87 <= 1)
 				g_landAll87 = c.landAll87;
-			// The poll RX window is now FIXED (g_rxWin is const) -- any persisted rxWin10 is ignored.
+			// BLE-controllers enable, riding the ex-rxWin10 byte: ONLY an exact 1 counts (a pre-BLE
+			// config left a stale window value like 200 here -- must not surprise-enable the SD).
+			g_bleEn = (c.rxWin10 == 1) ? 1 : 0;
 		}
 		f.close();
 	}

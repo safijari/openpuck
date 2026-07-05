@@ -249,6 +249,19 @@
       <p class="note">Import <strong>overwrites</strong> all pairings and settings on the connected puck, then reboots it (~2 s — reconnect after). Tip: pair every controller to one puck, export once, then import onto each spare.</p>
     </div>
 
+    <div class="card wide" id="bleCard" style="display:none">
+      <h2>Bluetooth controllers <span class="v" id="bleStatePill" style="font-weight:400">—</span></h2>
+      <p class="note" style="margin-top:0">Pair Bluetooth LE gamepads directly to the puck — they show up alongside the Steam Controller in the emulated modes (Xbox / Switch / PS5 / DS4). Works with pads speaking the Xbox “xinput” BLE layout: <strong>Xbox Series X|S</strong>, <strong>Xbox One S</strong> (firmware 5.x+), Xbox Adaptive. <em>Note:</em> the 8BitDo SN30 Pro’s X-input mode uses the same report layout but only over Bluetooth <em>Classic</em>, which this radio can’t speak — it will not appear in a scan.</p>
+      <div class="row" style="margin:0 0 8px;flex-wrap:wrap;gap:8px">
+        <button id="bleEnable" class="primary" style="display:none">Enable Bluetooth</button>
+        <button id="bleDisable" style="display:none">Disable (reboots)</button>
+        <button id="bleScanBtn" style="display:none">Scan for controllers</button>
+        <span class="note" id="bleHint" style="flex:1"></span>
+      </div>
+      <div id="bleBonds"></div>
+      <div id="bleScanList"></div>
+    </div>
+
     <div class="card wide debugonly">
       <h2>Hang log</h2>
       <p class="note" style="margin-top:0">One row per reset: uptime before it, reason, the stuck loop stage and captured PC (when the watchdog ISR could run), and usbd stack free. Accumulates across resets in this tab — a page refresh clears it. Pair with <em>Test stability</em> above for unattended runs.</p>
@@ -683,10 +696,11 @@ async function send(bytes){
 }
 // Read one framed reply and return its payload (with the 2-byte [marker][len] header stripped). The blob and
 // the bond-export dump share the same framing, distinguished by the marker byte (0xA5 status, 0xA7 bonds).
-async function readFrame(marker, minLen){
+async function readFrame(marker, minLen, rdLen){
   try{
     // largest frame (status blob) spans multiple USB-FS packets; read generously to capture it in one call.
-    const r = await dev.transferIn(epIn, 192);
+    // (the BLE status frame 0xAC can run to ~236 B — its caller passes rdLen=256.)
+    const r = await dev.transferIn(epIn, rdLen||192);
     if(r.status!=="ok"||r.data.byteLength<2) return null;
     const d=new Uint8Array(r.data.buffer);
     // Live wedge reporter (0xA9): emitted from the firmware's SOF callback (usbd task) while loop() is stalled --
@@ -731,6 +745,8 @@ function applyBlob(p){
   const swProRate=(p.length>52?p[52]:2);
   const swGyro10=(p.length>53?p[53]:10);
   const rssi=(p.length>37?p[37]:0);
+  // BLE controllers state byte (protocol v16, appended at p[176]); null hides the card on older firmware
+  updateBleCard((p[0]>=16 && p.length>176) ? p[176] : null);
 
   // per-slot link status (protocol v8, p.length >= 73)
   const hasSlotsData = p.length >= 73;
@@ -947,9 +963,71 @@ async function refresh(){
   if(!dev||inflight||capturing||backupBusy||flightBusy||lizardBusy) return; inflight=true;
   // try/finally: an exception anywhere in here (applyBlob included) must never leave inflight latched true --
   // that would silently kill all future polls and read as a fake "heartbeat lost".
-  try{ await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
+  try{
+    await send([0x01]); const p=await readBlob(); if(p) applyBlob(p);
+    // BLE controllers card (blob v16+): while BLE is ON, chase the blob with a 0xAC status-frame poll so the
+    // bonded/scan lists stay live. Same inflight window as the blob (shared endpoints).
+    if(bleSt===1){ await send([0x19]); const b=await readFrame(0xAC, 4, 256); if(b) applyBleFrame(b); }
+  }
   catch(e){ log("refresh err: "+e.message); }
   finally{ inflight=false; }
+}
+
+// ---- Bluetooth (BLE) controllers ----
+// Firmware v16+: blob byte p[176] = BLE lifecycle state (0 off / 1 on / 2 failed / 3 off-for-update); commands
+// 0x16 (control), 0x17 (pair [addrType][addr6]), 0x18 (forget), 0x19 (request the 0xAC status frame).
+let bleSt=null;        // last blob state byte; null = firmware without BLE support (card hidden)
+let bleInfo=null;      // last parsed 0xAC frame {scanning, bonds[], scan[]}
+function bleAddrStr(at,a){ return [...a].reverse().map(x=>x.toString(16).padStart(2,"0")).join(":").toUpperCase(); }
+function bleNameOf(nb){ let s=""; for(const c of nb){ if(!c) break; s+=String.fromCharCode(c); } return s; }
+function applyBleFrame(p){
+  // [ver][state][uiScan][nScan] + 4×26B bond recs + nScan×21B scan recs
+  if(p[0]!==1) return;
+  const bonds=[], scan=[]; let o=4;
+  for(let b=0;b<4;b++,o+=26){
+    if(o+26>p.length) break;
+    const used=!!(p[o]&1);
+    if(used) bonds.push({ connected:!!(p[o]&2), slot:p[o+1], at:p[o+2], addr:p.slice(o+3,o+9),
+      vid:p[o+9]|(p[o+10]<<8), pid:p[o+11]|(p[o+12]<<8), batt:p[o+13], name:bleNameOf(p.slice(o+14,o+26)) });
+  }
+  for(let s=0;s<p[3] && o+21<=p.length;s++,o+=21)
+    scan.push({ at:p[o], addr:p.slice(o+1,o+7), rssi:(p[o+7]<<24>>24), name:bleNameOf(p.slice(o+9,o+21)) });
+  bleInfo={scanning:!!p[2], bonds, scan};
+  renderBle();
+}
+function updateBleCard(st){
+  const was=bleSt; bleSt=st;
+  const card=$("#bleCard"); if(!card) return;
+  card.style.display = (st===null) ? "none" : "";
+  if(st===null) return;
+  const PILL={0:"off",1:"on",2:"unavailable (SoftDevice failed — clone clock?)",3:"off until reboot (firmware update)"};
+  $("#bleStatePill").textContent="— "+(PILL[st]||st);
+  $("#bleEnable").style.display = (st===0)?"":"none";
+  $("#bleDisable").style.display = (st===1)?"":"none";
+  $("#bleScanBtn").style.display = (st===1)?"":"none";
+  if(st!==1 && was===1){ bleInfo=null; renderBle(); }
+  if(st===0) $("#bleHint").textContent="Off — the RF link runs bare-metal (exactly the pre-BLE firmware behavior).";
+  else if(st===1) $("#bleHint").textContent="";
+  else if(st===3) $("#bleHint").textContent="Disabled for the running firmware update; back after the reboot.";
+}
+function renderBle(){
+  const esc=s=>s.replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+  const bonds=$("#bleBonds"), scan=$("#bleScanList");
+  if(!bleInfo){ bonds.innerHTML=""; scan.innerHTML=""; return; }
+  bonds.innerHTML = bleInfo.bonds.length ? bleInfo.bonds.map(b=>{
+    const st=b.connected?('<span class="pill up">connected'+(b.batt?(" · "+b.batt+"%"):"")+(b.slot!==255?(" · slot "+(b.slot+1)):"")+"</span>")
+                        :'<span class="pill dn">paired, offline</span>';
+    return '<div class="row" style="margin:4px 0"><span class="v" style="flex:1">'+esc(b.name||"(unnamed)")+' <span class="note">'+bleAddrStr(b.at,b.addr)+
+      ' · '+b.vid.toString(16).padStart(4,"0")+':'+b.pid.toString(16).padStart(4,"0")+'</span> '+st+
+      '</span><button data-bleforget="'+b.at+","+[...b.addr].join(",")+'">Forget</button></div>';
+  }).join("") : '<p class="note">No Bluetooth controllers paired yet.</p>';
+  const rows = bleInfo.scan.map(s=>
+    '<div class="row" style="margin:4px 0"><span class="v" style="flex:1">'+esc(s.name||"(unnamed)")+
+    ' <span class="note">'+bleAddrStr(s.at,s.addr)+' · '+s.rssi+' dBm</span></span>'+
+    '<button class="primary" data-blepair="'+s.at+","+[...s.addr].join(",")+'">Pair</button></div>').join("");
+  scan.innerHTML = bleInfo.scanning
+    ? '<p class="note" style="margin:10px 0 4px">Scanning… put the controller in pairing mode (Xbox: hold the small pair button until the logo flashes fast).</p>'+(rows||'<p class="note">nothing found yet…</p>')
+    : (rows?'<p class="note" style="margin:10px 0 4px">Last scan results:</p>'+rows:"");
 }
 
 // ---- Backup / clone ----
@@ -1793,6 +1871,16 @@ for(const t of document.querySelectorAll("#mainTabs .slot-tab")){
     if(t.dataset.tab==="tabUpdate") loadReleases(false); // lazy: first visit fetches the list
   };
 }
+$("#bleEnable").onclick=async()=>{ if(dev){ await send([0x16,1]); log("Bluetooth enabled — starting the BLE stack (no reboot needed)"); } };
+$("#bleDisable").onclick=async()=>{ if(!dev) return;
+  if(!confirm("Disable Bluetooth controllers?\n\nThe puck reboots (~2 s) to tear the BLE stack down cleanly — reconnect after. Paired controllers stay remembered for the next enable.")) return;
+  await send([0x16,0]); log("Bluetooth disabled — puck rebooting"); };
+$("#bleScanBtn").onclick=async()=>{ if(dev){ await send([0x16,2]); log("BLE scan started (auto-stops in 60 s) — put the controller in pairing mode"); } };
+$("#bleScanList").onclick=async(e)=>{ const d=e.target&&e.target.dataset&&e.target.dataset.blepair; if(!d||!dev) return;
+  await send([0x17, ...d.split(",").map(Number)]); log("pairing… (the pad's light goes solid when bonded)"); };
+$("#bleBonds").onclick=async(e)=>{ const d=e.target&&e.target.dataset&&e.target.dataset.bleforget; if(!d||!dev) return;
+  if(!confirm("Forget this Bluetooth controller?\n\nIt will stop auto-reconnecting; re-pair it from a scan to use it again.")) return;
+  await send([0x18, ...d.split(",").map(Number)]); log("Bluetooth bond forgotten"); };
 $("#backupExport").onclick=exportBackup;
 $("#backupImport").onclick=()=>$("#backupFile").click();
 $("#backupFile").onchange=async(e)=>{ const f=e.target.files[0]; if(f) await importBackup(f); e.target.value=""; };

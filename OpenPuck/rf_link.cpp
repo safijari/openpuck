@@ -1,5 +1,6 @@
 #include "rf_link.h"
 #include "radio.h"
+#include "rf_timeslot.h" // rfRadioOwned() -- BLE (SoftDevice) radio arbitration
 #include "bonds.h"
 #include "config.h"
 #include "triton.h"
@@ -161,6 +162,9 @@ static void rfHostFrameOnce(int slot, bool discovery)
 {
 	if (slot < 0 || slot >= NSLOT || !g_slot[slot].used)
 		return;
+	// BLE coexistence: whole-op gate (config + TX + the pair-request RX window). See rfLinkTask.
+	if (!rfRadioOwned(4000))
+		return;
 	// [proteus_uuid 4][ibex_uuid 4][serial 16]
 	uint8_t *rec = g_slot[slot].rec;
 	// CRC-VALIDATED frame (decoded from real puck): ESB-DPL RAM = [LENGTH][S1=PID][payload(18)]. payload:
@@ -258,6 +262,9 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 {
 	// relays pass a tiny window (no reply expected); polls use g_rxWin
 	uint16_t win = rxWinUs ? rxWinUs : g_rxWin;
+	// BLE coexistence backstop (callers gate coarser): config + TX + the RX window must fit the timeslot.
+	if (!rfRadioOwned(win + 1500u))
+		return 0;
 	memset(rftx, 0, sizeof rftx);
 	rftx[0] = plen; // LENGTH = payload byte count
 	rftx[1] = s1; // S1 (type-specific)
@@ -907,6 +914,13 @@ static void rfConnStep()
 
 void rfLinkTask()
 {
+	// BLE coexistence gate (rf_timeslot.h): with the SoftDevice enabled the radio is only legally ours inside
+	// a granted timeslot. Budget = the longest single pass through this function's radio work (a beacon sweep
+	// or a full-rate poll cycle, each op ~2.5ms worst). Not owned -> skip this loop pass entirely; the poll
+	// pacing gates below re-fire the moment a slot is granted (BLE steals the air for only a few ms at a
+	// time, so this shows up as jitter, not starvation). Always true with BLE off.
+	if (!rfRadioOwned(6000))
+		return;
 	// Host-frame beacon: sent continuously, INCLUDING while connected. The controller uses the periodic E1 (the
 	// real puck's per-hop-cycle announce) to stay synced and keep answering polls at full rate; suppressing it
 	// drops the reply rate from ~210/s to ~38/s. Paused only during the post-disconnect cooldown so a controller
@@ -1005,6 +1019,8 @@ void rfLinkTask()
 					    RF_RECOVER_MS :
 					    RF_STALL_BACKOFF_MS;
 		if (anyEverConnected && allStalled &&
+		    rfRadioOwned(
+			    500) && // BLE coex: peripheral reset only while the radio is ours
 		    (uint32_t)(nowMs2 - lastRecoverMs) > interval) {
 			lastRecoverMs = nowMs2;
 			g_rfStallRecover++;

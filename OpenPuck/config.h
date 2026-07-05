@@ -156,6 +156,11 @@ extern uint8_t g_swGyroScale10;
 // persist g_swProRate + g_swGyroScale10 to their flash file
 void swProSaveCfg();
 
+// BLE controllers enable (ble_host.h). Persisted in the legacy Cfg.rxWin10 byte: old configs left arbitrary
+// rxWin values there, so ONLY an exact 1 reads back as enabled (see loadCfg) -- an upgrade can never surprise-
+// enable the SoftDevice. Default off: with BLE off the firmware is byte-for-byte the legacy bare-metal radio.
+extern uint8_t g_bleEn;
+
 // 250 Hz -- matches SC2 input report rate (1000000/250 = 4000 us)
 #define POLL_US_DEFAULT 4000u
 // host-side HID stream cadence for translated modes (~250 Hz)

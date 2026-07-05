@@ -3,6 +3,7 @@
 // corruption-safety invariant every step here preserves.
 #include "fw_update.h"
 #include "fault_diag.h"
+#include "ble_host.h" // bleShutdownForUpdate() -- direct NVMC is illegal under an enabled SoftDevice
 #include <Arduino.h>
 #include <string.h>
 
@@ -125,6 +126,11 @@ uint32_t fwupNextOff(void)
 uint8_t fwupBegin(uint32_t size, uint32_t crc32)
 {
 	s_active = false;
+	// BLE coexistence: staging writes flash via NRF_NVMC directly, which is ILLEGAL while the SoftDevice is
+	// enabled (the SD owns flash timing when the radio is active -- direct NVMC asserts/corrupts it). Shut
+	// BLE down for the rest of this session; the ESB link reverts to bare-metal radio ownership and the
+	// update ends in a reboot anyway. No-op when BLE never started.
+	bleShutdownForUpdate();
 	// any BEGIN first disarms a previously staged update -- a restarted transfer must never leave a stale
 	// commit behind (the staged bytes it points at are about to be overwritten).
 	nvmcErasePage(FWUP_META);

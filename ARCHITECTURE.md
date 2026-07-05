@@ -83,6 +83,10 @@ just points at the `OpenPuck` directory). Modules are layered low → high:
 | `mode_hidgyro.{h,cpp}` | **DS4-layout** generic HID gyro personality (motion-aware PC games). |
 | `rf_link.{h,cpp}` | The operational puck protocol: host-frame beacons, connected-mode poll loop, `0xF1` decode + dispatch, chord detection, remote wakeup, QoS hopping, stats. |
 | `rf_diag.{h,cpp}` | RF reverse-engineering / calibration tooling: raw capture, CRC-validating config sweeps, frame replay, address listen, scan-then-respond, live-session sniffer. Not used in normal operation. |
+| `rf_timeslot.{h,cpp}` | SoftDevice radio-timeslot arbitration: with BLE on, the ESB code only touches `NRF_RADIO` inside granted timeslots (`rfRadioOwned()` gates every op). No-op / always-owned with BLE off. |
+| `input_driver.{h,cpp}` | The **input-side** controller abstraction (mirror of `IController`): per-device `IInputDriver`s decode non-SC2 controllers into `g_in`, plus the per-slot source tags (`SRC_RF`/`SRC_BLE`). |
+| `drv_xinput_ble.{h,cpp}` | Driver for the Xbox BT/BLE "xinput" report layout (Xbox One S fw5+/Series over BLE; byte-identical to the 8BitDo SN30 Pro's X-input mode, which is BT-Classic-only and thus unreachable from this radio). |
+| `ble_host.{h,cpp}` | BLE central transport: scanner + pairing/bonding (panel-driven), bond metadata persistence (`blebonds.bin`), auto-reconnect (incl. RPA/IRK resolution), HID-over-GATT subscribe, rumble writes, and the loop-side pump into `g_in`/`onReport45`. |
 | `webusb_config.{h,cpp}` | The WebUSB binary config channel for the browser panel. |
 | `serial_console.{h,cpp}` | The CDC single-letter debug command line. |
 | `wake_hid.{h,cpp}` | A boot-mouse HID interface added to the clean controller modes so the host honors USB remote-wakeup (see "Wake from sleep"). |
@@ -155,11 +159,67 @@ Full details are in `docs/PROTOCOL.md`; the register-level constants and their p
   queue at full rate (~400 new reports/s instead of ~60).
 - **Haptics** ride back as a SET sub-TLV inside the poll (`haptics.cpp` queues, `rf_link` flushes).
 
+## BLE controllers (opt-in)
+
+With the persisted BLE flag on (panel "Bluetooth controllers" card), the firmware also runs the **S140
+SoftDevice as a BLE central** and pairs directly with BLE HID gamepads. Three pieces make it fit the existing
+architecture instead of forking it:
+
+1. **Radio coexistence** (`rf_timeslot.cpp`): the SoftDevice owns `NRF_RADIO`, so the bare-metal ESB link runs
+   inside **radio timeslots** — 15 ms slots requested continuously and extended until BLE needs the air. A
+   priority-0 signal handler stamps an "owned until" deadline; every ESB op (`rfConnTx`, the beacons, the
+   rf_diag tooling, the stall self-heal) checks `rfRadioOwned(worstCaseUs)` before touching the radio and
+   simply skips the pass otherwise. With BLE off nothing changes — the gate is always true and the SoftDevice
+   is never enabled.
+2. **Input normalization** (`input_driver.h`): a BLE device is matched (by DIS PnP VID/PID or name) to an
+   `IInputDriver` that decodes its HID reports into the SAME `g_in[slot]` the RF path fills, stamps
+   `g_connReplyMs[slot]`, and a synthesized report `0x45` (`puckSynth45`) feeds `g_active->onReport45()` — so
+   every USB personality (XInput/Switch/PS5/DS4) presents BLE pads with zero per-mode work. BLE pads claim
+   free bond slots top-down (RF pairing fills bottom-up); `g_slotSrc[]` tags who drives each slot, and the
+   haptic relay / usb_mount / reconnect logic route on it (rumble goes to `bleSetRumble` → a GATT write
+   instead of the ESB relay ring). In the Steam/Lizard puck modes BLE pads stay parked (connected but not
+   presented) — Steam expects a real SC2 bond record behind each slot interface.
+3. **Transport & persistence** (`ble_host.cpp`): pairing is Just Works; LTKs live in the BLE stack's own bond
+   store (`/adafruit/bond_cntr`), our metadata (identity addr, name, VID/PID) in `/blebonds.bin`. A light
+   background scan (only while a bonded pad is offline) auto-reconnects, resolving the RPAs Xbox pads
+   advertise with the cached IRK. The panel drives discovery/pair/forget over WebUSB ops `0x16..0x19` and the
+   `0xAC` status frame.
+
+Caveats: staged firmware updates disable the SoftDevice first (`fw_update` writes flash via raw NVMC, illegal
+under an enabled SD) — BLE returns after the post-update reboot. The one BLE-capable "xinput" driver today is
+the Xbox BT layout; note the plain 8BitDo SN30 Pro speaks that layout only over Bluetooth *Classic*, which the
+nRF52840 cannot do.
+
+**Anti-bootloop latch.** BLE bringup (SoftDevice enable, the priority-0 timeslot handler, the first scan/
+connect) is the riskiest new code, and a crash there would HardFault/watchdog-reset → re-run → crash again =
+bootloop. So `bleHostBegin()` is started **last in `setup()`, after the watchdog is armed**, and writes a
+one-byte flash latch (`/blearm.bin`) *before* enabling the SoftDevice; the latch is cleared only once BLE has
+run `BLE_STABLE_MS` (6 s) without a reset. If a boot armed the latch but never cleared it, the next boot finds
+it set, **disables BLE (persisted) and skips the bringup** instead of repeating it — one failed boot, not a
+loop. Because disabling BLE makes `rfRadioOwned()` unconditionally true and never opens a timeslot session, a
+trip reverts the *entire* coexistence layer to the proven bare-metal radio path. Re-enable from the panel once
+the cause is fixed; a clean `Bluefruit.begin()==false` (e.g. the clock case) is not a crash and clears the
+latch normally.
+
+**Low-frequency clock (build requirement).** The SoftDevice needs a low-frequency clock source, chosen at
+compile time from the board variant's `USE_LFXO`/`USE_LFRC`. The stock `feather52840` variant hardcodes
+`USE_LFXO` (32.768 kHz crystal), but the Pro Micro / SuperMini nRF52840 **clones** this firmware targets have
+no crystal — with LFXO, `Bluefruit.begin()` fails (`BLE_ST_FAILED` on the panel). So `make build` selects
+`variant_lfrc/` (a verbatim copy of the express variant with only the LF clock flipped to the internal **RC**
+oscillator) via `build.variant.path`. RC is within BLE tolerance and is what these boards already run their
+LFCLK on in bare-metal mode, so nothing else changes. A `#error` in `ble_host.cpp` fails the build loudly if
+that override is ever dropped (which would silently re-break BLE). Genuine crystal board without BLE: set
+`LF_VARIANT_PATH=` empty.
+
 ## Timing & concurrency model
 
 - One cooperative `loop()`. Each subsystem's per-loop hook (`g_active->task()`, `rfLinkTask()`, `hapticTask()`,
-  `rfDiagTask()`, `webusbPoll()`, `serialConsolePoll()`) must be **non-blocking** — anything that spins risks
-  starving USB servicing.
+  `rfDiagTask()`, `webusbPoll()`, `serialConsolePoll()`, `bleHostTask()`) must be **non-blocking** — anything
+  that spins risks starving USB servicing.
+- With BLE on, two more FreeRTOS contexts exist (Bluefruit's "BLE" event task and its callback-deferral task):
+  notify callbacks copy raw reports into per-link PRIMASK-guarded rings, and the connect/pair/discovery flow
+  runs (and may block) on the callback task — never on `loop()`. `g_in` stays single-writer-from-loop:
+  `bleHostTask()` does the decode.
 - The RF poll is **busy-wait bounded**: every radio wait (`RWAIT_DISABLED`, the RX windows) has a microsecond
   timeout and bails rather than hanging. A wedged radio must never freeze the loop.
 - A **hardware watchdog** (~8 s, armed in `setup()`) resets the chip if `loop()` ever stops feeding it — so a
@@ -172,11 +232,13 @@ Full details are in `docs/PROTOCOL.md`; the register-level constants and their p
 
 ## Persistence
 
-Two files in the nRF52 internal LittleFS:
+Files in the nRF52 internal LittleFS:
 
-- `cfg.bin` (`config.cpp`) — USB mode, tunables, chord assignments, persistence policy. A magic byte versions
-  the layout; a mismatch falls back to clean defaults.
-- `bonds.bin` (`bonds.cpp`) — the four bond records.
+- `cfg.bin` (`config.cpp`) — USB mode, tunables, chord assignments, persistence policy, the BLE enable flag
+  (riding the legacy `rxWin10` byte). A magic byte versions the layout; a mismatch falls back to clean defaults.
+- `bonds.bin` (`bonds.cpp`) — the four SC2 bond records.
+- `blebonds.bin` (`ble_host.cpp`) — BLE controller metadata (identity address, name, VID/PID); the pairing
+  keys themselves live in the BLE stack's own store under `/adafruit/bond_cntr`.
 
 Mode switches (chord, WebUSB, or CDC) call `saveMode()` then reboot so the next boot enumerates the right
 interface set. By default every cold boot returns to Steam mode unless "persist last mode" is enabled.

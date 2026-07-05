@@ -2,6 +2,9 @@
 #include "radio.h"
 #include "rf_diag.h"
 #include "rf_link.h"
+#include "rf_timeslot.h" // rfRadioOwned() + timeslot stats (BLE coexistence)
+#include "ble_host.h" // bleState() for the "BLE" status dump
+#include "input_driver.h" // slotIsBle()
 #include "haptics.h"
 #include "bonds.h"
 #include "config.h"
@@ -70,6 +73,26 @@ void serialConsolePoll()
 				g_vitals = !g_vitals;
 				Serial.printf("# live vitals line %s\n",
 					      g_vitals ? "ON" : "off");
+			} else if (!strcmp(line, "BLE")) {
+				// BLE-controllers status: lifecycle state + slot sources + timeslot health.
+				// Enable/scan/pair live on the WebUSB panel; this is the debug readout.
+				Serial.printf(
+					"# BLE state=%u (0=off 1=on 2=failed 3=off-for-update) en=%u\n",
+					bleState(), g_bleEn);
+				Serial.printf(
+					"#   timeslots: grants=%u extends=%u starved-rearm=%u sd=%u\n",
+					g_tsGrants, g_tsExtends, g_tsStarved,
+					g_sdEnabled ? 1 : 0);
+				for (int s = 0; s < NSLOT; s++)
+					Serial.printf(
+						"#   slot %d: src=%s used=%d lastReply=%lums\n",
+						s, slotIsBle(s) ? "BLE" : "RF",
+						g_slot[s].used ? 1 : 0,
+						g_connReplyMs[s] ?
+							(unsigned long)(millis() -
+									g_connReplyMs
+										[s]) :
+							0);
 			} else if (line[0] == 'l')
 				rfListenStart();
 			else if (line[0] == 'B') {
@@ -125,7 +148,9 @@ void serialConsolePoll()
 				g_rfSweep = false;
 				g_rfHost = false;
 				g_rfRespond = false;
-				NRF_RADIO->TASKS_DISABLE = 1;
+				// BLE coex: only poke the radio if it's legally ours right now (rf_timeslot.h)
+				if (rfRadioOwned(100))
+					NRF_RADIO->TASKS_DISABLE = 1;
 				Serial.println("# RF off");
 			} else if (line[0] == 'u') {
 				// id9=0 hold (MODE_STEAM only) A/B toggle (persisted; see haptics.h LIZKEEP_MS)

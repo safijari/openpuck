@@ -1,5 +1,6 @@
 #include "rf_diag.h"
 #include "radio.h"
+#include "rf_timeslot.h" // rfRadioOwned() -- BLE (SoftDevice) radio arbitration
 #include "bonds.h"
 #include <Arduino.h>
 #include <string.h>
@@ -491,6 +492,11 @@ static void rfSniffPoll()
 
 void rfDiagTask()
 {
+	// BLE coexistence gate: every diag mode below programs/starts NRF_RADIO directly, which is only legal
+	// inside a granted timeslot once the SoftDevice is up (rf_timeslot.h). Budget covers the longest single
+	// diag op (replay TX + capture RX + the 3ms bounded disable waits). Always true with BLE off.
+	if (!rfRadioOwned(5000))
+		return;
 	rfPoll();
 	rfRespondPoll();
 	rfCapPoll();

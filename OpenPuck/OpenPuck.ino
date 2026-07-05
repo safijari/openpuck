@@ -41,6 +41,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "fault_diag.h"
 #include "fw_update.h"
 #include "usb_tx.h"
+#include "ble_host.h"
 #include <stdio.h>
 
 #if CFG_TUD_HID < 4
@@ -291,6 +292,15 @@ void setup()
 	// Flash black box: at ~6s of loop stall (2s before the WDT reset) dump both tasks' stacked PCs + vitals
 	// to a reserved flash page -- the post-mortem channel that survives even the boards that wipe .noinit.
 	faultDiagBlackBoxArm();
+
+	// BLE controllers (opt-in, persisted): starts the S140 SoftDevice + central role and moves the ESB link
+	// onto radio timeslots (rf_timeslot.h). With the flag off this is a no-op and the radio stays bare-metal.
+	// Deliberately started LAST -- AFTER the watchdog is armed and the fault/hang capture is set up -- so a
+	// fault OR hang during SoftDevice/central bringup is caught (WDT reset / HardFault) instead of dead-hanging.
+	// A persisted boot-attempt latch inside bleHostBegin() then turns a would-be BOOTLOOP into a single failed
+	// boot that comes up with BLE disabled (see ble_host.cpp): if the prior boot armed BLE but never reached
+	// the "stable" clear, this boot disables it rather than re-running the crashing init.
+	bleHostBegin();
 }
 
 // loop-timing diagnostics: poll rate is capped by loop ITERATION time (pacing wants 4000us but the poll only
@@ -357,6 +367,7 @@ void loop()
 	acc[6] += (uint32_t)(micros() - t);
 	faultDiagSetStage(7);
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
+	bleHostTask(); // BLE controllers: raw-report pump -> g_in -> dispatch (no-op unless BLE on)
 	faultDiagSetStage(8);
 	usbTxPump(); // drain queued device->host reports HERE, in loop -- never off-loop (jitters the RF poll)
 	puckCmdLogDrain(); // print captured USB feature commands (diagnostic; no-op unless g_cmdCapture)
@@ -397,6 +408,7 @@ void loop()
 	ledTask();
 	faultDiagSetStage(7);
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
+	bleHostTask(); // BLE controllers: raw-report pump -> g_in -> dispatch (no-op unless BLE on)
 	faultDiagSetStage(8);
 	usbTxPump(); // drain queued device->host reports HERE, in loop -- never off-loop (jitters the RF poll)
 	puckCmdLogDrain(); // print captured USB feature commands (diagnostic; no-op unless g_cmdCapture)

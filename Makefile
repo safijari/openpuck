@@ -39,6 +39,17 @@ EXTRA_FLAGS ?=
 # {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
 USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
 
+# Low-frequency clock source for the SoftDevice (BLE controllers feature). The feather52840 variant hardcodes
+# USE_LFXO (32.768 kHz crystal), but the Pro Micro / SuperMini nRF52840 CLONES this firmware runs on have NO
+# crystal -- with LFXO the SoftDevice's Bluefruit.begin() fails (BLE_ST_FAILED). variant_lfrc/ is a verbatim
+# copy of the express variant with ONLY the LF clock flipped to the internal RC oscillator (250 ppm, well
+# within BLE tolerance and what these boards already run their LFCLK on in bare-metal mode); the pin map / USB
+# identity are otherwise identical. A compile-time #error in ble_host.cpp guards against this override being
+# dropped (which would silently re-break BLE). Set LF_VARIANT_PATH= empty to fall back to the stock LFXO
+# variant if you build for a genuine crystal board without BLE.
+LF_VARIANT_PATH ?= $(CURDIR)/variant_lfrc
+VARIANT_PROP = $(if $(LF_VARIANT_PATH),--build-property "build.variant.path=$(LF_VARIANT_PATH)",)
+
 # `flash`/`deploy` take the serial port as a REQUIRED POSITIONAL arg: `make flash /dev/cu.usbmodem1101`.
 # (No auto-detect -- uploading to a guessed serial port risks writing to the wrong device. List with
 # `arduino-cli board list`.) FLASH_PORT = whatever goal isn't one of our real targets; the catch-all rule at
@@ -51,7 +62,7 @@ UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
 ## EXTRA_FLAGS / FQBN as make variables if needed.
 build:
-	arduino-cli compile -b $(FQBN) --build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" OpenPuck
+	arduino-cli compile -b $(FQBN) --build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" $(VARIANT_PROP) OpenPuck
 
 ## One-time factory-reset recovery image (wipes persistent storage once on first boot). See §6 of the build doc.
 build-recovery:

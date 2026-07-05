@@ -91,3 +91,9 @@ struct PuckInput {
 };
 #include "bonds.h" // NSLOT
 extern PuckInput g_in[NSLOT];
+
+// Re-serialize a PuckInput as a Triton report 0x45 (the inverse of the rf_link decode) so non-RF input sources
+// (BLE controllers -- see input_driver.h) can drive the same g_active->onReport45() dispatch as the RF path.
+// 46 bytes = through the IMU tail (rep[34..45]), matching the full-report gate in the decode.
+#define PUCK45_LEN 46
+uint8_t puckSynth45(const PuckInput *in, uint8_t seq, uint8_t out[PUCK45_LEN]);

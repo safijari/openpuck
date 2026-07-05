@@ -2,7 +2,9 @@
 
 nRF52840 / Adafruit Arduino core / TinyUSB. The device impersonates a Valve Steam
 Controller 2 "puck" over USB and talks to SC2 controllers over a bare-metal nRF52
-RADIO (ESB-style, **no SoftDevice**) protocol. Built with `-DCFG_TUD_HID=4`.
+RADIO (ESB-style) protocol. Built with `-DCFG_TUD_HID=4`. The SoftDevice is OFF by
+default; the opt-in BLE-controllers feature enables S140 as a central and moves the
+ESB link onto radio timeslots (`rf_timeslot`, `ble_host`, `input_driver` below).
 
 > This map describes what the **code actually does**. Source comments in this repo
 > are known to be misleading and were ignored.
@@ -15,7 +17,7 @@ Three contexts matter for every piece of state below:
 
 | Context | Priority / stack | What runs here |
 |---|---|---|
-| **loop task** | Arduino FreeRTOS "loop" task, low priority, ~4 KB stack | Everything called from `loop()`: `webusbPoll`, `g_active->task()`, `serialConsolePoll`, `rfDiagTask`, `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`. Also all of the RF radio code (it is driven synchronously from `rfLinkTask`/`rfDiagTask`). Also `setup()`. |
+| **loop task** | Arduino FreeRTOS "loop" task, low priority, ~4 KB stack | Everything called from `loop()`: `webusbPoll`, `g_active->task()`, `serialConsolePoll`, `rfDiagTask`, `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`, `bleHostTask`. Also all of the RF radio code (it is driven synchronously from `rfLinkTask`/`rfDiagTask`). Also `setup()`. |
 | **usbd task** | TinyUSB "usbd" task, **high priority, ~800-byte stack** | All TinyUSB HID `set_report`/`get_report` callbacks, the custom XInput class-driver xfer callbacks, and (in the Adafruit core) HID `sendReport` queuing context. This is where host→device control transfers are decoded. **Stack is tiny — a `Serial.printf` here can overflow it (the suspected LOCKUP cause), which is why all per-report logging is `#if OPK_LOG` gated.** |
 | **ISR** | Hardware exception | `HardFault_Handler` (fault_diag.cpp). The RADIO is **polled, not interrupt-driven** — there is no radio ISR. |
 
@@ -56,7 +58,7 @@ re-add wake mouse + `g_active->mountSlots(k)` + WebUSB in locked instance order,
 1. Feeds the watchdog (`NRF_WDT->RR[0]`).
 2. If `g_dirty`, `saveBonds()` (flash write in loop context).
 3. Calls, in order: `webusbPoll`, `g_active->task`, `serialConsolePoll`, `rfDiagTask`,
-   `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`.
+   `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`, `bleHostTask`.
    `#if OPK_LOG` wraps each in `micros()` timing for the WebUSB panel.
 
 ### State owned
@@ -179,6 +181,49 @@ that diag modes are off during normal operation). Buffers: `g_replay[48]`,
 `rftx`). Spin-waits: `RWAIT_DISABLED()` (3000 µs) ×1–3 per call; a 500 µs RX window in
 `rfBeaconOnce`. `rfReplayOnce` runs every loop with no rate gate while armed.
 Notable: `rfCapPoll` copies 48 bytes into `g_replay` but sets `g_replayLen=32`.
+
+### `rf_timeslot.cpp` / `rf_timeslot.h` — SoftDevice radio-timeslot arbitration
+- Only active when BLE is on (`g_sdEnabled`); otherwise `rfRadioOwned()` returns true unconditionally and the
+  session is never opened.
+- **Timeslot signal handler `tsSignal` (PRIORITY-0 interrupt — the highest-priority context in the firmware)**:
+  stamps `s_ownedUntil` (micros deadline minus `TS_MARGIN_US`) at slot START/extension, chains EXTEND actions,
+  and hands the slot back via a TIMER0 CC0 end-guard (`REQUEST_AND_END`). Register pokes + volatile stamps
+  only; `micros()` is DWT-based and safe here.
+- `rfRadioOwned(usNeeded)` — the gate every ESB radio op checks (loop task). `rfTsTick()` (loop, from
+  `bleHostTask`) re-requests a slot when a request got BLOCKED/CANCELED (the Adafruit SOC task swallows those
+  SoC events, so the grant path can't self-revive).
+- Gated call sites: `rfLinkTask` entry (6000 µs), `rfHostFrameOnce` (4000), `rfConnTx` backstop (win+1500),
+  the RF stall self-heal (`NRF_RADIO->POWER` cycle), `rfDiagTask` entry (5000), the console 's' radio poke.
+
+### `ble_host.cpp` / `ble_host.h` + `input_driver.{h,cpp}` + `drv_xinput_ble.cpp` — BLE controllers
+Execution contexts: **Bluefruit "BLE" event task** (notify callbacks, `setNotifyCallback(..., false)`),
+**Bluefruit callback task** (scanner rx cb, central connect/disconnect cb — the whole pair/discover flow runs
+and blocks THERE), and the **loop task** (`bleHostTask()`).
+- `s_link[2]` — per-connection state: GATT client objects (DIS/PnP, battery, HID + 6 report chars), claimed
+  slot, raw ring, rumble latch. Report chars are subscribed positionally (handle order); the driver's
+  `inputRidByIndex()` maps subscribe order → HID report id (no Report-Reference descriptor read: the wrapper
+  has no raw-descriptor API). First 0x2A4D without a CCCD = the rumble output char.
+- **Input path**: notify cb (BLE task) → PRIMASK push into `s_link[i].q` (4-deep, evict-oldest) →
+  `bleHostTask` (loop) pops, `drv->decode()` into **`g_in[slot]`** (loop stays the only `g_in` writer), stamps
+  `g_connReplyMs[slot]`/`g_battery[slot]`, synthesizes a 0x45 (`puckSynth45`, triton.cpp) and dispatches
+  `g_active->onReport45()` — push modes parse it exactly like an RF frame. Skipped in puck modes (parked).
+- **Slot model**: `g_slotSrc[NSLOT]` (`input_driver.cpp`, volatile) tags RF vs BLE. BLE claims free
+  (`!g_slot[s].used`) slots top-down; if Steam writes an RF bond into a claimed slot, `bleHostTask` evacuates
+  (disconnect → auto-reconnect re-claims). `usb_mount.connectedMask()` and haptics route on the tag;
+  `relayEnqueue` skips BLE slots, `hapticSteamRumble` forks to `bleSetRumble` (latch; flushed loop-side as a
+  GATT write-no-response, ≥30 ms apart).
+- **Bond persistence**: `/blebonds.bin` (magic 0xB2, 4×28 B recs: addrType+identity addr, vid/pid, name).
+  LTKs/IRKs live in Bluefruit's `/adafruit/bond_cntr`; `s_keys[]` caches them in RAM so the scan callback can
+  resolve RPAs without file I/O. Reconnect: background scanner (600/30 ms duty, only while a bond is offline)
+  matches identity addr or resolves the RPA → `Central.connect`.
+- **Lifecycle**: `bleHostBegin()` (setup or live panel enable) → `Bluefruit.begin(0,2)` → `g_sdEnabled=true` →
+  `rfTsBegin()`. `bleShutdownForUpdate()` (from `fwupBegin`) closes the session + `sd_softdevice_disable()` —
+  raw-NVMC staging is illegal under an enabled SD. Disable-from-panel persists the flag and reboots.
+- `drv_xinput_ble.cpp` — the Xbox BT/BLE "xinput" layout (= SN30 Pro X-input mode, which is BR/EDR-only and
+  cannot reach this radio): input 0x01 (sticks u16, triggers u10, hat, buttons; fw5 guide in-band), 0x02
+  (legacy guide), rumble output 0x03 (magnitudes 0-100). Registry in `input_driver.cpp`.
+- **WebUSB surface**: ops 0x16 (control: disable/enable/scan), 0x17 pair, 0x18 forget, 0x19 → 0xAC status
+  frame (bonded + scan lists, built by `bleStatusFrame` on the usbd task); blob v16 byte p[178] = `bleState()`.
 
 ---
 
@@ -495,7 +540,11 @@ State touched by **both** the loop task and the usbd task (the synchronization-c
 | **`g_swProReportMode[NSLOT]`** | usbd `jcSubcmd` + loop `mountSlots` | loop `task` | **not volatile** |
 | **`g_steamAliveMs` / `g_resumeMs`** (puck_hid) | usbd `handleSet`/`handleGet` + loop `task` | both | none |
 | **`g_hapLog[4096]`** (`OPK_LOG`) | usbd + loop `hapLogAdd` | loop drain | PRIMASK in `hapLogAdd` |
-| **`rfrx[100]`/`rftx[100]` + `NRF_RADIO`** | loop `rf_link` AND loop `rf_diag` | same | **no guard** — relies on diag-modes-off assumption (both are loop task, so no preemption between them, but no arbitration of radio state) |
+| **`rfrx[100]`/`rftx[100]` + `NRF_RADIO`** | loop `rf_link` AND loop `rf_diag` | same | **no guard** — relies on diag-modes-off assumption (both are loop task, so no preemption between them, but no arbitration of radio state). With BLE on, the SoftDevice ALSO owns the radio — arbitrated by `rfRadioOwned()` timeslot gates |
+| **`s_ownedUntil`** (rf_timeslot) | timeslot signal handler (priority 0) | loop `rfRadioOwned` | single aligned u32 write, volatile |
+| **`s_link[i].q` raw rings** (ble_host) | BLE task notify cb | loop `bleHostTask` | PRIMASK both sides |
+| **`s_link[i]` rumble latch** | usbd/loop `hapticSteamRumble` → `bleSetRumble` | loop flush | volatile fields, last-writer-wins |
+| **`g_slotSrc[NSLOT]`** (input_driver) | loop (`bleHostTask`) + Bluefruit cb task (connect/release) | loop rf_link/haptics/usb_mount, usbd haptic fork | volatile byte per slot; claims only flip on un-`used` slots |
 
 **`hapticSteamRumble()` is the one app function legitimately entered from the usbd task**
 (via the ps5/hidgyro/xinput/switch-pro rumble callbacks) as well as the loop task; its

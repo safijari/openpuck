@@ -1,5 +1,6 @@
 #include "usb_mount.h"
 #include "bonds.h"
+#include "input_driver.h" // slotIsBle() -- BLE-driven slots mount like RF ones
 #include "fault_diag.h" // faultDiagTrace() -- flight recorder
 #include <Arduino.h>
 
@@ -27,8 +28,10 @@ static uint8_t connectedMask()
 {
 	unsigned long now = millis();
 	uint8_t m = 0;
+	// a slot is mount-worthy if something drives it: an RF bond (g_slot.used) or a live BLE claim --
+	// both stamp g_connReplyMs, so the same freshness window covers either source
 	for (int s = 0; s < NSLOT; s++)
-		if (g_slot[s].used && g_connReplyMs[s] != 0 &&
+		if ((g_slot[s].used || slotIsBle(s)) && g_connReplyMs[s] != 0 &&
 		    (now - g_connReplyMs[s]) < CONN_UP_MS)
 			m |= (uint8_t)(1u << s);
 	return m;
@@ -127,7 +130,8 @@ void usbMountTask()
 	// New controllers grow the set right away (after the usual debounce) regardless of idle state.
 	unsigned long lastAny = 0;
 	for (int s = 0; s < NSLOT; s++)
-		if (g_slot[s].used && g_connReplyMs[s] > lastAny)
+		if ((g_slot[s].used || slotIsBle(s)) &&
+		    g_connReplyMs[s] > lastAny)
 			lastAny = g_connReplyMs[s];
 	bool idle = (lastAny == 0) || (now - lastAny) >= IDLE_CLEANUP_MS;
 	uint8_t want = idle ? connectedMask() :

@@ -1,6 +1,8 @@
 #include "haptics.h"
 #include "bonds.h"
 #include "config.h"
+#include "input_driver.h" // slotIsBle() -- BLE slots bypass the ESB relay
+#include "ble_host.h" // bleSetRumble() -- the BLE rumble sink
 #include "rf_link.h"
 #include "usb_tx.h" // usbTxBoost/Unboost -- flood-rate CDC prints share the dcd DMA claim window
 #include "puck_hid.h" // puckLizardActive() -- gate the lizard-suppression keepalive
@@ -116,6 +118,10 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 	uint8_t s0 = (slot == 0xFF) ? 0 : slot;
 	uint8_t s1 = (slot == 0xFF) ? NSLOT : slot + 1;
 	for (uint8_t s = s0; s < s1; s++) {
+		// BLE-driven slots have no ESB relay: their poll never runs, so a queued frame would just rot
+		// in the ring (rumble reaches them via bleSetRumble, and 0x87/0x9F settings are SC2-specific)
+		if (slotIsBle(s))
+			continue;
 		uint8_t h = g_rqHead[s], nx = rqNext(h);
 		if (nx == g_rqTail[s])
 			g_rqTail[s] = rqNext(g_rqTail[s]);
@@ -312,6 +318,10 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 		lowFreq = (l > 0xFFFF) ? 0xFFFF : (uint16_t)l;
 		highFreq = (h > 0xFFFF) ? 0xFFFF : (uint16_t)h;
 	}
+	// BLE-driven slot: hand the (already user-scaled) amplitudes to the BLE rumble sink -- no ESB relay,
+	// no reconnect-block gating (that guards the SC2's haptic engine, which doesn't exist here).
+	if (slotIsBle(slot))
+		return bleSetRumble(slot, lowFreq, highFreq);
 	bool on = lowFreq || highFreq;
 	// Per-slot settle gate (the per-slot reconnect block + link-up check). 0x82 haptics in Steam mode use the
 	// same gate; for XInput, the host only sends a stream while a controller is connected, so this also doubles
@@ -584,6 +594,10 @@ void hapticInit()
 void hapticOnReconnect(int slot)
 {
 	if (slot < 0 || slot >= NSLOT)
+		return;
+	// BLE-driven slot: no SC2 haptic engine to settle/re-init (its link-up edges also hit hapticTask's
+	// detector because g_connReplyMs is stamped for BLE too -- bail before arming anything)
+	if (slotIsBle(slot))
 		return;
 	// post-connect haptic block is permanently disabled -- relay haptics immediately on (re)connect
 	g_hapticBlockUntil[slot] = 0;
