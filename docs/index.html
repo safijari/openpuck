@@ -400,7 +400,7 @@ if(!DEBUG_UI) for(const el of document.querySelectorAll(".debugonly")) el.style.
 // Firmware-update tab gate: only visible with ?beta=true in the URL.
 const BETA_UI = new URLSearchParams(location.search).get("beta")==="true";
 if(!BETA_UI){
-  document.querySelector('#mainTabs .slot-tab[data-tab="tabUpdate"]').style.display="none";
+  $('#mainTabs .slot-tab[data-tab="tabUpdate"]').style.display="none";
   $("#updAvail").style.display="none";
 }
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
