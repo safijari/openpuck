@@ -377,7 +377,10 @@ Messages:
   - `0x0B` / `0x0C`: reboot into serial DFU / UF2 bootloader
   - `0x0D <slot> <used> <24-byte rec>`: write one bond slot into RAM — see §10.1
   - `0x0E <mode>`: commit imported bonds (+ apply mode, `0xFF` = unchanged), then reboot
-  - `0x11`: get the lizard binding map (device replies `0xAA`)
+  - `0x11`: get the lizard binding map (device replies `0xAA`). **Requires status-blob version ≥ 16** —
+    older firmware drops the unknown op silently and never replies, so a host that issues a blocking read
+    for the `0xAA` frame would hang the shared endpoint. The panel gates all `0x11`–`0x15` sends on the
+    version byte (`0xA5` payload byte 0) reaching 16 first.
   - `0x13 <count>`: begin a lizard-map edit — set the binding count
   - `0x12 <idx> <16-byte binding>`: set one lizard binding (see below)
   - `0x14`: commit the edited lizard map to flash (device echoes `0xAA`)

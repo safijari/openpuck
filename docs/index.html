@@ -479,6 +479,7 @@ const LZ_CONSUMER = [[1,"Volume +"],[2,"Volume −"]];
 function lzBtnLabel(mask){ const m=LZ_BTNS.find(b=>b[0]===(mask>>>0)); return m?m[1]:(mask?("0x"+(mask>>>0).toString(16)):""); }
 let lizardBindings = [];   // [{outType, od:[7], trig, hold}]
 let lizardBusy = false;
+let lizardLoaded = false;  // one-shot: the lizard map is fetched lazily, only once the connected puck proves it speaks v16+
 const BACK_LABELS = ["L4 (back upper-left)","R4 (back upper-right)","L5 (back lower-left)","R5 (back lower-right)"];
 const typeEls = []; // one entry per TYPE_DEFS: {sec, tab, activeDot, back[], qam, abSwap, pad, led, ledV}
 function mkSelect(def, includeNone){
@@ -629,7 +630,11 @@ async function openDevice(d){
     // resume a stability test across the reset: re-arm the firmware buzz and start timing the next run
     if(stabArmed){ await send([0x0F,1]); stabStart=Date.now(); log("stability test resumed — timing next run"); }
     updateStabUI();
-    await loadLizard(); // populate the lizard-map editor from the device (global disconnect listener is set once, below)
+    // The lizard-map dump (0x11 -> 0xAA) is loaded LAZILY, gated on the firmware advertising v16+ (see
+    // applyBlob). Older firmware (every pre-lizard build, including the v15 updater builds) silently drops
+    // 0x11, and readLizard()'s blocking transferIn would then hang forever -- wedging the status poll the
+    // firmware-update gate depends on. So we never send 0x11 until a status blob proves the puck speaks v16.
+    lizardLoaded=false;
     startPolling();
     loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
     return true;
@@ -715,6 +720,10 @@ async function readBlob(){ return readFrame(0xA5, 12); }
 function applyBlob(p){
   lastP=p; // remember for Export (carries every config field the panel shows)
   window._lastBlobTs=Date.now(); // feeds the host-side heartbeat watchdog (hard-wedge detection)
+  // Lazy, capability-gated lizard-map load: only after a blob proves the puck speaks v16+ (the op-0x11 dump).
+  // On older firmware 0x11 is dropped silently and readLizard() would block the endpoint forever, so we must
+  // NEVER send it blind at connect. One-shot per connection (reset in openDevice).
+  if(!lizardLoaded && p[0]>=16){ lizardLoaded=true; loadLizard(); }
   const mode=p[1], mDiv=p[2], mFric=p[3]; // p[4..11] mirror the active type (per-type block below is authoritative)
   const slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
@@ -731,7 +740,7 @@ function applyBlob(p){
   $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
   // The custom map applies ONLY to pure Lizard (always) mode. Steam-mode seamless lizard keeps
   // the built-in default behavior, so the editor is shown only when the device is in Lizard mode.
-  $("#lizardCard").style.display = (mode===3)?"":"none";
+  $("#lizardCard").style.display = (mode===3 && p[0]>=16)?"":"none";
   const battery=(p.length>36?p[36]:0);
   const rumbleScale=(p.length>51?p[51]:200);
   const swProRate=(p.length>52?p[52]:2);
@@ -1271,7 +1280,12 @@ async function readLizard(){
   }
   return null;
 }
+// Every lizard op sends 0x11..0x15 and then does a BLOCKING readLizard(). If the firmware doesn't implement
+// the op (any pre-v16 build) it drops the byte and never replies, and the read hangs the shared endpoint. So
+// every entry point bails unless a status blob has proven the puck speaks v16+.
+function lizardCapable(){ return !!(lastP && lastP[0]>=16); }
 async function loadLizard(){
+  if(!lizardCapable()) return;
   await lizardExchange(async()=>{
     await send([0x11]); // dump map
     const b=await readLizard();
@@ -1279,7 +1293,7 @@ async function loadLizard(){
   });
 }
 async function saveLizard(){
-  if(!dev) return;
+  if(!dev || !lizardCapable()) return;
   // A digital binding (keyboard/mouse/media) with neither a trigger nor a hold fires
   // unconditionally in the firmware (the trigMask==0 guard is skipped) -- it would type/click
   // forever. Drop those rows so a half-finished binding can't brick desktop input.
@@ -1302,7 +1316,7 @@ async function saveLizard(){
   });
 }
 async function resetLizard(){
-  if(!dev) return;
+  if(!dev || !lizardCapable()) return;
   if(!confirm("Reset the lizard map to the built-in defaults? Unsaved edits are lost.")) return;
   await lizardExchange(async()=>{
     await send([0x15]); // reset to defaults

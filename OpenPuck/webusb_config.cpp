@@ -79,10 +79,12 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (15 = +staged firmware-update ops 0x20..0x24, payload unchanged; 14 = +landAll87
+	// protocol version (16 = +configurable lizard-map ops 0x11..0x15 / 0xAA frame, payload unchanged -- the
+	// panel MUST see >=16 before it dares send 0x11, or a blocking readLizard() would hang forever against a
+	// firmware that silently drops the unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87
 	// toggle; 13 = +per-slot link stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 =
 	// +ledBright per type; 9 = +per-type cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 15;
+	p[2] = 16;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
