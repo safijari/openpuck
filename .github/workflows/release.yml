@@ -203,3 +203,51 @@ jobs:
             - `.hex` files for direct flashing workflows
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mirror OpenPuck UF2s to the firmware branch
+        # The WebUSB panel's "update from a release" flow downloads these in-browser. GitHub's release-asset
+        # CDN (release-assets.githubusercontent.com) sends no CORS headers, so browsers cannot fetch release
+        # assets directly; raw.githubusercontent.com IS CORS-clean. Mirror the puck .uf2s onto the orphan
+        # `firmware` branch, where the panel fetches raw.githubusercontent.com/<repo>/firmware/<asset-name>.
+        # Isolated clone in a temp dir so the build tree (untracked artifacts, regenerated version header)
+        # can't leak into the mirror commit.
+        env:
+          VERSION: ${{ steps.release_version.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          MIRROR="$(mktemp -d)/mirror"
+          REPO="https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code "$REPO" refs/heads/firmware >/dev/null 2>&1; then
+            git clone --depth 1 --branch firmware "$REPO" "$MIRROR"
+          else
+            git init "$MIRROR"
+            git -C "$MIRROR" checkout --orphan firmware
+            git -C "$MIRROR" remote add origin "$REPO"
+            printf '%s\n' \
+              '# firmware mirror' '' \
+              'OpenPuck release `.uf2` files, mirrored from the GitHub release assets because' \
+              'raw.githubusercontent.com serves files WITH CORS headers while the release-asset CDN does' \
+              'not — this is what lets the WebUSB config panel download and flash releases in-browser.' \
+              'Maintained automatically by `.github/workflows/release.yml`; do not edit by hand.' \
+              > "$MIRROR/README.md"
+          fi
+          cp release_assets/OpenPuck-"${VERSION}"-*.uf2 "$MIRROR"/
+          # manifest.json: name -> {panelUpdate}. panelUpdate = the image embeds the FWUP_TAG capability
+          # string (fw_update.cpp), i.e. a puck running it can be updated FROM the panel. The panel badges
+          # releases whose images can't ("no panel updates") before the user flashes one.
+          ( cd "$MIRROR" && python3 - <<'PY'
+          import json, os, glob
+          m = {}
+          if os.path.exists("manifest.json"):
+              m = json.load(open("manifest.json"))
+          for f in sorted(glob.glob("OpenPuck-*.uf2")):
+              m[f] = {"panelUpdate": b"OPK-FWUP-v1" in open(f, "rb").read()}
+          json.dump(m, open("manifest.json", "w"), indent=1, sort_keys=True)
+          PY
+          )
+          git -C "$MIRROR" config user.name "github-actions[bot]"
+          git -C "$MIRROR" config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C "$MIRROR" add -A
+          git -C "$MIRROR" commit -m "mirror OpenPuck ${VERSION} uf2s for the panel updater"
+          git -C "$MIRROR" push origin firmware

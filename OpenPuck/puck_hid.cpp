@@ -656,9 +656,10 @@ void SteamPuckController::begin()
 
 // Forward the controller's report 0x45 to Steam, or drive lizard kb/mouse when Steam is closed. PURELY a
 // USB-side decision -- changes nothing about the RF poll or the host->controller relay. Per-slot: each
-// controller's 0x45 goes to its OWN hid[slot], so Steam sees four independent inputs. Lizard is likewise
-// per-slot now: each connected controller drives keyboard+mouse on its own hid[slot] (the OS merges the
-// several HID mice/keyboards onto the one desktop), so any controller -- on any bond slot -- works.
+// controller's 0x45 goes to its OWN hid[slot], so Steam sees four independent inputs. Lizard, by contrast,
+// presents ONE mouse + keyboard (a desktop can only consume one): rfLizard merges every bonded controller's
+// input (g_in[] across all used slots, populated by the per-slot decode) onto hid[0], so all connected
+// controllers drive the same cursor/keys together -- and it works regardless of which bond slot is live.
 void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 				     uint8_t bodyTlen)
 {
@@ -682,14 +683,26 @@ void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 	// and this is exactly what the real puck does. rep[0] is the id byte (rep points at it in the F1 TLV).
 	const uint8_t rid = rep[0];
 	if (lizardActive()) {
-		// Every connected controller drives keyboard+mouse on ITS OWN slot interface; the OS merges the
-		// multiple HID mice/keyboards onto the one desktop. (Was hardcoded to slot 0, which went silent
-		// whenever the live controller bonded to a non-zero slot -- e.g. slot 0 holding a stale/phantom
-		// bond from a cloned backup.) rfLizard keeps its glide/edge state per-slot so they don't clobber.
-		// rfLizard reads 0x45 field offsets; report 0x42 is VERIFIED byte-identical over [0..45] (see the
-		// rf_link decode note), so both ids drive lizard -- covers MODE_LIZARD and Steam-mode-with-Steam-
-		// closed on new-firmware controllers.
-		rfLizard(slot, rep, &hid[slot], &hid[slot], 0x40, 0x41);
+		// All bonded controllers share ONE desktop mouse/keyboard (mounted on hid[0] regardless of
+		// which RF slots are in use). rfLizard merges g_in[] across every used slot internally, so we
+		// fire it ONCE per cycle -- gated on the lowest CONNECTED slot's report so it runs at a steady
+		// cadence (not once per slot, which would multiply the output rate). g_in[] is populated by the
+		// per-slot decode for BOTH report 0x45 and the beta 0x42 (byte-identical front section), so
+		// lizard works on new-firmware controllers too without reading rep[] here.
+		// Gate on the lowest RECENTLY-REPLYING slot, not merely the lowest bonded one: a bonded-but-
+		// offline low slot (e.g. a stale/phantom bond from a cloned backup) must not starve lizard when
+		// a higher slot is the live controller (main's #98 fix -- do not regress it). onReport45 only
+		// runs for a slot that just decoded a report, so the reporting slot is itself connected.
+		unsigned long now = millis();
+		int lizSlot = -1;
+		for (int s = 0; s < NSLOT; s++)
+			if (g_slot[s].used && g_connReplyMs[s] &&
+			    (now - g_connReplyMs[s]) < 1200u) {
+				lizSlot = s;
+				break;
+			}
+		if (slot == lizSlot)
+			rfLizard(&hid[0], &hid[0], 0x40, 0x41);
 	} else {
 		// body length after the id byte, clamped to the descriptor's declared size for this report id
 		// (0x42 = 53B vendor input, 0x45 = 45B input).

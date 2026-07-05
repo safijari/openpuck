@@ -377,9 +377,35 @@ Messages:
   - `0x0B` / `0x0C`: reboot into serial DFU / UF2 bootloader
   - `0x0D <slot> <used> <24-byte rec>`: write one bond slot into RAM — see §10.1
   - `0x0E <mode>`: commit imported bonds (+ apply mode, `0xFF` = unchanged), then reboot
+  - `0x11`: get the lizard binding map (device replies `0xAA`). **Requires status-blob version ≥ 16** —
+    older firmware drops the unknown op silently and never replies, so a host that issues a blocking read
+    for the `0xAA` frame would hang the shared endpoint. The panel gates all `0x11`–`0x15` sends on the
+    version byte (`0xA5` payload byte 0) reaching 16 first.
+  - `0x13 <count>`: begin a lizard-map edit — set the binding count
+  - `0x12 <idx> <16-byte binding>`: set one lizard binding (see below)
+  - `0x14`: commit the edited lizard map to flash (device echoes `0xAA`)
+  - `0x15`: reset the lizard map to built-in defaults (device echoes `0xAA`)
+  - `0x20`–`0x24`: staged firmware update (begin/data/end/reboot/abort), acked with `0xAB` frames
 - Device to host:
   - `0xA5 <len> <payload>`: status blob
   - `0xA7 <len> <payload>`: bond export (§10.1)
+  - `0xA8 ...`: flight-recorder stream
+  - `0xA9 ...`: live wedge report
+  - `0xAA <count> <count×16-byte bindings>`: lizard binding map
+  - `0xAB 5 <status> <nextOff u32 LE>`: firmware-update ack
+
+Lizard binding wire format (16 bytes), matching `LizardBinding` in `lizard_map.h`:
+
+```text
+[0]     outType   (0 none, 1 keyboard chord, 2 mouse btn, 3 mouse axis, 4 scroll, 5 consumer)
+[1..7]  outData[0..6]  (type-specific payload)
+[8..11] trigMask  u32 LE  (button bits: any-of)
+[12..15] holdMask u32 LE  (button bits: all-of guard)
+```
+
+> Lizard-map commands and the `0xAA` reply were renumbered from `0x0D–0x11`/`0xA7` on the merges with
+> `main`, which had independently claimed `0x0D–0x10`, `0xA7` (bond export) and `0xA8` (flight
+> recorder).
 
 Status blob payload:
 

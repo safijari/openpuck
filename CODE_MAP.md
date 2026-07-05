@@ -434,6 +434,21 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
   `0x0A` ("ERS")→`factoryErase`+reset; `0x0B/0x0C`→DFU; capture drain (`OPK_LOG`).
   Each reset/DFU path does `delay(40)` then `NVIC_SystemReset()` (harmless — reboots).
 
+### `fw_update.cpp` / `fw_update.h` — staged firmware update (loop task + boot)
+- WebUSB ops `0x20 begin / 0x21 chunk / 0x22 verify+commit / 0x24 abort` stage a new app
+  image into unused flash below the meta page at `0xEC000` (top of the app region);
+  strictly sequential offsets, duplicate chunks re-acked without rewriting (flash words
+  are written once per erase). One page erase max per `loop()` pass (~85 ms CPU stall).
+- `fwupEnd()` CRC32s the **staged flash** (heartbeat-beaten so the wedge reporter stays
+  quiet), sanity-checks the vector table, then commits the one-page meta record — the
+  single arming action. Idempotent on retry (lost-ack safe).
+- `fwupApplyIfArmed()` (first line of `setup()`): re-validates everything, then
+  `ramApply()` — a `.data`-section (RAM-resident) copier, IRQs off, WDT force-started
+  and fed — erases the app (vector page FIRST), writes it (vector page LAST, first word
+  dead-last), verifies word-for-word, rewrites the bootloader settings page to the
+  drag-and-drop state (`BANK_VALID_APP`, crc-check off), erases meta, resets. Any
+  interruption leaves the board app-less → UF2 bootloader, never a half image.
+
 ### `serial_console.cpp` / `serial_console.h` — CDC debug CLI (loop task)
 - `serialConsolePoll()` drains available CDC bytes into `static char line[24]` (bounded),
   dispatches single-letter commands on newline (first match wins). Commands mutate the

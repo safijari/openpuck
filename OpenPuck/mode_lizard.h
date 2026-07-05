@@ -1,18 +1,22 @@
-// mode_lizard.h -- the controller's native "lizard" desktop behavior (driverless keyboard + mouse).
+// mode_lizard.h -- configurable lizard (desktop) keyboard+mouse mode.
 //
-// Not a standalone IController: lizard rides ON the puck interface (puck_hid.cpp calls rfLizard when Steam is
-// closed), driving mouse(0x40)+keyboard(0x41) on the puck HID slot. Canonical Valve SC1 map: right pad ->
-// mouse (trackball glide), left pad -> scroll wheel + middle-click, R-trigger/R-pad-click -> left mouse,
-// L-trigger -> right mouse; A=Enter B=Esc X=PgUp Y=PgDn, d-pad/left-stick -> arrows, LB=LeftCtrl RB=LeftAlt,
-// View=Tab, Menu=Esc. Mouse reuses the Xbox-mode velocity+friction+sub-pixel glide model (g_mDiv / g_mFric).
+// Not a standalone IController: lizard rides ON the puck interface (puck_hid.cpp calls rfLizard
+// when Steam is closed or in MODE_LIZARD), driving mouse(0x40)+keyboard(0x41)+consumer(0x03) on
+// the same puck HID slot. The mapping table g_lizardMap (lizard_map.h) drives all outputs; the
+// default map mirrors the original hardcoded Valve SC1 behavior. Mouse reuses the Xbox-mode
+// velocity+friction+sub-pixel glide model (g_mDiv / g_mFric).
 //
-// EVERY connected controller drives lizard independently: puck_hid.cpp calls rfLizard once per input report on
-// the report's own bond `slot`, routing to that slot's own HID interface. The OS merges multiple HID mice /
-// keyboards onto the one desktop, so all controllers move the cursor / type together. `slot` also indexes the
-// per-controller glide/edge state, so one controller's motion never clobbers another's.
+// EVERY connected controller drives lizard: rfLizard merges g_in[s] across all used bond slots
+// (populated by the per-slot RF decode) onto the ONE shared desktop mouse/keyboard, so any controller
+// on any bond slot contributes and multiple controllers drive the same cursor/keys together. Per-slot
+// glide/edge state keeps one controller's motion from clobbering another's.
 #pragma once
 #include <Adafruit_TinyUSB.h>
 #include <stdint.h>
 
-void rfLizard(int slot, const uint8_t *r, Adafruit_USBD_HID *mdev,
-	      Adafruit_USBD_HID *kdev, uint8_t mrid, uint8_t krid);
+// Drives the desktop mouse/keyboard from the binding table. Merges input from ALL bonded controllers
+// (g_in[s] for every used slot) onto the one shared mouse/keyboard -- a controller on any RF slot
+// contributes, and multiple controllers drive the same cursor/keys together. mdev/kdev may be the same
+// object (puck mode sends both reports to hid[0]).
+void rfLizard(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev, uint8_t mrid,
+	      uint8_t krid);

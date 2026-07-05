@@ -35,6 +35,9 @@
   button:disabled{opacity:.4;cursor:default}
   .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
   .pill.up{background:#143626;color:var(--acc)} .pill.dn{background:#3a1822;color:var(--bad)}
+  /* update-available notice (topbar): :not(.hide) so this ID rule can't out-rank .hide (see #updModal) */
+  #updAvail:not(.hide){background:#14263a;color:var(--acc2);cursor:pointer;border:1px solid #2b4a6d}
+  #updAvail:hover{text-decoration:underline}
   .statgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px}
   .stat{background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px}
   .stat .k{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
@@ -57,6 +60,39 @@
   }
   @media(prefers-reduced-motion:reduce){.slot-tab .dot.up{animation:none}}
   .per-slot-grid{margin-bottom:12px}
+
+  /* ---- top-level tabs (Controller / Firmware update) ---- */
+  #mainTabs{margin:0 0 16px}
+  #mainTabs .slot-tab{font-size:13px;padding:7px 18px}
+
+  /* ---- firmware update tab ---- */
+  .dropzone{border:2px dashed #36405a;border-radius:12px;padding:26px 18px;text-align:center;cursor:pointer;
+    color:var(--mut);transition:border-color .15s,background .15s;margin-bottom:14px}
+  .dropzone:hover,.dropzone.drag{border-color:var(--acc);color:var(--fg);background:#151b28}
+  .dropzone b{color:var(--fg)}
+  .rel-row{display:flex;align-items:center;gap:14px;padding:10px 2px;border-top:1px solid #232a3a;flex-wrap:wrap}
+  .rel-row:first-child{border-top:0}
+  .rel-row .ver{font-weight:700;min-width:70px}
+  .rel-row .date{color:var(--mut);font-size:12px;min-width:90px}
+  .rel-row .grow{flex:1}
+  .rel-row label{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;cursor:pointer}
+  .rel-row input[type=checkbox]{accent-color:var(--bad)}
+  /* firmware-tab gate: when the connected puck's firmware predates panel updates, both update cards go
+     inert (pointer-events kills clicks, drops, and the file picker) and the banner explains why */
+  .fwupcard.gated{opacity:.45;pointer-events:none;user-select:none}
+
+  /* ---- blocking update modal ---- */
+  /* :not(.hide) because this ID selector would otherwise out-rank .hide{display:none} and pin the modal open */
+  #updModal:not(.hide){position:fixed;inset:0;z-index:100;background:rgba(8,10,16,.8);display:flex;align-items:center;justify-content:center}
+  .updbox{background:var(--card);border:1px solid #36405a;border-radius:14px;padding:22px 26px;width:min(500px,92vw);box-shadow:0 18px 60px rgba(0,0,0,.5)}
+  .updbox h3{margin:0 0 4px;font-size:16px}
+  #updStage{color:var(--fg);margin:10px 0 0;font-size:14px}
+  .updbar{height:10px;background:#0e1017;border:1px solid #232a3a;border-radius:99px;overflow:hidden;margin:10px 0 6px}
+  #updFill{height:100%;width:0;background:var(--acc);transition:width .2s}
+  #updFill.pulse{background:repeating-linear-gradient(45deg,var(--acc2),var(--acc2) 12px,#38618c 12px,#38618c 24px);animation:updslide 1s linear infinite}
+  #updFill.bad{background:var(--bad)}
+  @keyframes updslide{to{background-position:34px 0}}
+  @media(prefers-reduced-motion:reduce){#updFill.pulse{animation:none}}
 </style>
 </head>
 <body>
@@ -64,6 +100,7 @@
   <span class="brand">OpenPuck <small>SC2 puck · WebUSB</small></span>
   <span id="connState" class="pill dn">disconnected</span>
   <button id="connectBtn" class="primary">Connect</button>
+  <span id="updAvail" class="pill hide" title="A newer OpenPuck release is available — click to open the Firmware update tab">…</span>
   <span class="spacer"></span>
   <button id="debugCdc" title="Reboot ONCE with the CDC serial console enabled (WebUSB goes away for that boot); auto-reverts on the next boot">Debug CDC</button>
   <button id="dfuSerial" title="Reboot into serial DFU (adafruit-nrfutil), then replug">Serial DFU</button>
@@ -74,6 +111,12 @@
   <p class="sub">First connect uses the Chrome/Edge device picker; reconnects are automatic. If the picker is empty, quit any app holding the device or replug.</p>
 
   <div id="panel" class="hide">
+    <div class="slot-tabs" id="mainTabs">
+      <span class="slot-tab active" data-tab="tabMain">Controller</span>
+      <span class="slot-tab" data-tab="tabUpdate">Firmware update</span>
+    </div>
+
+    <div id="tabMain">
     <div class="cards">
     <div class="card">
       <h2>USB mode</h2>
@@ -182,6 +225,19 @@
       <div id="typeCfgs"></div>
     </div>
 
+    <div class="card" id="lizardCard" style="display:none">
+      <h2>Lizard / desktop mapping</h2>
+      <p class="note" style="margin-top:0">Keyboard, mouse &amp; media bindings for <strong>Lizard (always)</strong> mode — each row maps a controller input to a desktop action. (Steam-mode seamless lizard, when Steam is closed, keeps the built-in default behavior and is not affected by this map.) Edits apply after <strong>Save to device</strong>.</p>
+      <div id="lizardList"></div>
+      <div class="row" style="margin:12px 0 0;flex-wrap:wrap;gap:8px">
+        <button id="lzAdd">+ Add binding</button>
+        <button id="lzSave" class="primary">Save to device</button>
+        <button id="lzReload">Reload</button>
+        <button id="lzReset" style="margin-left:auto">Reset to defaults</button>
+      </div>
+      <p class="note" id="lzStatus" style="margin-top:8px">—</p>
+    </div>
+
     <div class="card">
       <h2>Backup &amp; clone</h2>
       <p class="note" style="margin-top:0">Save this puck's controller pairings <em>and</em> every setting to a file, then restore them onto another puck. The other puck becomes a clone — any controller paired to this one connects to it with <strong>no re-pairing</strong>. (Also a plain backup: re-import after a factory erase to get everything back.)</p>
@@ -236,8 +292,51 @@
       <pre id="capOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin-top:10px;max-height:260px;overflow:auto;white-space:pre-wrap"></pre>
     </div>
     </div><!-- .cards -->
+    </div><!-- #tabMain -->
+
+    <div id="tabUpdate" class="hide">
+      <div id="updGate" class="card hide" style="border-color:#7a2233">
+        <h2 style="color:var(--bad)">Panel updates not supported by this firmware</h2>
+        <p class="note" id="updGateMsg" style="margin:0"></p>
+      </div>
+
+      <div class="card fwupcard">
+        <h2>Update from a local file</h2>
+        <input id="uf2File" class="hide" type="file" accept=".uf2,application/octet-stream">
+        <div id="uf2Drop" class="dropzone">
+          <div><b>Drop a .uf2 file here</b> — or click to browse</div>
+          <div class="note" id="uf2Sel" style="margin-top:6px">no file selected</div>
+        </div>
+        <div class="row" style="margin:0">
+          <button id="uf2Flash" class="primary" disabled title="Pick a .uf2 file first">Flash firmware</button>
+          <span class="note" style="flex:1;margin:0">The image is streamed over WebUSB into spare flash, verified <em>on the puck</em>, and applied on an automatic reboot. Nothing is armed until it verifies — a failed or interrupted transfer leaves the running firmware untouched, and even a power cut during the apply only leaves the puck in its UF2 bootloader for drag-and-drop recovery.</span>
+        </div>
+      </div>
+
+      <div class="card fwupcard">
+        <h2>Update from a release</h2>
+        <div class="row" style="margin-top:0">
+          <span class="note" style="flex:1;margin:0">Official builds from <a href="https://github.com/safijari/openpuck/releases" target="_blank" rel="noopener" style="color:var(--acc2)">github.com/safijari/openpuck/releases</a> &nbsp;·&nbsp; installed: <b id="updInstalled" style="color:var(--acc)">—</b></span>
+          <button id="relRefresh">Refresh</button>
+        </div>
+        <div id="relList" class="note" style="margin:0">loading…</div>
+        <p class="note"><b style="color:var(--bad)">Factory reset</b> flashes the <code>-factory-reset</code> build of that version: on its first boot it wipes ALL settings and the controller pairing (you must re-pair), then behaves like the standard build. Use it to recover from a bad config or stale bond.</p>
+      </div>
+    </div><!-- #tabUpdate -->
 
     <div id="log"></div>
+  </div>
+</div>
+
+<!-- blocking modal: covers the whole page while an update is in flight so nothing else can be clicked -->
+<div id="updModal" class="hide">
+  <div class="updbox">
+    <h3 id="updTitle">Firmware update</h3>
+    <div id="updStage">…</div>
+    <div class="updbar"><div id="updFill"></div></div>
+    <div id="updPct" class="note" style="margin:0"></div>
+    <div id="updDetail" class="note"></div>
+    <div class="row" style="justify-content:flex-end;margin:14px 0 0"><button id="updClose" class="hide">Close</button></div>
   </div>
 </div>
 
@@ -249,6 +348,10 @@ let lastP=null; // most recent status-blob payload (config source for Export)
 // Stability test: armed = active across reconnects; stabStart = ms of the current run; stabLastRun = last
 // completed run {secs} (ended by a reset). Kept in-page so it survives the device reset (not a page refresh).
 let stabArmed=false, stabStart=0, stabLastRun=null;
+// Firmware update via the UF2 picker: selectedUf2 = {name, image} (image = the app binary extracted from the
+// .uf2 at pick time, so a bad file is rejected before anything is sent). dfuBusy blocks re-entry while an
+// update is in flight.
+let selectedUf2=null, dfuBusy=false;
 // Running hang log: one entry per reset (persists in-page across the device reset; a page refresh clears it).
 // pendingHang is set at disconnect and enriched with reason/PC/stack from the first blob after reconnect.
 let hangLog=[], pendingHang=null;
@@ -263,6 +366,18 @@ function renderHangLog(){
     + hangLog.map(e=>pad(e.time,11)+pad(e.uptime!=null?fmtDur(e.uptime):"-",9)+pad(e.reason,16)+pad(e.stage||"-",10)+pad(e.pc||"-",11)+(e.usbd!=null?e.usbd:"-")).join("\n");
 }
 function fmtDur(s){ s=Math.round(s); return s>=60 ? (Math.floor(s/60)+"m "+(s%60)+"s") : (s+"s"); }
+function updateUf2UI(){
+  const sel=$("#uf2Sel"), flash=$("#uf2Flash");
+  if(!sel || !flash) return;
+  sel.textContent = selectedUf2
+    ? selectedUf2.name+" — app image "+Math.round(selectedUf2.image.length/1024)+" KiB, parsed OK"
+      +(selectedUf2.updatable ? "" : " — ⚠ no panel-update support in this image (flashing it = drag-and-drop only afterwards)")
+    : "no file selected";
+  flash.disabled = dfuBusy || !selectedUf2;
+  flash.title = selectedUf2
+    ? "Send " + selectedUf2.name + " to the puck over WebUSB, verify it, and apply it on reboot"
+    : "Pick a .uf2 file first";
+}
 function updateStabUI(){
   const btn=$("#stabBtn"), st=$("#stabStatus");
   if(!btn) return;
@@ -282,6 +397,12 @@ const $ = s=>document.querySelector(s);
 // -- only the UI is hidden, so adding ?debug=true after an unattended incident still shows the history.
 const DEBUG_UI = new URLSearchParams(location.search).get("debug")==="true";
 if(!DEBUG_UI) for(const el of document.querySelectorAll(".debugonly")) el.style.display="none";
+// Firmware-update tab gate: only visible with ?beta=true in the URL.
+const BETA_UI = new URLSearchParams(location.search).get("beta")==="true";
+if(!BETA_UI){
+  $('#mainTabs .slot-tab[data-tab="tabUpdate"]').style.display="none";
+  $("#updAvail").style.display="none";
+}
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
 
 // ---- Loop-state trail (persistent) ----
@@ -318,6 +439,47 @@ const TYPE_DEFS = [
 ];
 // Which emulated type a USB mode belongs to (mirror of firmware etypeForMode); -1 = puck mode (no type).
 function etypeForMode(m){ switch(m){case 1:return 0; case 2:case 4:return 1; case 6:case 8:case 9:return 2; case 5:case 7:return 3; default:return -1;} }
+
+// ===================== Lizard (desktop) binding map =====================
+// Mirrors firmware lizard_map.h. A binding is {outType, od:[7], trig, hold}. Output types and the
+// per-type payload (od[]) layout must match the constants in lizard_map.h exactly.
+const LZ_MAX = 32;
+const LZO = {NONE:0, KBD:1, MBTN:2, AXIS:3, SCROLL:4, CONSUMER:5};
+const LZ_OUT_LABELS = {0:"(disabled)", 1:"Keyboard key", 2:"Mouse button", 3:"Mouse move", 4:"Scroll wheel", 5:"Media key"};
+// Controller input bits (triton.h TB_* + virtual left-stick deflection bits). Single-bit triggers only.
+const LZ_BTNS = [
+  [0x1,"A"],[0x2,"B"],[0x4,"X"],[0x8,"Y"],
+  [0x10,"QAM (• • •)"],[0x40,"View"],[0x4000,"Menu"],[0x10000,"Steam"],
+  [0x20,"R3 (stick click)"],[0x8000,"L3 (stick click)"],
+  [0x80,"R4 (back upper-right)"],[0x100,"R5 (back lower-right)"],
+  [0x20000,"L4 (back upper-left)"],[0x40000,"L5 (back lower-left)"],
+  [0x200,"RB (bumper)"],[0x80000,"LB (bumper)"],
+  [0x800000,"R2 (trigger pull)"],[0x8000000,"L2 (trigger pull)"],
+  [0x2000,"D-pad Up"],[0x400,"D-pad Down"],[0x1000,"D-pad Left"],[0x800,"D-pad Right"],
+  [0x400000,"Right pad click"],[0x4000000,"Left pad click"],
+  [0x200000,"Right pad touch"],[0x2000000,"Left pad touch"],
+  [0x10000000,"L-stick → right"],[0x20000000,"L-stick → left"],[0x40000000,"L-stick → down"],[0x80000000,"L-stick → up"],
+];
+// Keyboard modifier bits (od[0] for KBD output).
+const LZ_MODS = [[0x01,"Ctrl"],[0x02,"Shift"],[0x04,"Alt"],[0x08,"Win/⌘"]];
+// Curated HID keycodes (od[1] for KBD output). Value 0 = no key (modifier-only).
+const LZ_KEYS = [[0,"— none —"]];
+"ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").forEach((c,i)=>LZ_KEYS.push([0x04+i,c]));
+"1234567890".split("").forEach((c,i)=>LZ_KEYS.push([0x1e+i,c]));
+[[0x28,"Enter"],[0x29,"Esc"],[0x2a,"Backspace"],[0x2b,"Tab"],[0x2c,"Space"],
+ [0x4f,"Arrow Right"],[0x50,"Arrow Left"],[0x51,"Arrow Down"],[0x52,"Arrow Up"],
+ [0x4a,"Home"],[0x4d,"End"],[0x4b,"Page Up"],[0x4e,"Page Down"],[0x49,"Insert"],[0x4c,"Delete"],
+ [0x2d,"- _"],[0x2e,"= +"],[0x46,"Print Screen"]].forEach(k=>LZ_KEYS.push(k));
+for(let i=0;i<12;i++) LZ_KEYS.push([0x3a+i,"F"+(i+1)]);
+const LZ_MBTNS = [[1,"Left click"],[2,"Right click"],[4,"Middle click"]];
+const LZ_AXIS_SRC = [[0,"Right trackpad"],[1,"Left stick"],[2,"Gyro"]];
+const LZ_GYRO_ACT = [[0,"Always"],[1,"While right pad touched"],[2,"While left stick deflected"],[3,"While hold-button held"]];
+const LZ_CONSUMER = [[1,"Volume +"],[2,"Volume −"]];
+
+function lzBtnLabel(mask){ const m=LZ_BTNS.find(b=>b[0]===(mask>>>0)); return m?m[1]:(mask?("0x"+(mask>>>0).toString(16)):""); }
+let lizardBindings = [];   // [{outType, od:[7], trig, hold}]
+let lizardBusy = false;
+let lizardLoaded = false;  // one-shot: the lizard map is fetched lazily, only once the connected puck proves it speaks v16+
 const BACK_LABELS = ["L4 (back upper-left)","R4 (back upper-right)","L5 (back lower-left)","R5 (back lower-right)"];
 const typeEls = []; // one entry per TYPE_DEFS: {sec, tab, activeDot, back[], qam, abSwap, pad, led, ledV}
 function mkSelect(def, includeNone){
@@ -468,7 +630,13 @@ async function openDevice(d){
     // resume a stability test across the reset: re-arm the firmware buzz and start timing the next run
     if(stabArmed){ await send([0x0F,1]); stabStart=Date.now(); log("stability test resumed — timing next run"); }
     updateStabUI();
+    // The lizard-map dump (0x11 -> 0xAA) is loaded LAZILY, gated on the firmware advertising v16+ (see
+    // applyBlob). Older firmware (every pre-lizard build, including the v15 updater builds) silently drops
+    // 0x11, and readLizard()'s blocking transferIn would then hang forever -- wedging the status poll the
+    // firmware-update gate depends on. So we never send 0x11 until a status blob proves the puck speaks v16.
+    lizardLoaded=false;
     startPolling();
+    loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
     return true;
   }catch(e){ log("connect failed: "+e.message); dev=null; return false; }
 }
@@ -507,6 +675,7 @@ function onGone(){
   window._wedgeEp=false; window._wedgePeak=0; // re-arm the live wedge logger for the next wedge episode
   window._lastBlobTs=0; window._hbLostEp=false; // re-arm the heartbeat watchdog (don't fire on a stale pre-reset timestamp)
   polling=false; dev=null; tabInited=false; // re-default the config tab to the mode on next connect
+  checkUpdateNotice(); // no device = no notice
   $("#connState").textContent="reconnecting…"; $("#connState").className="pill dn";
   $("#panel").classList.add("hide");
   log("device disconnected (mode-switch / watchdog reboot) — auto-reconnecting when it returns");
@@ -551,6 +720,10 @@ async function readBlob(){ return readFrame(0xA5, 12); }
 function applyBlob(p){
   lastP=p; // remember for Export (carries every config field the panel shows)
   window._lastBlobTs=Date.now(); // feeds the host-side heartbeat watchdog (hard-wedge detection)
+  // Lazy, capability-gated lizard-map load: only after a blob proves the puck speaks v16+ (the op-0x11 dump).
+  // On older firmware 0x11 is dropped silently and readLizard() would block the endpoint forever, so we must
+  // NEVER send it blind at connect. One-shot per connection (reset in openDevice).
+  if(!lizardLoaded && p[0]>=16){ lizardLoaded=true; loadLizard(); }
   const mode=p[1], mDiv=p[2], mFric=p[3]; // p[4..11] mirror the active type (per-type block below is authoritative)
   const slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
@@ -565,6 +738,9 @@ function applyBlob(p){
   for(const el of document.querySelectorAll(".logonly")) el.style.display = logEnabled ? "" : "none";
   for(const b of document.querySelectorAll(".modebtn")) b.classList.toggle("active", +b.dataset.mode===mode);
   $("#mouseCard").style.opacity = (mode===1||mode===3)?1:0.5;
+  // The custom map applies ONLY to pure Lizard (always) mode. Steam-mode seamless lizard keeps
+  // the built-in default behavior, so the editor is shown only when the device is in Lizard mode.
+  $("#lizardCard").style.display = (mode===3 && p[0]>=16)?"":"none";
   const battery=(p.length>36?p[36]:0);
   const rumbleScale=(p.length>51?p[51]:200);
   const swProRate=(p.length>52?p[52]:2);
@@ -744,6 +920,9 @@ function applyBlob(p){
   $("#stBuild").innerHTML = buildId
     ? (buildId + (gitDirty ? ' <span class="pill dn">dirty</span>' : ' <span class="pill up">clean</span>'))
     : "—";
+  $("#updInstalled").textContent = buildId || "—"; // mirrored on the Firmware-update tab
+  updateFwGate(); // (re)evaluate the firmware-tab gate on every blob — version is at p[0]
+  checkUpdateNotice(); // needs BOTH the installed version (this blob) and relCache (fetched on connect)
   setSlider("mDiv",mDiv); setSlider("mFric",mFric); setSlider("rumble",rumbleScale);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
   // land-all-0x87 experiment toggle (blob v14, firmware p[177] -> JS p[175])
@@ -780,7 +959,7 @@ function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ e
 
 let inflight=false;
 async function refresh(){
-  if(!dev||inflight||capturing||backupBusy||flightBusy) return; inflight=true;
+  if(!dev||inflight||capturing||backupBusy||flightBusy||lizardBusy) return; inflight=true;
   // try/finally: an exception anywhere in here (applyBlob included) must never leave inflight latched true --
   // that would silently kill all future polls and read as a fake "heartbeat lost".
   try{ await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
@@ -801,9 +980,15 @@ function buildBackup(p, bp){
   const types=[];
   for(let et=0; et<TYPE_DEFS.length; et++){ const q=73+et*8;
     types.push({back:[p[q],p[q+1],p[q+2],p[q+3]], qam:p[q+4], abSwap:p[q+5], pad:p[q+6], led:p[q+7]}); }
-  return { magic:"openpuck-backup", version:1, bonds,
-    config:{ mode:p[1], mDiv:p[2], mFric:p[3], persistMode:p[22], chord:[p[23],p[24],p[25]],
-             rumble:p[51], swProRate:p[52], swGyro10:p[53], types } };
+  const cfg={ mode:p[1], mDiv:p[2], mFric:p[3], persistMode:p[22], chord:[p[23],p[24],p[25]],
+              rumble:p[51], swProRate:p[52], swGyro10:p[53], types };
+  // version 2: include the lizard map so it survives a backup/restore cycle.
+  // Guard on !lizardBusy to avoid a race with the one-shot lazy load (lizardExchange sets
+  // lizardBusy while the initial 0x11 fetch is in flight); if the load is still pending the
+  // map snapshot would be empty, which would incorrectly clear bindings on restore.
+  if(lizardLoaded && lizardCapable() && !lizardBusy)
+    cfg.lizardMap=lizardBindings.map(b=>({outType:b.outType,od:b.od.slice(),trig:b.trig>>>0,hold:b.hold>>>0}));
+  return { magic:"openpuck-backup", version:(cfg.lizardMap?2:1), bonds, config:cfg };
 }
 function downloadBackup(obj){
   const ts=new Date().toISOString().slice(0,19).replace(/[:T]/g,"-");
@@ -839,32 +1024,68 @@ async function importBackup(file){
   if(!confirm("Restore this backup onto the CONNECTED puck (serial "+(dev.serialNumber||"?")+")?\n\nMake sure this is the TARGET puck, not the one you exported from — the panel only talks to the puck you last connected.\n\nThis OVERWRITES its "+bondedN+" controller pairing(s) and ALL settings, then reboots it.\n\nResult: any controller paired to the original puck will connect to this one with no re-pairing.")) return;
   log("importing onto puck "+(dev.serialNumber||"?"));
   backupBusy=true; await waitIdle();
+  // Blocking progress modal (same surface the firmware updater uses): covers the page so nothing else can be
+  // driven while the import replays every setting onto the puck, then closes on Done / on error.
+  modalOpen("Restore backup");
+  const c=obj.config;
+  // Pre-count every write so the bar tracks real progress: settings (9 base fields), per-type config
+  // (8 each), the lizard bindings, 4 bond slots, and the final commit.
+  const typeN=Array.isArray(c.types)?Math.min(c.types.length,4):0;
+  const lizardN=(Array.isArray(c.lizardMap) && lizardCapable())?Math.min(c.lizardMap.length,LZ_MAX):0;
+  const total=9 + typeN*8 + lizardN + 4 + 1;
+  let step=0, stage="";
+  const tick=()=>modalStage(stage, Math.min(99,Math.floor(step*100/total)));
   try{
     // Capability probe: the connected puck MUST run firmware new enough to answer 0x09 with a 0xA7 frame,
     // otherwise it will silently ignore the 0x0D bond-import below. This is the #1 import failure: the panel
     // is connected to a puck still on old firmware. Catch it loudly instead of "nothing happened".
+    modalStage("Checking puck firmware", null);
     await send([0x09]);
     let probe=null; for(let t=0;t<8 && !probe;t++) probe=await readFrame(0xA7, 2+4*24);
     if(!probe){
       log("import ABORTED — the connected puck does not support import (old firmware).");
-      alert("This puck's firmware is too old to import a backup.\n\nFlash it with the latest OpenPuck build (the same one that produced the export), reconnect, then import again.");
+      modalDone(false, "This puck's firmware is too old to import a backup. Flash it with the latest "
+        +"OpenPuck build (the same one that produced the export), reconnect, then import again.", "Import failed");
       return;
     }
-    const c=obj.config;
     // Every step is a write-then-read transaction (same shape as the proven 0x02 sliders): the firmware acks
     // each with a status blob, which we read back to keep the OUT pipe flowing and naturally pace the writes.
-    const w=async(bytes)=>{ await send(bytes); await readBlob(); };
+    const w=async(bytes)=>{ await send(bytes); await readBlob(); step++; tick(); };
     const sf=async(f,v)=>{ await w([0x02, f, (v|0)&0xff]); };
     // replay every setting (each persists; none reboot). mode is applied by the 0x0E commit below.
+    stage="Restoring settings"; tick();
     await sf(1,c.mDiv); await sf(2,c.mFric); await sf(22,c.rumble); await sf(16,c.persistMode?1:0);
     await sf(17,c.chord[0]); await sf(18,c.chord[1]); await sf(19,c.chord[2]);
     await sf(23,c.swProRate); await sf(24,c.swGyro10);
-    for(let et=0; et<c.types.length && et<4; et++){ const t=c.types[et];
-      for(let k=0;k<4;k++) await sf(40+et*8+k, t.back[k]);
-      await sf(40+et*8+4, t.qam); await sf(40+et*8+5, t.abSwap?1:0);
-      await sf(40+et*8+6, t.pad?1:0); await sf(40+et*8+7, t.led); }
-    log("settings replayed ("+(9+c.types.length*8)+" fields)");
+    // c.types is absent in some very old backups created before per-type paddle/haptic config
+    // was added to the panel export; guard so a missing field never crashes the import mid-flight.
+    if(typeN){
+      for(let et=0; et<typeN; et++){ const t=c.types[et];
+        for(let k=0;k<4;k++) await sf(40+et*8+k, t.back[k]);
+        await sf(40+et*8+4, t.qam); await sf(40+et*8+5, t.abSwap?1:0);
+        await sf(40+et*8+6, t.pad?1:0); await sf(40+et*8+7, t.led); }
+      log("settings replayed ("+(9+typeN*8)+" fields)");
+    } else { log("settings replayed (9 fields — no per-type config in this backup)"); }
+    // restore the lizard map if the backup includes it (version 2+) and the puck speaks v16+.
+    // pre-lizard-map backups simply lack c.lizardMap; skip silently so they still import cleanly.
+    if(lizardN){
+      stage="Restoring button map"; tick();
+      const map=c.lizardMap.slice(0,LZ_MAX);
+      await send([0x13, map.length&0xff]); // begin edit (set count)
+      for(let i=0;i<map.length;i++){
+        const b=map[i], od=(b.od||[]).slice(0,7); while(od.length<7) od.push(0);
+        const t=(b.trig||0)>>>0, h=(b.hold||0)>>>0;
+        await send([0x12, i, (b.outType||0)&0xff, ...od.map(x=>(x||0)&0xff),
+          t&0xff,(t>>>8)&0xff,(t>>>16)&0xff,(t>>>24)&0xff,
+          h&0xff,(h>>>8)&0xff,(h>>>16)&0xff,(h>>>24)&0xff]);
+        step++; tick();
+      }
+      await send([0x14]); // commit + persist to flash
+      await readLizard(); // drain the 0xAA echo so the pipe is clean for bond writes
+      log("lizard map restored — "+map.length+" bindings");
+    }
     // write each bond slot with its own small command [0x0D][slot][used][24-byte rec]
+    stage="Restoring controller pairings"; tick();
     let n=0;
     for(let s=0;s<4;s++){
       const b=obj.bonds.find(x=>x.slot===s) || {used:false, rec:""};
@@ -875,8 +1096,13 @@ async function importBackup(file){
     }
     log("wrote "+n+" bond slot(s) — committing + rebooting");
     // commit: persist bonds, apply mode, reboot (no ack — the device reboots)
+    stage="Committing + rebooting"; step++; tick();
     await send([0x0E, (c.mode!==undefined?c.mode:0xFF)&0xff]);
     log("import sent — puck is cloning and rebooting. Reconnect after it returns.");
+    modalDone(true, "Backup restored — the puck is cloning and rebooting. Reconnect after it returns.");
+  } catch(e){
+    log("import FAILED — "+e.message);
+    modalDone(false, e.message+" — the import stopped partway; reconnect and retry.", "Import failed");
   } finally { backupBusy=false; }
 }
 async function setField(field,value){
@@ -1060,14 +1286,608 @@ async function startPolling(){
   }
 }
 
+// ---- lizard map transfers ----
+// The status-blob poll and these map transfers share one bulk pipe, so we pause polling
+// (lizardBusy) and wait out any in-flight refresh before sending a 0x11/0x14/0x15 that
+// expects a 0xAA reply. (Opcodes/frame renumbered from 0x0D../0xA7 on the merge with main,
+// which claimed 0x0D-0x10 for bond-import/stability/flight, 0xA7 for bond export and
+// 0xA8 for the flight recorder -- 0xAA is the free device->host marker.)
+async function lizardExchange(fn){
+  lizardBusy=true;
+  for(let i=0;i<25 && inflight;i++) await new Promise(r=>setTimeout(r,20));
+  try{ return await fn(); }
+  catch(e){ log("lizard err: "+e.message); return null; }
+  finally{ lizardBusy=false; }
+}
+// Read one [0xAA][count][count*16] frame, accumulating transferIn packets until complete.
+async function readLizard(){
+  let acc=new Uint8Array(0);
+  for(let guard=0; guard<64; guard++){
+    const r=await dev.transferIn(epIn,128);
+    if(r.status!=="ok") break;
+    const d=new Uint8Array(r.data.buffer);
+    const m=new Uint8Array(acc.length+d.length); m.set(acc); m.set(d,acc.length); acc=m;
+    let i=0; while(i<acc.length && acc[i]!==0xAA) i++;
+    if(i>0) acc=acc.slice(i);
+    if(acc.length<2) continue;
+    const count=acc[1], total=2+count*16;
+    if(acc.length>=total){
+      const out=[];
+      for(let b=0;b<count;b++){
+        const q=2+b*16;
+        out.push({
+          outType:acc[q],
+          od:[...acc.slice(q+1,q+8)],
+          trig:((acc[q+8])|(acc[q+9]<<8)|(acc[q+10]<<16)|(acc[q+11]<<24))>>>0,
+          hold:((acc[q+12])|(acc[q+13]<<8)|(acc[q+14]<<16)|(acc[q+15]<<24))>>>0,
+        });
+      }
+      return out;
+    }
+  }
+  return null;
+}
+// Every lizard op sends 0x11..0x15 and then does a BLOCKING readLizard(). If the firmware doesn't implement
+// the op (any pre-v16 build) it drops the byte and never replies, and the read hangs the shared endpoint. So
+// every entry point bails unless a status blob has proven the puck speaks v16+.
+function lizardCapable(){ return !!(lastP && lastP[0]>=16); }
+async function loadLizard(){
+  if(!lizardCapable()) return;
+  await lizardExchange(async()=>{
+    await send([0x11]); // dump map
+    const b=await readLizard();
+    if(b){ lizardBindings=b; renderLizard(); log(`lizard map loaded — ${b.length} bindings`); }
+  });
+}
+async function saveLizard(){
+  if(!dev || !lizardCapable()) return;
+  // A digital binding (keyboard/mouse/media) with neither a trigger nor a hold fires
+  // unconditionally in the firmware (the trigMask==0 guard is skipped) -- it would type/click
+  // forever. Drop those rows so a half-finished binding can't brick desktop input.
+  const digital=b=>b.outType===LZO.KBD||b.outType===LZO.MBTN||b.outType===LZO.CONSUMER;
+  const valid=lizardBindings.filter(b=> b.outType!==LZO.NONE && (!digital(b) || (b.trig>>>0)||(b.hold>>>0)) );
+  const dropped=lizardBindings.length-valid.length;
+  await lizardExchange(async()=>{
+    await send([0x13, valid.length&0xff]); // begin edit (set count)
+    for(let i=0;i<valid.length;i++){
+      const b=valid[i];
+      const od=(b.od||[]).slice(0,7); while(od.length<7) od.push(0);
+      const t=b.trig>>>0, h=b.hold>>>0;
+      await send([0x12, i, b.outType, ...od.map(x=>x&0xff), // set one binding
+        t&0xff,(t>>>8)&0xff,(t>>>16)&0xff,(t>>>24)&0xff,
+        h&0xff,(h>>>8)&0xff,(h>>>16)&0xff,(h>>>24)&0xff]);
+    }
+    await send([0x14]); // commit + persist to flash
+    const b=await readLizard(); if(b){ lizardBindings=b; renderLizard(); }
+    log(`lizard map saved — ${valid.length} bindings`+(dropped?` (skipped ${dropped} incomplete: no trigger/hold)`:""));
+  });
+}
+async function resetLizard(){
+  if(!dev || !lizardCapable()) return;
+  if(!confirm("Reset the lizard map to the built-in defaults? Unsaved edits are lost.")) return;
+  await lizardExchange(async()=>{
+    await send([0x15]); // reset to defaults
+    const b=await readLizard(); if(b){ lizardBindings=b; renderLizard(); }
+    log("lizard map reset to defaults");
+  });
+}
+
+// ---- lizard map UI ----
+function mkSel(opts, val, onchange){
+  const s=document.createElement("select"); s.style.flex="0 1 auto"; s.style.minWidth="0";
+  for(const [v,l] of opts){ const o=document.createElement("option"); o.value=v; o.textContent=l; s.appendChild(o); }
+  s.value=val; s.addEventListener("change",()=>onchange(+s.value));
+  return s;
+}
+function renderLizard(){
+  const host=$("#lizardList"); host.innerHTML="";
+  lizardBindings.forEach((b,idx)=>host.appendChild(buildLizardRow(b,idx)));
+  $("#lzStatus").textContent = `${lizardBindings.length} / ${LZ_MAX} bindings`;
+  $("#lzAdd").disabled = lizardBindings.length>=LZ_MAX;
+}
+function buildLizardRow(b, idx){
+  const row=document.createElement("div");
+  row.style.cssText="display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:8px 10px;margin:8px 0";
+  const analog = (b.outType===LZO.AXIS || b.outType===LZO.SCROLL);
+
+  // Trigger (When) + Hold — meaningful only for digital outputs
+  if(!analog){
+    const when=document.createElement("span"); when.className="note"; when.textContent="When"; when.style.flex="0 0 auto"; row.appendChild(when);
+    row.appendChild(mkSel([[0,"— pick input —"],...LZ_BTNS], b.trig, v=>{ b.trig=v>>>0; }));
+    const plus=document.createElement("span"); plus.className="note"; plus.textContent="+ hold"; plus.style.flex="0 0 auto"; row.appendChild(plus);
+    row.appendChild(mkSel([[0,"(none)"],...LZ_BTNS], b.hold, v=>{ b.hold=v>>>0; }));
+  } else {
+    const lab=document.createElement("span"); lab.className="note"; lab.textContent="Analog source"; lab.style.flex="0 0 auto"; row.appendChild(lab);
+  }
+
+  // Arrow + output type
+  const arrow=document.createElement("span"); arrow.textContent="→"; arrow.style.color="var(--mut)"; row.appendChild(arrow);
+  row.appendChild(mkSel(Object.entries(LZ_OUT_LABELS).map(([v,l])=>[+v,l]), b.outType, v=>{
+    b.outType=v;
+    // reset payload to sane defaults for the new type
+    if(v===LZO.AXIS){ b.od=[0,0,0,0,0,0,0]; }
+    else if(v===LZO.SCROLL){ b.od=[0,0,0,0,0,0,0]; }
+    else if(v===LZO.MBTN){ b.od=[1,0,0,0,0,0,0]; }
+    else if(v===LZO.CONSUMER){ b.od=[1,0,0,0,0,0,0]; }
+    else if(v===LZO.KBD){ b.od=[0,0,0,0,0,0,0]; }
+    renderLizard();
+  }));
+
+  // Output-specific controls
+  if(b.outType===LZO.KBD){
+    for(const [bit,name] of LZ_MODS){
+      const w=document.createElement("label"); w.style.cssText="flex:0 0 auto;display:flex;align-items:center;gap:3px;color:var(--fg)";
+      const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=!!(b.od[0]&bit);
+      cb.addEventListener("change",()=>{ b.od[0]=cb.checked?(b.od[0]|bit):(b.od[0]&~bit); });
+      w.appendChild(cb); w.appendChild(document.createTextNode(name)); row.appendChild(w);
+    }
+    row.appendChild(mkSel(LZ_KEYS, b.od[1]||0, v=>{ b.od[1]=v; for(let k=2;k<7;k++) b.od[k]=0; }));
+  } else if(b.outType===LZO.MBTN){
+    row.appendChild(mkSel(LZ_MBTNS, b.od[0]||1, v=>{ b.od[0]=v; }));
+  } else if(b.outType===LZO.AXIS){
+    row.appendChild(mkSel(LZ_AXIS_SRC, b.od[0]||0, v=>{ b.od[0]=v; renderLizard(); }));
+    if((b.od[0]||0)===2){ // gyro: activation selector
+      const g=document.createElement("span"); g.className="note"; g.textContent="when"; g.style.flex="0 0 auto"; row.appendChild(g);
+      row.appendChild(mkSel(LZ_GYRO_ACT, b.od[1]||0, v=>{ b.od[1]=v; }));
+    }
+  } else if(b.outType===LZO.SCROLL){
+    const s=document.createElement("span"); s.className="note"; s.textContent="Left trackpad → scroll"; row.appendChild(s);
+  } else if(b.outType===LZO.CONSUMER){
+    row.appendChild(mkSel(LZ_CONSUMER, b.od[0]||1, v=>{ b.od[0]=v; }));
+  }
+
+  // delete
+  const del=document.createElement("button"); del.textContent="✕"; del.title="Delete binding";
+  del.style.cssText="margin-left:auto;flex:0 0 auto;padding:4px 10px";
+  del.onclick=()=>{ lizardBindings.splice(idx,1); renderLizard(); };
+  row.appendChild(del);
+  return row;
+}
+
 // UI wiring
 $("#connectBtn").onclick=connect;
+// ---- Firmware update: UF2 file -> staged flash over WebUSB, applied on reboot ----
+// Flow: parse the .uf2 into the raw app image, stream it over THIS WebUSB connection (ops 0x20/0x21/0x22,
+// strict ping-pong on the firmware's 0xAB acks) into spare flash high in the puck's app region, let the
+// firmware CRC32-verify what actually landed and commit the one-page "apply on reboot" record, then send a
+// plain reboot (0x23) — the puck copies staged->app from RAM on the way up and re-enumerates on the new
+// firmware, where this panel auto-reconnects. Corruption safety (matches fw_update.h in the firmware):
+//   - nothing is armed until the staged bytes verify IN FLASH, so any failure/disconnect/power-cut during
+//     the transfer leaves the current firmware completely untouched;
+//   - the boot-time apply orders its writes so an interruption leaves the board app-less (UF2 bootloader
+//     mass-storage recovery), never a crash-looping half image.
+const UF2_MAGIC0=0x0A324655, UF2_MAGIC1=0x9E5D5157, UF2_MAGIC_END=0x0AB16F30, UF2_FAMILY=0xADA52840;
+const APP_BASE=0x26000, FWUP_MAX_IMG=0x60000; // nRF52840 app base; staging cap (fw_update.h FWUP_MAX_IMG)
+// Extract the contiguous application image from a .uf2 (gaps filled with 0xFF, length padded to a word).
+// Throws on anything that is not an nRF52840 app-region UF2 — the firmware re-checks everything, but a bad
+// file should fail at pick time, not after a reboot.
+function uf2ToImage(buf){
+  if(!buf.byteLength || buf.byteLength%512) throw new Error("not a UF2 (size is not a multiple of 512)");
+  const dv=new DataView(buf), blocks=[]; let lo=Infinity, hi=0;
+  for(let off=0; off<buf.byteLength; off+=512){
+    if(dv.getUint32(off,true)!==UF2_MAGIC0 || dv.getUint32(off+4,true)!==UF2_MAGIC1 || dv.getUint32(off+508,true)!==UF2_MAGIC_END)
+      throw new Error("bad UF2 block magic at offset "+off);
+    const flags=dv.getUint32(off+8,true), addr=dv.getUint32(off+12,true), len=dv.getUint32(off+16,true);
+    if(flags&0x00000001) continue; // NOT_MAIN_FLASH
+    if((flags&0x00002000) && dv.getUint32(off+28,true)!==UF2_FAMILY)
+      throw new Error("UF2 family 0x"+dv.getUint32(off+28,true).toString(16)+" is not nRF52840 (0xada52840)");
+    if(len<1 || len>476) throw new Error("bad UF2 payload size "+len);
+    blocks.push({addr,len,off}); lo=Math.min(lo,addr); hi=Math.max(hi,addr+len);
+  }
+  if(!blocks.length) throw new Error("UF2 contains no flash data");
+  if(lo!==APP_BASE) throw new Error("image base 0x"+lo.toString(16)+" is not the app region (0x26000) — not an OpenPuck app UF2");
+  if(hi-lo>FWUP_MAX_IMG) throw new Error("image is "+Math.round((hi-lo)/1024)+" KiB — over the 384 KiB staged-update cap; flash it via UF2 DFU + drag-and-drop");
+  const img=new Uint8Array((hi-lo+3)&~3).fill(0xFF); // firmware stages whole words
+  for(const b of blocks) img.set(new Uint8Array(buf,b.off+32,b.len), b.addr-lo);
+  return img;
+}
+// CRC32 (IEEE, reflected, init/xorout 0xFFFFFFFF) — must match crc32Step/crc32Flash in fw_update.cpp
+function crc32(u8){
+  let c=0xFFFFFFFF;
+  for(let i=0;i<u8.length;i++){
+    c^=u8[i];
+    for(let k=0;k<8;k++) c=(c>>>1)^(0xEDB88320&-(c&1));
+  }
+  return (~c)>>>0;
+}
+const u32le=v=>[v&0xFF,(v>>>8)&0xFF,(v>>>16)&0xFF,(v>>>24)&0xFF];
+const dfuSleep=ms=>new Promise(r=>setTimeout(r,ms));
+// Firmware built from this branch onward embeds this tag (fw_update.cpp FWUP_TAG). An image WITHOUT it
+// still flashes fine — but the puck it leaves behind can't do panel updates, so we warn before the
+// lock-yourself-out-to-drag-and-drop move (all releases up to 0.9.6 predate panel updates).
+function imagePanelUpdatable(image){
+  return new TextDecoder("latin1").decode(image).includes("OPK-FWUP-v1");
+}
+const FWUP_ERR=["ok","command out of sequence","image too big for this puck's free flash","offset resync",
+  "staged bytes failed CRC verify","staged image has no valid vector table"];
+// Ack reader ([0xAB][5][status][nextOff u32 LE]). One persistent transferIn at a time: a wait that times out
+// leaves its read PENDING for the next wait — issuing a second concurrent read would silently eat the data
+// the first one eventually resolves with. If one read carries several acks (a retried command double-acks),
+// only the LAST — the firmware's newest state — is returned, so stale acks collapse instead of accumulating.
+let fwupRead=null;
+async function fwupAckWait(timeoutMs){
+  const deadline=Date.now()+timeoutMs;
+  for(;;){
+    const remain=deadline-Date.now();
+    if(remain<=0) return null;
+    if(!fwupRead) fwupRead=dev.transferIn(epIn, 64);
+    const r=await Promise.race([fwupRead, dfuSleep(remain).then(()=>"timeout")]);
+    if(r==="timeout") return null;
+    fwupRead=null;
+    if(r.status!=="ok") continue;
+    const d=new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength);
+    let ack=null;
+    for(let i=0;i+6<d.length;i++)
+      if(d[i]===0xAB && d[i+1]===5)
+        ack={status:d[i+2], off:(d[i+3]|(d[i+4]<<8)|(d[i+5]<<16)|(d[i+6]<<24))>>>0};
+    if(ack) return ack;
+  }
+}
+const fwupSend=cmd=>dev.transferOut(epOut, new Uint8Array(cmd));
+// send a control op (begin/end/abort — all idempotent on the firmware side) and wait; resend on timeout
+async function fwupCtl(cmd, timeoutMs, label){
+  for(let t=0;t<3;t++){
+    await fwupSend(cmd);
+    const a=await fwupAckWait(timeoutMs);
+    if(a) return a;
+  }
+  throw new Error("no response to "+label);
+}
+async function fwupRun(image){
+  const kb=Math.round(image.length/1024);
+  fwupRead=null; // never reuse a read pending against a previous session/device
+  // drain anything stale on the IN pipe (leftover ack from an aborted run, a late status blob)
+  while(await fwupAckWait(400)!==null){}
+  log("firmware update: staging "+kb+" KiB into the puck's spare flash — input may stutter briefly during page erases");
+  let a=await fwupCtl([0x20,...u32le(image.length),...u32le(crc32(image))],4000,"begin");
+  if(a.status) throw new Error("begin rejected: "+(FWUP_ERR[a.status]||("code "+a.status)));
+  // Chunk loop: send one chunk, then read acks until one shows progress. A TIMEOUT resends (covers a truly
+  // lost command); a stale no-progress ack (the surplus twin of a resent chunk) is read past WITHOUT
+  // resending, so retries can't snowball. The ack's nextOff is authoritative — the firmware skips duplicate
+  // chunks and re-acks, flash words are never written twice — so every path resynchronizes here.
+  let off=0, sends=0, lastShown=-1;
+  const maxSends=Math.ceil(image.length/128)*2+64;
+  while(off<image.length){
+    const len=Math.min(128,image.length-off);
+    await fwupSend([0x21,...u32le(off),len,...image.subarray(off,off+len)]);
+    if(++sends>maxSends) throw new Error("transfer not converging at offset "+off);
+    for(let reads=0;reads<8;reads++){
+      a=await fwupAckWait(2500);
+      if(a===null) break; // timeout: resend this chunk
+      if(a.status===3){ off=a.off; break; } // firmware says where it wants us — resend from there
+      if(a.status!==0) throw new Error("chunk rejected at offset "+off+": "+(FWUP_ERR[a.status]||("code "+a.status)));
+      if(a.off>off){ off=a.off; break; } // progress
+      // else: stale ack — keep reading, the real one is behind it
+    }
+    const pct=Math.floor(off*50/image.length)*2;
+    if(pct!==lastShown){ lastShown=pct; modalStage("Sending to the puck", pct); }
+  }
+  modalStage("Verifying on the puck", null); // firmware CRC32s the staged flash, then commits the record
+  a=await fwupCtl([0x22],8000,"verify+commit");
+  if(a.status) throw new Error("verify+commit rejected: "+(FWUP_ERR[a.status]||("code "+a.status)));
+  log("image staged + CRC-verified on the puck — update armed");
+  modalStage("Rebooting", null);
+  try{ await fwupSend([0x23]); }catch(e){} // device drops mid-call; that's the point
+  log("rebooting to apply: the puck goes dark ~5 s while the new firmware is written, then re-enumerates — the panel reconnects itself");
+}
+// ---- blocking modal: the ONLY interactive surface while an update runs (it covers everything else) ----
+function modalStage(txt,pct){
+  const f=$("#updFill"), p=$("#updPct");
+  $("#updStage").textContent=txt;
+  f.classList.remove("bad");
+  if(pct==null){ f.classList.add("pulse"); f.style.width="100%"; p.textContent=""; }
+  else{ f.classList.remove("pulse"); f.style.width=pct+"%"; p.textContent=pct+"%"; }
+}
+function modalOpen(title){
+  $("#updTitle").textContent=title;
+  $("#updDetail").textContent="";
+  $("#updClose").classList.add("hide"); // no way out mid-update: closing wouldn't stop the puck anyway
+  $("#updModal").classList.remove("hide");
+  modalStage("Preparing…",null);
+}
+function modalDone(ok,msg,failTitle){
+  const f=$("#updFill");
+  f.classList.remove("pulse");
+  f.style.width="100%";
+  f.classList.toggle("bad",!ok);
+  $("#updStage").textContent = ok ? "Done" : (failTitle||"Update failed");
+  $("#updPct").textContent="";
+  $("#updDetail").textContent=msg;
+  $("#updClose").classList.remove("hide");
+}
+$("#updClose").onclick=()=>$("#updModal").classList.add("hide");
+
+function blobBuildId(p){
+  if(!p) return "";
+  let s=""; for(let i=39;i<51 && i<p.length && p[i];i++) s+=String.fromCharCode(p[i]);
+  return s;
+}
+// Update-available notice (topbar): shown when the connected puck reports a release-shaped build (x.y.z)
+// older than the newest non-prerelease on GitHub. Dev builds report a git hash, which doesn't parse — no
+// nagging about "updates" for firmware newer than any release. Click = jump to the Firmware update tab.
+function verTriple(s){
+  const m=/^(\d+)\.(\d+)\.(\d+)/.exec(s||"");
+  return m ? [+m[1],+m[2],+m[3]] : null;
+}
+function checkUpdateNotice(){
+  const el=$("#updAvail");
+  const inst=verTriple(blobBuildId(lastP));
+  const rel=(relCache||[]).find(r=>!r.prerelease && relAsset(r,false));
+  const latest=rel ? verTriple(rel.tag_name) : null;
+  const newer = !!(dev && inst && latest &&
+    (latest[0]>inst[0] || (latest[0]===inst[0] &&
+     (latest[1]>inst[1] || (latest[1]===inst[1] && latest[2]>inst[2])))));
+  el.classList.toggle("hide", !newer);
+  if(newer) el.textContent="⬆ update "+rel.tag_name+" available";
+}
+$("#updAvail").onclick=()=>{ document.querySelector('#mainTabs .slot-tab[data-tab="tabUpdate"]').click(); };
+
+// Firmware-tab gate: the connected puck must speak status v15+ (the 0x20..0x24 update ops) for ANY of the
+// update tab to be usable. Too old => banner explains + both cards go inert until a capable build is flashed
+// the manual way once.
+function updateFwGate(){
+  const ok = !!(lastP && lastP[0]>=15);
+  $("#updGate").classList.toggle("hide", ok);
+  if(!ok) $("#updGateMsg").textContent =
+    "This puck is running "+(blobBuildId(lastP)||"an unknown build")+" (status v"+(lastP?lastP[0]:"?")
+    +"), which predates panel updates (needs v15+), so updating from this page is disabled. One manual flash "
+    +"gets you back: click “UF2 DFU” in the top bar, then drag a panel-update-capable .uf2 onto the UF2BOOT "
+    +"drive it mounts. Every update after that happens right here.";
+  for(const c of document.querySelectorAll(".fwupcard")) c.classList.toggle("gated", !ok);
+}
+// after the apply-reboot: resolved once the puck is back.
+// Returns true if the panel auto-reconnected and received a fresh status blob (desktop), "appeared"
+// if the puck is visible in getDevices() but openDevice() couldn't be called without a user gesture
+// (Android Chrome), or false on timeout.
+async function waitReconnect(t0,ms){
+  const deadline=Date.now()+ms;
+  // seenGone: the puck must disconnect before we can declare it "back".  It is often already gone
+  // by the time this runs (fwupRun sent the reboot command and returned), so initialise from dev.
+  let seenGone=!dev;
+  while(Date.now()<deadline){
+    if(dev && window._lastBlobTs>t0) return true;
+    if(!dev) seenGone=true;
+    if(seenGone && !dev){
+      try{
+        const ds=await navigator.usb.getDevices();
+        if(ds.some(x=>USB_FILTERS.some(f=>f.vendorId===x.vendorId))) return "appeared";
+      }catch(_e){}
+    }
+    await dfuSleep(400);
+  }
+  return false;
+}
+// One update end-to-end: pre-flight checks, confirm, modal up, image acquired (may download), streamed,
+// applied, reconnect observed. getImage runs INSIDE the modal so release downloads show progress there.
+async function runUpdate(title, confirmText, getImage){
+  if(dfuBusy) return;
+  if(!dev){ log("connect to the puck first — the update travels over this WebUSB connection"); return; }
+  if(!lastP || lastP[0]<15){
+    log("this puck's firmware ("+(blobBuildId(lastP)||"?")+", status v"+(lastP?lastP[0]:"?")+") predates panel updates (needs v15+) — flash a panel-update-capable build once via UF2 DFU + drag-and-drop, then this works");
+    return;
+  }
+  if(!confirm(confirmText)) return;
+  dfuBusy=true; updateUf2UI(); modalOpen(title);
+  polling=false;        // the IN pipe belongs to the update acks now
+  await dfuSleep(800);  // let an in-flight status poll finish its read first
+  const t0=Date.now(), oldBuild=blobBuildId(lastP);
+  try{
+    const image=await getImage();
+    if(!imagePanelUpdatable(image) &&
+       !confirm("⚠ DOWNGRADE WARNING\n\nThis image predates panel updates (releases up to 0.9.6 do). It will "
+        +"flash fine, but the puck it leaves behind CANNOT be updated from this panel — getting off it again "
+        +"means UF2 DFU + drag-and-drop.\n\nFlash it anyway?"))
+      throw new Error("cancelled — the selected image doesn't support panel updates");
+    await fwupRun(image);
+    modalStage("Applying on the puck",null);
+    $("#updDetail").textContent="the puck goes dark ~5 s while the new firmware is written, then re-enumerates";
+    const result=await waitReconnect(t0,40000);
+    if(result===true){
+      const nb=blobBuildId(lastP);
+      modalDone(true,"Update applied — the puck is back and running build "+(nb||"?")+(oldBuild&&nb!==oldBuild?" (was "+oldBuild+")":""));
+    }else if(result==="appeared"){
+      // The puck re-enumerated but the browser couldn't auto-open it (requires a user gesture on
+      // Android Chrome).  The update landed — the user just needs to tap Connect.
+      modalDone(true,"Update applied — the puck is back. Tap Connect to reconnect.");
+    }else{
+      modalDone(false,"The update was sent and armed, but the puck didn't reconnect within 40 s. Unplug/replug it. "
+        +"If it mounts as a UF2BOOT drive, drag the .uf2 onto the drive to recover — the bootloader is intact.");
+    }
+  }catch(e){
+    log("firmware update FAILED: "+e.message);
+    modalDone(false,e.message+" — nothing was applied; the running firmware is untouched.");
+    try{ await fwupSend([0x24]); }catch(_e){} // best-effort disarm
+    if(dev) startPolling();
+  }finally{
+    dfuBusy=false; updateUf2UI();
+  }
+}
+
+// ---- local-file source: drag-and-drop or file picker ----
+async function pickUf2(f){
+  try{
+    const image=uf2ToImage(await f.arrayBuffer());
+    selectedUf2={name:f.name, image, updatable:imagePanelUpdatable(image)};
+    log("UF2 ready: "+f.name+" — app image "+Math.round(image.length/1024)+" KiB, CRC32 0x"+crc32(image).toString(16).padStart(8,"0"));
+  }catch(err){
+    selectedUf2=null;
+    log("UF2 rejected: "+err.message);
+  }
+  updateUf2UI();
+}
+$("#uf2File").onchange=async(e)=>{
+  const f=e.target.files && e.target.files[0];
+  e.target.value=""; // allow re-picking the same filename after a rebuild
+  if(f) await pickUf2(f);
+};
+// a file dropped anywhere the dropzone isn't listening (e.g. while gated) must not navigate the page to it
+window.addEventListener("dragover",e=>e.preventDefault());
+window.addEventListener("drop",e=>e.preventDefault());
+{
+  const dz=$("#uf2Drop");
+  dz.onclick=()=>$("#uf2File").click();
+  dz.ondragover=e=>{ e.preventDefault(); dz.classList.add("drag"); };
+  dz.ondragleave=()=>dz.classList.remove("drag");
+  dz.ondrop=async e=>{
+    e.preventDefault(); dz.classList.remove("drag");
+    const f=e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) await pickUf2(f);
+  };
+}
+$("#uf2Flash").onclick=()=>{
+  if(!selectedUf2) return;
+  runUpdate("Flashing "+selectedUf2.name,
+    "Flash "+selectedUf2.name+" ("+Math.round(selectedUf2.image.length/1024)+" KiB)?\n\n"
+    +"The image is sent over WebUSB into spare flash (~15 s), verified on the puck, and applied on an automatic "
+    +"reboot (~5 s dark). Nothing is armed until it verifies, so a failed or interrupted transfer leaves the "
+    +"current firmware untouched. Worst case (power cut during the apply itself) the puck comes back as the "
+    +"UF2BOOT drive for drag-and-drop recovery — it cannot end up half-flashed.",
+    async()=>selectedUf2.image);
+};
+
+// ---- release source: list from the GitHub API, binaries from the CORS-reachable firmware mirror ----
+// api.github.com sends Access-Control-Allow-Origin:* but release-asset downloads redirect to a CDN that does
+// NOT, so the release workflow mirrors every OpenPuck .uf2 onto the repo's orphan `firmware` branch and the
+// panel fetches it from raw.githubusercontent.com (which is CORS-clean). Fallbacks: the API asset endpoint
+// (in case GitHub ever fixes its CDN), then a plain new-tab download + the local-file card.
+const REL_REPO="safijari/openpuck";
+let relCache=null;
+// firmware-mirror manifest: asset name -> {panelUpdate}. Written by the release workflow, which scans each
+// .uf2 for the FWUP_TAG capability string. null = manifest unreachable (then releases just go unbadged; the
+// byte-scan warning at flash time still catches an unsupported image).
+let relManifest=null;
+// tri-state: true = a puck running this release can be panel-updated, false = it cannot (drag-and-drop only
+// to get off it), null = unknown (no manifest)
+function relPanelUpdatable(rel){
+  if(!relManifest) return null;
+  const known=[relAsset(rel,false),relAsset(rel,true)].filter(a=>a && relManifest[a.name]);
+  if(!known.length) return null; // not mirrored (yet) — unknown, don't badge (mirror step lags a fresh release by ~a minute)
+  return known.some(a=>relManifest[a.name].panelUpdate);
+}
+async function downloadAsset(asset){
+  modalStage("Downloading "+asset.name,0);
+  let resp=null;
+  try{
+    const r=await fetch("https://raw.githubusercontent.com/"+REL_REPO+"/firmware/"+asset.name,{cache:"no-store"});
+    if(r.ok) resp=r;
+  }catch(e){}
+  if(!resp){
+    try{
+      const r=await fetch(asset.url,{headers:{Accept:"application/octet-stream"}});
+      if(r.ok) resp=r;
+    }catch(e){}
+  }
+  if(!resp){
+    window.open(asset.browser_download_url,"_blank","noopener");
+    throw new Error(asset.name+" isn't on the firmware mirror yet and GitHub's asset CDN blocks in-page downloads. "
+      +"It's downloading in a new tab instead — drop the file on the local-file card above.");
+  }
+  const total=+resp.headers.get("content-length") || asset.size || 0;
+  const reader=resp.body.getReader(), parts=[]; let got=0;
+  for(;;){
+    const {done,value}=await reader.read();
+    if(done) break;
+    parts.push(value); got+=value.length;
+    if(total) modalStage("Downloading "+asset.name, Math.min(99,Math.floor(got*100/total)));
+  }
+  const buf=new Uint8Array(got); let o=0;
+  for(const p of parts){ buf.set(p,o); o+=p.length; }
+  return uf2ToImage(buf.buffer);
+}
+function relAsset(rel,factory){
+  const suffix=factory ? "factory-reset" : "standard";
+  return rel.assets.find(a=>a.name==="OpenPuck-"+rel.tag_name+"-"+suffix+".uf2")
+      || rel.assets.find(a=>new RegExp("^OpenPuck-.*-"+suffix+"\\.uf2$").test(a.name)) || null;
+}
+function flashRelease(rel,factory){
+  const asset=relAsset(rel,factory);
+  if(!asset){ log("release "+rel.tag_name+" has no "+(factory?"factory-reset":"standard")+" .uf2 asset"); return; }
+  const kb=Math.round((asset.size||0)/1024);
+  runUpdate("Updating to "+rel.tag_name+(factory?" (factory reset)":""),
+    "Update the puck to "+rel.tag_name+(factory
+      ? " using the FACTORY RESET build?\n\nOn its first boot it wipes ALL settings and the controller pairing — you must re-pair the controller afterwards."
+      : "?")
+    +"\n\n"+asset.name+" ("+kb+" KiB) is downloaded, sent over WebUSB, verified on the puck, and applied on an "
+    +"automatic reboot. A failed or interrupted transfer leaves the current firmware untouched.",
+    ()=>downloadAsset(asset));
+}
+function renderReleases(){
+  const list=$("#relList");
+  list.textContent="";
+  let shown=0;
+  for(const rel of relCache){
+    const std=relAsset(rel,false), fac=relAsset(rel,true);
+    if(!std && !fac) continue;
+    shown++;
+    const row=document.createElement("div"); row.className="rel-row";
+    const ver=document.createElement("span"); ver.className="ver"; ver.textContent=rel.tag_name;
+    const date=document.createElement("span"); date.className="date";
+    date.textContent=(rel.published_at||"").slice(0,10)+(rel.prerelease?" · pre":"");
+    const name=document.createElement("span"); name.className="grow note"; name.style.margin="0";
+    name.textContent=rel.name && rel.name!==rel.tag_name ? rel.name : "";
+    const lab=document.createElement("label");
+    const cb=document.createElement("input"); cb.type="checkbox"; cb.disabled=!fac;
+    lab.appendChild(cb); lab.appendChild(document.createTextNode("factory reset"));
+    lab.title=fac ? "Flash the -factory-reset build: wipes settings + pairing once on first boot"
+                  : "this release has no factory-reset build";
+    const btn=document.createElement("button"); btn.textContent="Flash "+rel.tag_name;
+    btn.onclick=()=>flashRelease(rel,cb.checked);
+    row.append(ver,date,name);
+    if(relPanelUpdatable(rel)===false){
+      const pill=document.createElement("span"); pill.className="pill dn";
+      pill.textContent="no panel updates";
+      pill.title="This build predates panel-update support: it flashes fine from here, but a puck running it "
+        +"can only be updated again via UF2 DFU + drag-and-drop.";
+      row.appendChild(pill);
+    }
+    row.append(lab,btn);
+    list.appendChild(row);
+  }
+  if(!shown) list.textContent="no releases with OpenPuck .uf2 assets found";
+}
+async function loadReleases(force){
+  if(relCache && !force) return;
+  const list=$("#relList");
+  list.textContent="loading…";
+  try{
+    const [r,mr]=await Promise.all([
+      fetch("https://api.github.com/repos/"+REL_REPO+"/releases?per_page=15",
+            {headers:{Accept:"application/vnd.github+json"}}),
+      fetch("https://raw.githubusercontent.com/"+REL_REPO+"/firmware/manifest.json",{cache:"no-store"})
+        .catch(()=>null),
+    ]);
+    if(!r.ok) throw new Error("GitHub API "+r.status);
+    try{ relManifest=(mr && mr.ok) ? await mr.json() : null; }catch(e){ relManifest=null; }
+    relCache=(await r.json()).filter(x=>!x.draft);
+    renderReleases();
+    checkUpdateNotice(); // the connect-time blob usually lands before this fetch does
+  }catch(e){
+    list.innerHTML='could not load releases ('+e.message.replace(/</g,"&lt;")
+      +') — <a href="https://github.com/'+REL_REPO+'/releases" target="_blank" rel="noopener" style="color:var(--acc2)">open the releases page</a> and use the local-file card';
+    relCache=null;
+  }
+}
+$("#relRefresh").onclick=()=>loadReleases(true);
+
+// ---- top-level tabs ----
+for(const t of document.querySelectorAll("#mainTabs .slot-tab")){
+  t.onclick=()=>{
+    for(const x of document.querySelectorAll("#mainTabs .slot-tab")) x.classList.toggle("active",x===t);
+    $("#tabMain").classList.toggle("hide", t.dataset.tab!=="tabMain");
+    $("#tabUpdate").classList.toggle("hide", t.dataset.tab!=="tabUpdate");
+    if(t.dataset.tab==="tabUpdate") loadReleases(false); // lazy: first visit fetches the list
+  };
+}
 $("#backupExport").onclick=exportBackup;
 $("#backupImport").onclick=()=>$("#backupFile").click();
 $("#backupFile").onchange=async(e)=>{ const f=e.target.files[0]; if(f) await importBackup(f); e.target.value=""; };
 $("#capDl").onclick=downloadCap;
 $("#capStart").onclick=startCapture;
 $("#capStop").onclick=stopCapture;
+$("#lzAdd").onclick=()=>{ if(lizardBindings.length<LZ_MAX){ lizardBindings.push({outType:LZO.KBD,od:[0,0,0,0,0,0,0],trig:0,hold:0}); renderLizard(); } };
+$("#lzSave").onclick=saveLizard;
+$("#lzReload").onclick=loadLizard;
+$("#lzReset").onclick=resetLizard;
 $("#stabBtn").onclick=async()=>{
   if(!dev){ log("connect first"); return; }
   stabArmed=!stabArmed;
@@ -1131,6 +1951,8 @@ for(const b of document.querySelectorAll(".modebtn")){
     const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold back-paddle 4 + A to return to Steam mode.":"");
     if(confirm(msg)){ send([0x03, m]); log("mode switch requested — device will reboot"); } };
 }
+updateUf2UI();
+updateFwGate(); // start gated: stays inert until the first status blob proves the firmware speaks v15+
 if(!("usb" in navigator)) $("#connectBtn").outerHTML='<b style="color:var(--bad)">WebUSB not supported — use Chrome or Edge.</b>';
 else autoConnect(); // reopen an already-authorized puck on load, no picker (first-ever connect still needs the button)
 </script>

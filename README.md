@@ -50,7 +50,7 @@ Additionally it has some shortcuts that might be useful: Steam + L5/R5 will do v
 and Steam + L4 ls Ctrl + Alt + Delete.
 
 # How to install/use it
-You will need to flash OpenPuck.ino onto a compatible microcontroller. The easiest way to do this is to grab a uf2 file from the GitHub releases and drag and drop it onto the folder that the microcontroller mounts when in DFU mode. Fresh microcontrollers should already be in DFU mode and present like a flash drive. If they are not in DFU mode you'll need to short the RST and GND pints twice in quick succession. If you've already flashed openpuck you can go to the [webusb configurator](https://safijari.github.io/openpuck/), connect to the OpenPuck, and then press the `UF2 DFU` button on the top bar.
+You will need to flash OpenPuck.ino onto a compatible microcontroller. The easiest way to do this is to grab a uf2 file from the GitHub releases and drag and drop it onto the folder that the microcontroller mounts when in DFU mode. Fresh microcontrollers should already be in DFU mode and present like a flash drive. If they are not in DFU mode you'll need to short the RST and GND pints twice in quick succession. If you've already flashed openpuck you can update it straight from the [webusb configurator](https://safijari.github.io/openpuck/)'s **Firmware update** tab: pick a version from the built-in releases list (with an optional factory-reset variant), or drag and drop a `.uf2` — the firmware is sent to the puck over the same WebUSB connection, verified on-device, and applied automatically on a reboot. A failed or interrupted transfer leaves the running firmware untouched, and even a power cut during the apply just leaves the puck in its UF2 bootloader (drag-and-drop recovery) — it can't end up half-flashed. The `UF2 DFU` button still reboots into the mass-storage bootloader for manual drag-and-drop.
 
 See [build instructions document](./docs/BUILD_AND_DEPLOY.md) for  details on how to flash the MCU during development.
 
@@ -70,6 +70,7 @@ You can copy configurations between OpenPucks using the export/import card in th
 
 # 3D Printed Cases
 - [jaki-gh](https://github.com/jaki-gh) has contributed a 3D printable housing with OpenPuck written on it alongside a Steam logo. You can find that [here](https://www.thingiverse.com/thing:7371668).
+- [BOT-Yanni](https://www.reddit.com/user/BOT-Yanni/) designed a slim case with OpenPuck written on it and a cute little glyph of the Steam Controller. You can find that [here](https://www.thingiverse.com/thing:7379316).
 - [StonnedModder](https://www.printables.com/model/1760684-openpuck-promicro-nrf52840-case) built a case meant to accomodate a USB C to USB A adapter which you can find [here](https://www.printables.com/model/1760684-openpuck-promicro-nrf52840-case).
 - Another plain case for these pro micros can be found [here](https://www.printables.com/model/1285346-pro-micro-nicenano-nrf52840-dongle-case/collections).
 
