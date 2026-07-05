@@ -35,6 +35,9 @@
   button:disabled{opacity:.4;cursor:default}
   .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
   .pill.up{background:#143626;color:var(--acc)} .pill.dn{background:#3a1822;color:var(--bad)}
+  /* update-available notice (topbar): :not(.hide) so this ID rule can't out-rank .hide (see #updModal) */
+  #updAvail:not(.hide){background:#14263a;color:var(--acc2);cursor:pointer;border:1px solid #2b4a6d}
+  #updAvail:hover{text-decoration:underline}
   .statgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:10px}
   .stat{background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px}
   .stat .k{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
@@ -57,6 +60,39 @@
   }
   @media(prefers-reduced-motion:reduce){.slot-tab .dot.up{animation:none}}
   .per-slot-grid{margin-bottom:12px}
+
+  /* ---- top-level tabs (Controller / Firmware update) ---- */
+  #mainTabs{margin:0 0 16px}
+  #mainTabs .slot-tab{font-size:13px;padding:7px 18px}
+
+  /* ---- firmware update tab ---- */
+  .dropzone{border:2px dashed #36405a;border-radius:12px;padding:26px 18px;text-align:center;cursor:pointer;
+    color:var(--mut);transition:border-color .15s,background .15s;margin-bottom:14px}
+  .dropzone:hover,.dropzone.drag{border-color:var(--acc);color:var(--fg);background:#151b28}
+  .dropzone b{color:var(--fg)}
+  .rel-row{display:flex;align-items:center;gap:14px;padding:10px 2px;border-top:1px solid #232a3a;flex-wrap:wrap}
+  .rel-row:first-child{border-top:0}
+  .rel-row .ver{font-weight:700;min-width:70px}
+  .rel-row .date{color:var(--mut);font-size:12px;min-width:90px}
+  .rel-row .grow{flex:1}
+  .rel-row label{display:flex;align-items:center;gap:6px;color:var(--mut);font-size:12px;cursor:pointer}
+  .rel-row input[type=checkbox]{accent-color:var(--bad)}
+  /* firmware-tab gate: when the connected puck's firmware predates panel updates, both update cards go
+     inert (pointer-events kills clicks, drops, and the file picker) and the banner explains why */
+  .fwupcard.gated{opacity:.45;pointer-events:none;user-select:none}
+
+  /* ---- blocking update modal ---- */
+  /* :not(.hide) because this ID selector would otherwise out-rank .hide{display:none} and pin the modal open */
+  #updModal:not(.hide){position:fixed;inset:0;z-index:100;background:rgba(8,10,16,.8);display:flex;align-items:center;justify-content:center}
+  .updbox{background:var(--card);border:1px solid #36405a;border-radius:14px;padding:22px 26px;width:min(500px,92vw);box-shadow:0 18px 60px rgba(0,0,0,.5)}
+  .updbox h3{margin:0 0 4px;font-size:16px}
+  #updStage{color:var(--fg);margin:10px 0 0;font-size:14px}
+  .updbar{height:10px;background:#0e1017;border:1px solid #232a3a;border-radius:99px;overflow:hidden;margin:10px 0 6px}
+  #updFill{height:100%;width:0;background:var(--acc);transition:width .2s}
+  #updFill.pulse{background:repeating-linear-gradient(45deg,var(--acc2),var(--acc2) 12px,#38618c 12px,#38618c 24px);animation:updslide 1s linear infinite}
+  #updFill.bad{background:var(--bad)}
+  @keyframes updslide{to{background-position:34px 0}}
+  @media(prefers-reduced-motion:reduce){#updFill.pulse{animation:none}}
 </style>
 </head>
 <body>
@@ -64,10 +100,8 @@
   <span class="brand">OpenPuck <small>SC2 puck · WebUSB</small></span>
   <span id="connState" class="pill dn">disconnected</span>
   <button id="connectBtn" class="primary">Connect</button>
+  <span id="updAvail" class="pill hide" title="A newer OpenPuck release is available — click to open the Firmware update tab">…</span>
   <span class="spacer"></span>
-  <input id="uf2File" class="hide" type="file" accept=".uf2,application/octet-stream">
-  <button id="uf2Pick" title="Choose a local .uf2 firmware file to flash">Pick UF2 file</button>
-  <button id="uf2Flash" disabled title="Pick a .uf2 file first">Flash firmware</button>
   <button id="debugCdc" title="Reboot ONCE with the CDC serial console enabled (WebUSB goes away for that boot); auto-reverts on the next boot">Debug CDC</button>
   <button id="dfuSerial" title="Reboot into serial DFU (adafruit-nrfutil), then replug">Serial DFU</button>
   <button id="dfuUf2" title="Reboot into the UF2 mass-storage bootloader; drop a .uf2 on the drive">UF2 DFU</button>
@@ -77,6 +111,12 @@
   <p class="sub">First connect uses the Chrome/Edge device picker; reconnects are automatic. If the picker is empty, quit any app holding the device or replug.</p>
 
   <div id="panel" class="hide">
+    <div class="slot-tabs" id="mainTabs">
+      <span class="slot-tab active" data-tab="tabMain">Controller</span>
+      <span class="slot-tab" data-tab="tabUpdate">Firmware update</span>
+    </div>
+
+    <div id="tabMain">
     <div class="cards">
     <div class="card">
       <h2>USB mode</h2>
@@ -239,8 +279,51 @@
       <pre id="capOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin-top:10px;max-height:260px;overflow:auto;white-space:pre-wrap"></pre>
     </div>
     </div><!-- .cards -->
+    </div><!-- #tabMain -->
+
+    <div id="tabUpdate" class="hide">
+      <div id="updGate" class="card hide" style="border-color:#7a2233">
+        <h2 style="color:var(--bad)">Panel updates not supported by this firmware</h2>
+        <p class="note" id="updGateMsg" style="margin:0"></p>
+      </div>
+
+      <div class="card fwupcard">
+        <h2>Update from a local file</h2>
+        <input id="uf2File" class="hide" type="file" accept=".uf2,application/octet-stream">
+        <div id="uf2Drop" class="dropzone">
+          <div><b>Drop a .uf2 file here</b> — or click to browse</div>
+          <div class="note" id="uf2Sel" style="margin-top:6px">no file selected</div>
+        </div>
+        <div class="row" style="margin:0">
+          <button id="uf2Flash" class="primary" disabled title="Pick a .uf2 file first">Flash firmware</button>
+          <span class="note" style="flex:1;margin:0">The image is streamed over WebUSB into spare flash, verified <em>on the puck</em>, and applied on an automatic reboot. Nothing is armed until it verifies — a failed or interrupted transfer leaves the running firmware untouched, and even a power cut during the apply only leaves the puck in its UF2 bootloader for drag-and-drop recovery.</span>
+        </div>
+      </div>
+
+      <div class="card fwupcard">
+        <h2>Update from a release</h2>
+        <div class="row" style="margin-top:0">
+          <span class="note" style="flex:1;margin:0">Official builds from <a href="https://github.com/safijari/openpuck/releases" target="_blank" rel="noopener" style="color:var(--acc2)">github.com/safijari/openpuck/releases</a> &nbsp;·&nbsp; installed: <b id="updInstalled" style="color:var(--acc)">—</b></span>
+          <button id="relRefresh">Refresh</button>
+        </div>
+        <div id="relList" class="note" style="margin:0">loading…</div>
+        <p class="note"><b style="color:var(--bad)">Factory reset</b> flashes the <code>-factory-reset</code> build of that version: on its first boot it wipes ALL settings and the controller pairing (you must re-pair), then behaves like the standard build. Use it to recover from a bad config or stale bond.</p>
+      </div>
+    </div><!-- #tabUpdate -->
 
     <div id="log"></div>
+  </div>
+</div>
+
+<!-- blocking modal: covers the whole page while an update is in flight so nothing else can be clicked -->
+<div id="updModal" class="hide">
+  <div class="updbox">
+    <h3 id="updTitle">Firmware update</h3>
+    <div id="updStage">…</div>
+    <div class="updbar"><div id="updFill"></div></div>
+    <div id="updPct" class="note" style="margin:0"></div>
+    <div id="updDetail" class="note"></div>
+    <div class="row" style="justify-content:flex-end;margin:14px 0 0"><button id="updClose" class="hide">Close</button></div>
   </div>
 </div>
 
@@ -270,12 +353,14 @@ function renderHangLog(){
     + hangLog.map(e=>pad(e.time,11)+pad(e.uptime!=null?fmtDur(e.uptime):"-",9)+pad(e.reason,16)+pad(e.stage||"-",10)+pad(e.pc||"-",11)+(e.usbd!=null?e.usbd:"-")).join("\n");
 }
 function fmtDur(s){ s=Math.round(s); return s>=60 ? (Math.floor(s/60)+"m "+(s%60)+"s") : (s+"s"); }
-function updateUf2UI(txt){
-  const pick=$("#uf2Pick"), flash=$("#uf2Flash");
-  if(!pick || !flash) return;
-  pick.textContent = selectedUf2 ? ("UF2: " + selectedUf2.name) : "Pick UF2 file";
+function updateUf2UI(){
+  const sel=$("#uf2Sel"), flash=$("#uf2Flash");
+  if(!sel || !flash) return;
+  sel.textContent = selectedUf2
+    ? selectedUf2.name+" — app image "+Math.round(selectedUf2.image.length/1024)+" KiB, parsed OK"
+      +(selectedUf2.updatable ? "" : " — ⚠ no panel-update support in this image (flashing it = drag-and-drop only afterwards)")
+    : "no file selected";
   flash.disabled = dfuBusy || !selectedUf2;
-  flash.textContent = txt || "Flash firmware";
   flash.title = selectedUf2
     ? "Send " + selectedUf2.name + " to the puck over WebUSB, verify it, and apply it on reboot"
     : "Pick a .uf2 file first";
@@ -486,6 +571,7 @@ async function openDevice(d){
     if(stabArmed){ await send([0x0F,1]); stabStart=Date.now(); log("stability test resumed — timing next run"); }
     updateStabUI();
     startPolling();
+    loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
     return true;
   }catch(e){ log("connect failed: "+e.message); dev=null; return false; }
 }
@@ -524,6 +610,7 @@ function onGone(){
   window._wedgeEp=false; window._wedgePeak=0; // re-arm the live wedge logger for the next wedge episode
   window._lastBlobTs=0; window._hbLostEp=false; // re-arm the heartbeat watchdog (don't fire on a stale pre-reset timestamp)
   polling=false; dev=null; tabInited=false; // re-default the config tab to the mode on next connect
+  checkUpdateNotice(); // no device = no notice
   $("#connState").textContent="reconnecting…"; $("#connState").className="pill dn";
   $("#panel").classList.add("hide");
   log("device disconnected (mode-switch / watchdog reboot) — auto-reconnecting when it returns");
@@ -761,6 +848,9 @@ function applyBlob(p){
   $("#stBuild").innerHTML = buildId
     ? (buildId + (gitDirty ? ' <span class="pill dn">dirty</span>' : ' <span class="pill up">clean</span>'))
     : "—";
+  $("#updInstalled").textContent = buildId || "—"; // mirrored on the Firmware-update tab
+  updateFwGate(); // (re)evaluate the firmware-tab gate on every blob — version is at p[0]
+  checkUpdateNotice(); // needs BOTH the installed version (this blob) and relCache (fetched on connect)
   setSlider("mDiv",mDiv); setSlider("mFric",mFric); setSlider("rumble",rumbleScale);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
   // land-all-0x87 experiment toggle (blob v14, firmware p[177] -> JS p[175])
@@ -1125,6 +1215,12 @@ function crc32(u8){
 }
 const u32le=v=>[v&0xFF,(v>>>8)&0xFF,(v>>>16)&0xFF,(v>>>24)&0xFF];
 const dfuSleep=ms=>new Promise(r=>setTimeout(r,ms));
+// Firmware built from this branch onward embeds this tag (fw_update.cpp FWUP_TAG). An image WITHOUT it
+// still flashes fine — but the puck it leaves behind can't do panel updates, so we warn before the
+// lock-yourself-out-to-drag-and-drop move (all releases up to 0.9.6 predate panel updates).
+function imagePanelUpdatable(image){
+  return new TextDecoder("latin1").decode(image).includes("OPK-FWUP-v1");
+}
 const FWUP_ERR=["ok","command out of sequence","image too big for this puck's free flash","offset resync",
   "staged bytes failed CRC verify","staged image has no valid vector table"];
 // Ack reader ([0xAB][5][status][nextOff u32 LE]). One persistent transferIn at a time: a wait that times out
@@ -1187,56 +1283,306 @@ async function fwupRun(image){
       // else: stale ack — keep reading, the real one is behind it
     }
     const pct=Math.floor(off*50/image.length)*2;
-    if(pct!==lastShown){ lastShown=pct; updateUf2UI("Sending "+pct+"%"); }
+    if(pct!==lastShown){ lastShown=pct; modalStage("Sending to the puck", pct); }
   }
-  updateUf2UI("Verifying…"); // firmware CRC32s the staged flash, then commits the apply-on-reboot record
+  modalStage("Verifying on the puck", null); // firmware CRC32s the staged flash, then commits the record
   a=await fwupCtl([0x22],8000,"verify+commit");
   if(a.status) throw new Error("verify+commit rejected: "+(FWUP_ERR[a.status]||("code "+a.status)));
   log("image staged + CRC-verified on the puck — update armed");
-  updateUf2UI("Rebooting…");
+  modalStage("Rebooting", null);
   try{ await fwupSend([0x23]); }catch(e){} // device drops mid-call; that's the point
   log("rebooting to apply: the puck goes dark ~5 s while the new firmware is written, then re-enumerates — the panel reconnects itself");
 }
-$("#uf2Pick").onclick=()=>{ $("#uf2File").click(); };
-$("#uf2File").onchange=async(e)=>{
-  const f=e.target.files && e.target.files[0];
-  e.target.value=""; // allow re-picking the same filename after a rebuild
-  if(!f) return;
+// ---- blocking modal: the ONLY interactive surface while an update runs (it covers everything else) ----
+function modalStage(txt,pct){
+  const f=$("#updFill"), p=$("#updPct");
+  $("#updStage").textContent=txt;
+  f.classList.remove("bad");
+  if(pct==null){ f.classList.add("pulse"); f.style.width="100%"; p.textContent=""; }
+  else{ f.classList.remove("pulse"); f.style.width=pct+"%"; p.textContent=pct+"%"; }
+}
+function modalOpen(title){
+  $("#updTitle").textContent=title;
+  $("#updDetail").textContent="";
+  $("#updClose").classList.add("hide"); // no way out mid-update: closing wouldn't stop the puck anyway
+  $("#updModal").classList.remove("hide");
+  modalStage("Preparing…",null);
+}
+function modalDone(ok,msg){
+  const f=$("#updFill");
+  f.classList.remove("pulse");
+  f.style.width="100%";
+  f.classList.toggle("bad",!ok);
+  $("#updStage").textContent = ok ? "Done" : "Update failed";
+  $("#updPct").textContent="";
+  $("#updDetail").textContent=msg;
+  $("#updClose").classList.remove("hide");
+}
+$("#updClose").onclick=()=>$("#updModal").classList.add("hide");
+
+function blobBuildId(p){
+  if(!p) return "";
+  let s=""; for(let i=39;i<51 && i<p.length && p[i];i++) s+=String.fromCharCode(p[i]);
+  return s;
+}
+// Update-available notice (topbar): shown when the connected puck reports a release-shaped build (x.y.z)
+// older than the newest non-prerelease on GitHub. Dev builds report a git hash, which doesn't parse — no
+// nagging about "updates" for firmware newer than any release. Click = jump to the Firmware update tab.
+function verTriple(s){
+  const m=/^(\d+)\.(\d+)\.(\d+)/.exec(s||"");
+  return m ? [+m[1],+m[2],+m[3]] : null;
+}
+function checkUpdateNotice(){
+  const el=$("#updAvail");
+  const inst=verTriple(blobBuildId(lastP));
+  const rel=(relCache||[]).find(r=>!r.prerelease && relAsset(r,false));
+  const latest=rel ? verTriple(rel.tag_name) : null;
+  const newer = !!(dev && inst && latest &&
+    (latest[0]>inst[0] || (latest[0]===inst[0] &&
+     (latest[1]>inst[1] || (latest[1]===inst[1] && latest[2]>inst[2])))));
+  el.classList.toggle("hide", !newer);
+  if(newer) el.textContent="⬆ update "+rel.tag_name+" available";
+}
+$("#updAvail").onclick=()=>{ document.querySelector('#mainTabs .slot-tab[data-tab="tabUpdate"]').click(); };
+
+// Firmware-tab gate: the connected puck must speak status v15+ (the 0x20..0x24 update ops) for ANY of the
+// update tab to be usable. Too old => banner explains + both cards go inert until a capable build is flashed
+// the manual way once.
+function updateFwGate(){
+  const ok = !!(lastP && lastP[0]>=15);
+  $("#updGate").classList.toggle("hide", ok);
+  if(!ok) $("#updGateMsg").textContent =
+    "This puck is running "+(blobBuildId(lastP)||"an unknown build")+" (status v"+(lastP?lastP[0]:"?")
+    +"), which predates panel updates (needs v15+), so updating from this page is disabled. One manual flash "
+    +"gets you back: click “UF2 DFU” in the top bar, then drag a panel-update-capable .uf2 onto the UF2BOOT "
+    +"drive it mounts. Every update after that happens right here.";
+  for(const c of document.querySelectorAll(".fwupcard")) c.classList.toggle("gated", !ok);
+}
+// after the apply-reboot: resolved true once the panel has reconnected AND received a fresh status blob
+async function waitReconnect(t0,ms){
+  const deadline=Date.now()+ms;
+  while(Date.now()<deadline){
+    if(dev && window._lastBlobTs>t0) return true;
+    await dfuSleep(400);
+  }
+  return false;
+}
+// One update end-to-end: pre-flight checks, confirm, modal up, image acquired (may download), streamed,
+// applied, reconnect observed. getImage runs INSIDE the modal so release downloads show progress there.
+async function runUpdate(title, confirmText, getImage){
+  if(dfuBusy) return;
+  if(!dev){ log("connect to the puck first — the update travels over this WebUSB connection"); return; }
+  if(!lastP || lastP[0]<15){
+    log("this puck's firmware ("+(blobBuildId(lastP)||"?")+", status v"+(lastP?lastP[0]:"?")+") predates panel updates (needs v15+) — flash a panel-update-capable build once via UF2 DFU + drag-and-drop, then this works");
+    return;
+  }
+  if(!confirm(confirmText)) return;
+  dfuBusy=true; updateUf2UI(); modalOpen(title);
+  polling=false;        // the IN pipe belongs to the update acks now
+  await dfuSleep(800);  // let an in-flight status poll finish its read first
+  const t0=Date.now(), oldBuild=blobBuildId(lastP);
+  try{
+    const image=await getImage();
+    if(!imagePanelUpdatable(image) &&
+       !confirm("⚠ DOWNGRADE WARNING\n\nThis image predates panel updates (releases up to 0.9.6 do). It will "
+        +"flash fine, but the puck it leaves behind CANNOT be updated from this panel — getting off it again "
+        +"means UF2 DFU + drag-and-drop.\n\nFlash it anyway?"))
+      throw new Error("cancelled — the selected image doesn't support panel updates");
+    await fwupRun(image);
+    modalStage("Applying on the puck",null);
+    $("#updDetail").textContent="the puck goes dark ~5 s while the new firmware is written, then re-enumerates";
+    if(await waitReconnect(t0,40000)){
+      const nb=blobBuildId(lastP);
+      modalDone(true,"Update applied — the puck is back and running build "+(nb||"?")+(oldBuild&&nb!==oldBuild?" (was "+oldBuild+")":""));
+    }else{
+      modalDone(false,"The update was sent and armed, but the puck didn't reconnect within 40 s. Unplug/replug it. "
+        +"If it mounts as a UF2BOOT drive, drag the .uf2 onto the drive to recover — the bootloader is intact.");
+    }
+  }catch(e){
+    log("firmware update FAILED: "+e.message);
+    modalDone(false,e.message+" — nothing was applied; the running firmware is untouched.");
+    try{ await fwupSend([0x24]); }catch(_e){} // best-effort disarm
+    if(dev) startPolling();
+  }finally{
+    dfuBusy=false; updateUf2UI();
+  }
+}
+
+// ---- local-file source: drag-and-drop or file picker ----
+async function pickUf2(f){
   try{
     const image=uf2ToImage(await f.arrayBuffer());
-    selectedUf2={name:f.name, image};
+    selectedUf2={name:f.name, image, updatable:imagePanelUpdatable(image)};
     log("UF2 ready: "+f.name+" — app image "+Math.round(image.length/1024)+" KiB, CRC32 0x"+crc32(image).toString(16).padStart(8,"0"));
   }catch(err){
     selectedUf2=null;
     log("UF2 rejected: "+err.message);
   }
   updateUf2UI();
+}
+$("#uf2File").onchange=async(e)=>{
+  const f=e.target.files && e.target.files[0];
+  e.target.value=""; // allow re-picking the same filename after a rebuild
+  if(f) await pickUf2(f);
 };
-$("#uf2Flash").onclick=async()=>{
-  if(dfuBusy || !selectedUf2) return;
-  if(!dev){ log("connect to the puck first — the update travels over this WebUSB connection"); return; }
-  if(!lastP || lastP[0]<15){
-    log("this puck's firmware predates panel updates (needs status v15+) — update once via UF2 DFU + drag-and-drop, then this button works");
-    return;
-  }
-  if(!confirm("Flash "+selectedUf2.name+" ("+Math.round(selectedUf2.image.length/1024)+" KiB)?\n\n"
+// a file dropped anywhere the dropzone isn't listening (e.g. while gated) must not navigate the page to it
+window.addEventListener("dragover",e=>e.preventDefault());
+window.addEventListener("drop",e=>e.preventDefault());
+{
+  const dz=$("#uf2Drop");
+  dz.onclick=()=>$("#uf2File").click();
+  dz.ondragover=e=>{ e.preventDefault(); dz.classList.add("drag"); };
+  dz.ondragleave=()=>dz.classList.remove("drag");
+  dz.ondrop=async e=>{
+    e.preventDefault(); dz.classList.remove("drag");
+    const f=e.dataTransfer.files && e.dataTransfer.files[0];
+    if(f) await pickUf2(f);
+  };
+}
+$("#uf2Flash").onclick=()=>{
+  if(!selectedUf2) return;
+  runUpdate("Flashing "+selectedUf2.name,
+    "Flash "+selectedUf2.name+" ("+Math.round(selectedUf2.image.length/1024)+" KiB)?\n\n"
     +"The image is sent over WebUSB into spare flash (~15 s), verified on the puck, and applied on an automatic "
     +"reboot (~5 s dark). Nothing is armed until it verifies, so a failed or interrupted transfer leaves the "
     +"current firmware untouched. Worst case (power cut during the apply itself) the puck comes back as the "
-    +"UF2BOOT drive for drag-and-drop recovery — it cannot end up half-flashed.")) return;
-  dfuBusy=true; updateUf2UI();
-  polling=false;        // the IN pipe belongs to the update acks now
-  await dfuSleep(800);  // let an in-flight status poll finish its read first
-  try{
-    await fwupRun(selectedUf2.image);
-  }catch(e){
-    log("firmware update FAILED: "+e.message+" — nothing was applied; the running firmware is untouched");
-    try{ await dev.transferOut(epOut,new Uint8Array([0x24])); }catch(_e){} // best-effort disarm
-    if(dev) startPolling();
-  }finally{
-    dfuBusy=false; updateUf2UI();
-  }
+    +"UF2BOOT drive for drag-and-drop recovery — it cannot end up half-flashed.",
+    async()=>selectedUf2.image);
 };
+
+// ---- release source: list from the GitHub API, binaries from the CORS-reachable firmware mirror ----
+// api.github.com sends Access-Control-Allow-Origin:* but release-asset downloads redirect to a CDN that does
+// NOT, so the release workflow mirrors every OpenPuck .uf2 onto the repo's orphan `firmware` branch and the
+// panel fetches it from raw.githubusercontent.com (which is CORS-clean). Fallbacks: the API asset endpoint
+// (in case GitHub ever fixes its CDN), then a plain new-tab download + the local-file card.
+const REL_REPO="safijari/openpuck";
+let relCache=null;
+// firmware-mirror manifest: asset name -> {panelUpdate}. Written by the release workflow, which scans each
+// .uf2 for the FWUP_TAG capability string. null = manifest unreachable (then releases just go unbadged; the
+// byte-scan warning at flash time still catches an unsupported image).
+let relManifest=null;
+// tri-state: true = a puck running this release can be panel-updated, false = it cannot (drag-and-drop only
+// to get off it), null = unknown (no manifest)
+function relPanelUpdatable(rel){
+  if(!relManifest) return null;
+  const known=[relAsset(rel,false),relAsset(rel,true)].filter(a=>a && relManifest[a.name]);
+  if(!known.length) return null; // not mirrored (yet) — unknown, don't badge (mirror step lags a fresh release by ~a minute)
+  return known.some(a=>relManifest[a.name].panelUpdate);
+}
+async function downloadAsset(asset){
+  modalStage("Downloading "+asset.name,0);
+  let resp=null;
+  try{
+    const r=await fetch("https://raw.githubusercontent.com/"+REL_REPO+"/firmware/"+asset.name,{cache:"no-store"});
+    if(r.ok) resp=r;
+  }catch(e){}
+  if(!resp){
+    try{
+      const r=await fetch(asset.url,{headers:{Accept:"application/octet-stream"}});
+      if(r.ok) resp=r;
+    }catch(e){}
+  }
+  if(!resp){
+    window.open(asset.browser_download_url,"_blank","noopener");
+    throw new Error(asset.name+" isn't on the firmware mirror yet and GitHub's asset CDN blocks in-page downloads. "
+      +"It's downloading in a new tab instead — drop the file on the local-file card above.");
+  }
+  const total=+resp.headers.get("content-length") || asset.size || 0;
+  const reader=resp.body.getReader(), parts=[]; let got=0;
+  for(;;){
+    const {done,value}=await reader.read();
+    if(done) break;
+    parts.push(value); got+=value.length;
+    if(total) modalStage("Downloading "+asset.name, Math.min(99,Math.floor(got*100/total)));
+  }
+  const buf=new Uint8Array(got); let o=0;
+  for(const p of parts){ buf.set(p,o); o+=p.length; }
+  return uf2ToImage(buf.buffer);
+}
+function relAsset(rel,factory){
+  const suffix=factory ? "factory-reset" : "standard";
+  return rel.assets.find(a=>a.name==="OpenPuck-"+rel.tag_name+"-"+suffix+".uf2")
+      || rel.assets.find(a=>new RegExp("^OpenPuck-.*-"+suffix+"\\.uf2$").test(a.name)) || null;
+}
+function flashRelease(rel,factory){
+  const asset=relAsset(rel,factory);
+  if(!asset){ log("release "+rel.tag_name+" has no "+(factory?"factory-reset":"standard")+" .uf2 asset"); return; }
+  const kb=Math.round((asset.size||0)/1024);
+  runUpdate("Updating to "+rel.tag_name+(factory?" (factory reset)":""),
+    "Update the puck to "+rel.tag_name+(factory
+      ? " using the FACTORY RESET build?\n\nOn its first boot it wipes ALL settings and the controller pairing — you must re-pair the controller afterwards."
+      : "?")
+    +"\n\n"+asset.name+" ("+kb+" KiB) is downloaded, sent over WebUSB, verified on the puck, and applied on an "
+    +"automatic reboot. A failed or interrupted transfer leaves the current firmware untouched.",
+    ()=>downloadAsset(asset));
+}
+function renderReleases(){
+  const list=$("#relList");
+  list.textContent="";
+  let shown=0;
+  for(const rel of relCache){
+    const std=relAsset(rel,false), fac=relAsset(rel,true);
+    if(!std && !fac) continue;
+    shown++;
+    const row=document.createElement("div"); row.className="rel-row";
+    const ver=document.createElement("span"); ver.className="ver"; ver.textContent=rel.tag_name;
+    const date=document.createElement("span"); date.className="date";
+    date.textContent=(rel.published_at||"").slice(0,10)+(rel.prerelease?" · pre":"");
+    const name=document.createElement("span"); name.className="grow note"; name.style.margin="0";
+    name.textContent=rel.name && rel.name!==rel.tag_name ? rel.name : "";
+    const lab=document.createElement("label");
+    const cb=document.createElement("input"); cb.type="checkbox"; cb.disabled=!fac;
+    lab.appendChild(cb); lab.appendChild(document.createTextNode("factory reset"));
+    lab.title=fac ? "Flash the -factory-reset build: wipes settings + pairing once on first boot"
+                  : "this release has no factory-reset build";
+    const btn=document.createElement("button"); btn.textContent="Flash "+rel.tag_name;
+    btn.onclick=()=>flashRelease(rel,cb.checked);
+    row.append(ver,date,name);
+    if(relPanelUpdatable(rel)===false){
+      const pill=document.createElement("span"); pill.className="pill dn";
+      pill.textContent="no panel updates";
+      pill.title="This build predates panel-update support: it flashes fine from here, but a puck running it "
+        +"can only be updated again via UF2 DFU + drag-and-drop.";
+      row.appendChild(pill);
+    }
+    row.append(lab,btn);
+    list.appendChild(row);
+  }
+  if(!shown) list.textContent="no releases with OpenPuck .uf2 assets found";
+}
+async function loadReleases(force){
+  if(relCache && !force) return;
+  const list=$("#relList");
+  list.textContent="loading…";
+  try{
+    const [r,mr]=await Promise.all([
+      fetch("https://api.github.com/repos/"+REL_REPO+"/releases?per_page=15",
+            {headers:{Accept:"application/vnd.github+json"}}),
+      fetch("https://raw.githubusercontent.com/"+REL_REPO+"/firmware/manifest.json",{cache:"no-store"})
+        .catch(()=>null),
+    ]);
+    if(!r.ok) throw new Error("GitHub API "+r.status);
+    try{ relManifest=(mr && mr.ok) ? await mr.json() : null; }catch(e){ relManifest=null; }
+    relCache=(await r.json()).filter(x=>!x.draft);
+    renderReleases();
+    checkUpdateNotice(); // the connect-time blob usually lands before this fetch does
+  }catch(e){
+    list.innerHTML='could not load releases ('+e.message.replace(/</g,"&lt;")
+      +') — <a href="https://github.com/'+REL_REPO+'/releases" target="_blank" rel="noopener" style="color:var(--acc2)">open the releases page</a> and use the local-file card';
+    relCache=null;
+  }
+}
+$("#relRefresh").onclick=()=>loadReleases(true);
+
+// ---- top-level tabs ----
+for(const t of document.querySelectorAll("#mainTabs .slot-tab")){
+  t.onclick=()=>{
+    for(const x of document.querySelectorAll("#mainTabs .slot-tab")) x.classList.toggle("active",x===t);
+    $("#tabMain").classList.toggle("hide", t.dataset.tab!=="tabMain");
+    $("#tabUpdate").classList.toggle("hide", t.dataset.tab!=="tabUpdate");
+    if(t.dataset.tab==="tabUpdate") loadReleases(false); // lazy: first visit fetches the list
+  };
+}
 $("#backupExport").onclick=exportBackup;
 $("#backupImport").onclick=()=>$("#backupFile").click();
 $("#backupFile").onchange=async(e)=>{ const f=e.target.files[0]; if(f) await importBackup(f); e.target.value=""; };
@@ -1307,6 +1653,7 @@ for(const b of document.querySelectorAll(".modebtn")){
     if(confirm(msg)){ send([0x03, m]); log("mode switch requested — device will reboot"); } };
 }
 updateUf2UI();
+updateFwGate(); // start gated: stays inert until the first status blob proves the firmware speaks v15+
 if(!("usb" in navigator)) $("#connectBtn").outerHTML='<b style="color:var(--bad)">WebUSB not supported — use Chrome or Edge.</b>';
 else autoConnect(); // reopen an already-authorized puck on load, no picker (first-ever connect still needs the button)
 </script>

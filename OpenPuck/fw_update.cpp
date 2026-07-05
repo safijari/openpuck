@@ -19,6 +19,12 @@
 // 0x86000, while the staged source starts at (0xEC000-size)&~0xFFF >= 0x8C000 -- disjoint by >=24 KiB.
 #define FWUP_MAX_IMG 0x60000UL
 
+// Capability tag, searched for BY THE PANEL inside any .uf2 it is about to flash: an image without this
+// exact string predates panel updates, so flashing it silently locks future updates back to UF2-DFU
+// drag-and-drop -- the panel warns before letting that happen. Bump the suffix only on a breaking protocol
+// change (the panel searches for this exact value). The asm reference below keeps it through --gc-sections.
+static const char FWUP_TAG[] = "OPK-FWUP-v1";
+
 #define FWUP_META_MAGIC 0x32465055UL // "UPF2"
 struct FwupMeta {
 	uint32_t magic, size, crc, staged;
@@ -317,6 +323,8 @@ FWUP_RAMFUNC static void ramApply(uint32_t dst, uint32_t src, uint32_t size,
 
 void fwupApplyIfArmed(void)
 {
+	// materialize a reference to the capability tag so the linker's --gc-sections keeps it in the image
+	__asm volatile("" ::"r"(FWUP_TAG));
 	const volatile FwupMeta *m = (const volatile FwupMeta *)FWUP_META;
 	if (m->magic != FWUP_META_MAGIC)
 		return; // erased page (0xFFFFFFFF) = nothing armed: the common path, zero boot cost

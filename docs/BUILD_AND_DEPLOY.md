@@ -152,11 +152,21 @@ Replace the port (`/dev/ttyACM0` / `COM5`) with the actual board port.
 ### Flashing from the WebUSB panel (no tools, no drag-and-drop)
 
 A board already running OpenPuck (status protocol v15+) can be updated entirely from the
-[WebUSB configurator](https://safijari.github.io/openpuck/): **Pick UF2 file** → **Flash firmware**. The panel
-extracts the app image from the `.uf2` and streams it over the normal WebUSB connection into spare flash high
-in the app region (~15 s; the running firmware keeps working); the firmware CRC32-verifies what landed and
-commits a one-page "apply on reboot" record; a final automatic reboot copies staged→app from RAM (~5 s dark)
-and comes back up on the new firmware, where the panel reconnects. See `OpenPuck/fw_update.h` for the design.
+[WebUSB configurator](https://safijari.github.io/openpuck/)'s **Firmware update** tab: drag-and-drop a
+`.uf2` (or click to browse), or pick a version from the built-in **releases list** — each release offers the
+standard build or, via its checkbox, the `-factory-reset` build (wipes settings + pairing once on first
+boot). A blocking modal shows download/transfer/verify/apply progress and reports the old → new build once
+the puck reconnects. Under the hood the panel extracts the app image from the `.uf2` and streams it over the
+normal WebUSB connection into spare flash high in the app region (~15 s; the running firmware keeps working);
+the firmware CRC32-verifies what landed and commits a one-page "apply on reboot" record; a final automatic
+reboot copies staged→app from RAM (~5 s dark) and comes back up on the new firmware. See
+`OpenPuck/fw_update.h` for the design.
+
+> **Release downloads / the `firmware` branch:** GitHub's release-asset CDN sends no CORS headers, so the
+> browser cannot fetch release assets directly. The release workflow therefore mirrors every OpenPuck `.uf2`
+> onto the orphan **`firmware`** branch, and the panel downloads from
+> `raw.githubusercontent.com/safijari/openpuck/firmware/<asset>` (which is CORS-clean). If a release is
+> missing from the mirror, the panel falls back to opening the asset in a new tab for manual drag-and-drop.
 
 Failure safety: **nothing is armed until the staged image verifies in flash**, so a disconnect, error, or
 power cut during the transfer leaves the current firmware untouched. The apply step erases the app's vector
