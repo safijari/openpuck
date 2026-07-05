@@ -4,6 +4,7 @@
 #include "config.h"
 #include "haptics.h"
 #include "bonds.h"
+#include "rf_link.h"
 #include "usb_mount.h"
 #include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
@@ -222,6 +223,16 @@ static void jcPackStick(uint8_t s[3], int16_t x, int16_t y)
 	s[1] = (uint8_t)(((Y & 0x0F) << 4) | ((X >> 8) & 0x0F));
 	s[2] = (uint8_t)((Y >> 4) & 0xFF);
 }
+static uint8_t jcBatteryNibble(uint8_t bond)
+{
+	if (bond >= NSLOT)
+		return 8;
+	uint8_t pct = g_battery[bond];
+	if (!pct)
+		return 8;
+	uint8_t lvl = (uint8_t)((pct + 12) / 13);
+	return (lvl > 8) ? 8 : lvl;
+}
 // Standard input-report prefix [0..11] (timer, battery/conn, 3 button bytes, both packed sticks, vibrator),
 // shared by the streamed 0x30 report and the 0x21 subcommand-reply reports the host reads during init.
 static void jcInputPrefix(uint8_t slot, uint8_t *out)
@@ -284,16 +295,11 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 		jc |= codeToJc(g_qamMap, fA, fB, fX, fY);
 	out[0] = g_jcTimer[slot]++;
 
-	// battery full+charging (hi nibble 0x9), connection_info=1 (lo nibble): a wired/charging Pro Controller.
-	// A real Switch reads this to show the pad as connected; Steam/hid-nintendo accept it too.
-	out[1] = 0x91;
+	// [7:4]=battery (0..8), [3:0]=connection_info. Keep it connected (1), but never set charging.
+	out[1] = (uint8_t)((jcBatteryNibble(bond) << 4) | 0x01);
 	out[2] = (uint8_t)(jc);
 	out[3] = (uint8_t)(jc >> 8);
 	out[4] = (uint8_t)(jc >> 16);
-
-	// charging_grip bit (button "common" byte, bit7): genuine Pro Controller always sets it on USB; real
-	// Switch uses it to recognise a wired controller. Not a button, so hid-nintendo ignores it.
-	out[3] |= 0x80;
 	jcPackStick(out + 5, g_in[bond].lx, g_in[bond].ly);
 	jcPackStick(out + 8, g_in[bond].rx, g_in[bond].ry);
 	// rumble_input_report echo: genuine pad emits 0x09..0x0C; some Switch firmware expects this nonzero.
