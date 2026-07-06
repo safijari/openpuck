@@ -214,12 +214,13 @@ struct JcAmCmd {
 	int16_t off;
 };
 static const JcAmCmd JC_AMCMD[32] = {
-	{ 1, 0 },   { 2, 0 },	{ 2, -16 }, { 2, -32 }, { 2, -48 }, { 2, -64 },
-	{ 2, -80 }, { 2, -96 }, { 2, -112 }, { 2, -128 }, { 2, -144 },
-	{ 2, -160 }, { 0, 0 },	{ 0, 0 },   { 0, 0 },	{ 0, 0 },   { 0, 0 },
-	{ 3, 4 },   { 3, 4 },	{ 3, 4 },   { 3, 1 },	{ 3, 1 },   { 3, 1 },
-	{ 0, 0 },   { 0, 0 },	{ 0, 0 },   { 3, -1 },	{ 3, -1 },  { 3, -1 },
-	{ 3, -4 },  { 3, -4 },	{ 3, -4 }
+	{ 1, 0 },    { 2, 0 },	  { 2, -16 }, { 2, -32 },  { 2, -48 },
+	{ 2, -64 },  { 2, -80 },  { 2, -96 }, { 2, -112 }, { 2, -128 },
+	{ 2, -144 }, { 2, -160 }, { 0, 0 },   { 0, 0 },	   { 0, 0 },
+	{ 0, 0 },    { 0, 0 },	  { 3, 4 },   { 3, 4 },	   { 3, 4 },
+	{ 3, 1 },    { 3, 1 },	  { 3, 1 },   { 0, 0 },	   { 0, 0 },
+	{ 0, 0 },    { 3, -1 },	  { 3, -1 },  { 3, -1 },   { 3, -4 },
+	{ 3, -4 },   { 3, -4 }
 };
 // 7-bit absolute amplitude -> 1/32 units (Am7BitLookup, piecewise).
 static inline int16_t jcAm7(uint8_t i)
@@ -261,7 +262,8 @@ static void jcBuildAmpTable()
 		if (amp > 1.0f)
 			amp = 1.0f;
 		uint32_t v = (uint32_t)(amp * 65535.0f + 0.5f);
-		g_jcAmpOut[u - JC_AMP_MIN] = (v > 0xFFFF) ? 0xFFFF : (uint16_t)v;
+		g_jcAmpOut[u - JC_AMP_MIN] = (v > 0xFFFF) ? 0xFFFF :
+							    (uint16_t)v;
 	}
 }
 // Per-slot, per-motor (0=left, 1=right) decoder state: the delta formats
@@ -286,13 +288,13 @@ static uint16_t jcDecodeAmp(uint8_t slot, uint8_t side, const uint8_t r[4])
 	uint32_t w = (uint32_t)r[0] | ((uint32_t)r[1] << 8) |
 		     ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
 	uint16_t peak = 0;
-#define JC_EMIT()                                                              \
-	do {                                                                   \
-		uint16_t a = g_jcAmpOut[st.lo - JC_AMP_MIN];                   \
-		uint16_t b = g_jcAmpOut[st.hi - JC_AMP_MIN];                   \
-		uint16_t m = a > b ? a : b;                                    \
-		if (m > peak)                                                  \
-			peak = m;                                              \
+#define JC_EMIT()                                            \
+	do {                                                 \
+		uint16_t a = g_jcAmpOut[st.lo - JC_AMP_MIN]; \
+		uint16_t b = g_jcAmpOut[st.hi - JC_AMP_MIN]; \
+		uint16_t m = a > b ? a : b;                  \
+		if (m > peak)                                \
+			peak = m;                            \
 	} while (0)
 	switch ((w >> 30) & 3) {
 	case 0: // nop: state unchanged
@@ -308,7 +310,8 @@ static uint16_t jcDecodeAmp(uint8_t slot, uint8_t side, const uint8_t r[4])
 			st.hi = jcAm7((w >> 9) & 0x7F);
 			JC_EMIT();
 		} else { // one 7-bit + two 5-bit samples
-			if (((w >> 2) & 1) == 0) { // freq_select clear -> amplitude
+			if (((w >> 2) & 1) ==
+			    0) { // freq_select clear -> amplitude
 				if (w & 1)
 					st.hi = jcAm7((w >> 23) & 0x7F);
 				else
