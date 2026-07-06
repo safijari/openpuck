@@ -106,6 +106,7 @@
   <button id="dfuSerial" title="Reboot into serial DFU (adafruit-nrfutil), then replug">Serial DFU</button>
   <button id="dfuUf2" title="Reboot into the UF2 mass-storage bootloader; drop a .uf2 on the drive">UF2 DFU</button>
   <button id="factoryErase" class="danger" title="Wipe ALL bonds + settings and reboot to defaults. You must re-pair. Cannot be undone.">⚠ Factory erase</button>
+  <button id="wipeBoard" class="danger debugonly" title="ERASE THE ENTIRE BOARD: firmware + all settings + bonds. The board reboots app-less and mounts as the UF2 drive on every boot until you re-flash OpenPuck. Debug only. Cannot be undone.">☢ Wipe board</button>
 </div>
 <div class="wrap">
   <p class="sub">First connect uses the Chrome/Edge device picker; reconnects are automatic. If the picker is empty, quit any app holding the device or replug.</p>
@@ -1935,6 +1936,17 @@ $("#factoryErase").onclick=async()=>{
   if(typed!=="ERASE"){ log("factory erase cancelled (confirmation text did not match)"); return; }
   await send([0x0A,0x45,0x52,0x53]);
   log("FACTORY ERASE sent — copycat is reformatting and rebooting to defaults. Re-pair the controller, then reconnect.");
+};
+// Debug-only: full board wipe. Erases the firmware itself (not just settings), leaving the board app-less so
+// it mounts as the UF2 bootloader drive on every boot until OpenPuck is flashed again. Sends 0x25 + "WIPE".
+$("#wipeBoard").onclick=async()=>{
+  if(!dev){ log("not connected"); return; }
+  if(!confirm("WIPE THE ENTIRE BOARD?\n\nThis is NOT a factory reset. It erases:\n  • the OpenPuck FIRMWARE itself\n  • every setting (mode, chords, back paddles, sensitivity)\n  • the paired-controller bond\n\nThe board reboots with NO firmware and mounts as the UF2 bootloader drive. It will do so on EVERY boot until you flash OpenPuck (a .uf2) back onto it. This panel will disconnect and NOT reconnect until then.\n\nThis CANNOT be undone from software.")) return;
+  if(!confirm("Are you absolutely sure?\n\nThe board will be blank. The ONLY way back is to drag a .uf2 firmware file onto the UF2 drive it mounts as.")) return;
+  const typed=prompt('Final confirmation — type  WIPE  (all caps) to erase the whole board:');
+  if(typed!=="WIPE"){ log("board wipe cancelled (confirmation text did not match)"); return; }
+  await send([0x25,0x57,0x49,0x50,0x45]);
+  log("FULL BOARD WIPE sent — the board is erasing firmware + all data (~15–20 s), then reboots as a blank UF2 drive. Flash OpenPuck (.uf2) to restore it.");
 };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
 $("#landAll87").onclick=async()=>{ const on=$("#landAll87").classList.contains("active"); await setField(29, on?0:1); log("land-all-0x87 "+(on?"disabled":"enabled")); };

@@ -101,6 +101,10 @@ void usbReenumerate(uint8_t k)
 
 void setup()
 {
+	// full-board wipe (debug-only "erase everything"): if the panel armed one, this never returns -- it erases
+	// the app + config/bond + bootloader-settings flash from RAM and resets into the app-less UF2 bootloader.
+	// Checked before the staged-update apply (both use the meta page; only one can be armed at a time).
+	fwupWipeIfArmed();
 	// staged firmware update (WebUSB "flash on reboot"): if the panel committed one, this never returns --
 	// it copies staged->app from RAM and resets into the new firmware. MUST run before anything else touches
 	// hardware; the board looks dead for the ~5 s the copy takes.

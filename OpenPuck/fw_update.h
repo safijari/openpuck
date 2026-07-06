@@ -54,3 +54,13 @@ uint32_t fwupNextOff(
 // Apply a committed staged update. Call FIRST in setup(): if a valid meta page is present this never returns
 // (copies staged->app from RAM and resets). Invalid/stale meta is erased and ignored.
 void fwupApplyIfArmed(void);
+
+// Full-board wipe (debug-only "erase everything", 0x25). Unlike a factory reset -- which reformats LittleFS to
+// clean defaults but keeps the firmware -- this ERASES the entire app region, the LittleFS config/bond region,
+// and the bootloader settings page, leaving the board app-less. On every subsequent boot the Adafruit UF2
+// bootloader finds no valid app and stays in UF2 mass-storage (drag-and-drop) mode until firmware is flashed
+// again, so no trace of OpenPuck remains. The MBR/SoftDevice/bootloader are untouched (the board still mounts
+// as the UF2 drive). fwupArmFullWipe() stamps a marker + the caller reboots; fwupWipeIfArmed() does the erase
+// from RAM at the next boot (call BEFORE fwupApplyIfArmed) with the same power-cut-safe ordering as the applier.
+void fwupArmFullWipe(void);
+void fwupWipeIfArmed(void);
