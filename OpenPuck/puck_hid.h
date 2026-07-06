@@ -17,6 +17,10 @@
 // Forward report 0x45 only when the seq advanced (dedupe like the real puck); sending stale
 // repeats makes Steam's trackpad smoothing stair-step. (WebUSB field 14)
 extern uint8_t g_fwdNewOnly;
+// Content dedup: forward a 0x45/0x42 report only when its body EXCLUDING the free-running counter byte
+// changed, so the delivered rate tracks the controller's real distinct-report rate (not the poll rate).
+// On by default; console "CD" toggles for A/B. (see puck_hid.cpp for the why)
+extern uint8_t g_fwdContentDedup;
 
 // True while we are presenting the desktop keyboard/mouse instead of forwarding the gamepad to Steam
 // (MODE_LIZARD always, or MODE_STEAM once Steam's heartbeat has stopped). Exposed so the haptic layer can

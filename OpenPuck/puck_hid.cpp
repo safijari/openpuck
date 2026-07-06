@@ -14,6 +14,13 @@
 #include <string.h>
 
 uint8_t g_fwdNewOnly = 1;
+// Content dedup for the Steam input forward: only forward a 0x45/0x42 report when its body EXCLUDING the
+// counter byte differs from the last one forwarded on that slot. The controller's counter (rep[1]) FREE-RUNS
+// -- it advances on every reply even with static input -- so the seq-based g_fwdNewOnly can't suppress true
+// repeats, and a poll rate above the controller's ~250 Hz sample rate forwards identical inputs with only the
+// counter bumped (host tester reads >250/s for a <=250 Hz controller). Content dedup is what the real puck
+// effectively does. On by default; console "CD" toggles for A/B.
+uint8_t g_fwdContentDedup = 1;
 SteamPuckController g_steamPuck;
 
 // Cloned puck HID report descriptor: mouse(0x40)+keyboard(0x41)+vendor(FF00) with the 63-byte FEATURE
@@ -231,8 +238,9 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// path, so this OUTPUT form was still leaking through and clicking. OpenPuck doesn't need it.
 		bool dropOut81 =
 			(g_drop81 && g_usbMode == MODE_STEAM && rid == 0x81);
-		if (rid >= 0x80 && rid <= 0x86 && !dropOut81 && n >= 1 &&
-		    hapticRelaySlotOk(slot) && !lizardActive() && !muted) {
+		if (g_hapticRelay && rid >= 0x80 && rid <= 0x86 && !dropOut81 &&
+		    n >= 1 && hapticRelaySlotOk(slot) && !lizardActive() &&
+		    !muted) {
 			if (!haptic82Blocked(slot)) {
 				relayEnqueue(rid, b,
 					     (uint8_t)(n > RELAY_MAXP ?
@@ -315,10 +323,15 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		bool localAnswer = (cmd == 0x83 || cmd == 0x89 || cmd == 0xAE ||
 				    cmd == 0xA2 || cmd == 0xA3 || cmd == 0xAD ||
 				    cmd == 0xB4 || cmd == 0xED || cmd == 0xA4);
-		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop)
+		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop).
+		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
+		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
+		// smoothness. Config (0x87/0x88) and power-off (0x9F) still relay so nothing else regresses.
+		bool hapticCmd = (cmd >= 0x80 && cmd <= 0x86);
 		bool relayOk = hapticRelaySlotOk(slot) && !drop &&
 			       !localAnswer &&
-			       !(haptic82 && (lizardActive() || muted));
+			       !(haptic82 && (lizardActive() || muted)) &&
+			       !(hapticCmd && !g_hapticRelay);
 		if (relayOk && (!haptic82 || !haptic82Blocked(slot))) {
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
@@ -713,7 +726,33 @@ void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 		// forward the puck's raw pad coords untouched (Steam does its own interpolation/smoothing). Forward
 		// only FRESH reports: the real puck dedupes, so stale repeats make Steam's velocity/smoothing
 		// stair-step. g_fwdNewOnly toggles for A/B.
-		if ((fresh || !g_fwdNewOnly) && hid[slot].ready())
+		//
+		// Do NOT gate on hid[slot].ready() here: usbTxHid enqueues into a ring buffer (drop-oldest)
+		// that exists precisely to hold a report while the endpoint is briefly busy -- usbTxDrain
+		// sends it the instant the host next polls. Gating on ready() at enqueue time DROPPED every
+		// fresh report that landed while the endpoint was busy (~1 ms after each send), which at
+		// 300+ captured reports/s silently discarded ~a third of them (measured: RF new/s ~313 but
+		// host delivered ~180). Always enqueue; the ring paces delivery to the host without loss.
+		bool send = (fresh || !g_fwdNewOnly);
+		// Content dedup: the counter byte (rep[1]) free-runs, so drop a report whose body AFTER the
+		// counter is byte-identical to the last one forwarded on this slot -- a true repeat (same
+		// physical input, bumped counter), not a new sample. Caps delivery at the controller's real
+		// distinct-report rate instead of the (higher) poll rate. See g_fwdContentDedup above.
+		if (send && g_fwdContentDedup && blen >= 2) {
+			static uint8_t lastBody[NSLOT][53];
+			static uint8_t lastBodyLen[NSLOT] = { 0 };
+			uint8_t clen = (uint8_t)(blen - 1); // bytes after the counter
+			if (clen > sizeof lastBody[0])
+				clen = sizeof lastBody[0];
+			if (lastBodyLen[slot] == clen &&
+			    memcmp(lastBody[slot], rep + 2, clen) == 0)
+				send = false; // identical input, only the counter moved
+			else {
+				lastBodyLen[slot] = clen;
+				memcpy(lastBody[slot], rep + 2, clen);
+			}
+		}
+		if (send)
 			usbTxHid(
 				&hid[slot], rid, rep + 1,
 				blen); // Steam/SDL Triton: input report 0x45 (old) / 0x42 (new fw)

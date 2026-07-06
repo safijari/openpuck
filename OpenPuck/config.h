@@ -156,7 +156,12 @@ extern uint8_t g_swGyroScale10;
 // persist g_swProRate + g_swGyroScale10 to their flash file
 void swProSaveCfg();
 
-// 250 Hz -- matches SC2 input report rate (1000000/250 = 4000 us)
+// RF poll cadence: 250 Hz (4000 us) -- matches the real Valve puck's rate. The controller does NOT stream
+// on its own; the puck POLLS (short frame) and the controller auto-ACKs one input frame per poll (RE air
+// capture, nrf-sniffer HANDOFF.md), and it stuffs fresh IMU into every report, so the DELIVERED report
+// rate simply equals the poll rate. The real puck polls ~230-250 Hz, so we match it here. (The genuine
+// smoothness bug was never the rate -- it was onReport45 dropping ~1/3 of captured reports via a bogus
+// hid.ready() gate; see puck_hid.cpp. Poll rate is live-tunable via console "PR<hz>" for sweeps.)
 #define POLL_US_DEFAULT 4000u
 // host-side HID stream cadence for translated modes (~250 Hz)
 #define USB_STREAM_MS 4u
@@ -164,8 +169,10 @@ void swProSaveCfg();
 // (host idle power-management) resumes in <1s and must not trigger a self-inflicted power-off -> the
 // resulting disconnect/reconnect churn looked like random controller drops. Real host sleep persists.
 #define SUSPEND_OFF_MS 4000u
-// RF poll cadence (us). FIXED -- not configurable (see loadCfg).
-extern const uint32_t g_pollUs;
+// RF poll cadence (us). Defaults to POLL_US_DEFAULT; live-adjustable via the console "PR<hz>" command
+// (session-only -- NOT persisted; loadCfg always forces the default on boot) so the sweet spot can be
+// swept on hardware while watching the delivered report rate.
+extern uint32_t g_pollUs;
 
 // loop-timing diagnostics (defined in OpenPuck.ino) -- surfaced in the WebUSB status blob to find what caps
 // the poll rate: avg loop period, slowest section index, and that section's avg us/iteration.

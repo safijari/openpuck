@@ -62,6 +62,9 @@ extern uint8_t g_landAll87;
 // Land Steam's amp/haptic-config 0x87 (regs 0x18/0x2E/0x34/0x35, not gyro 0x30) so haptics play as clean
 // ticks not a default-amp buzz. On by default; console "AMP" toggles.
 extern uint8_t g_landAmp;
+// Master enable for the puck->controller haptic relay (Steam 0x80-0x86 rumble/pad-feedback). Console "HR"
+// toggles it to isolate the drag-smoothness cost of relaying Steam's trackpad haptics. See haptics.cpp.
+extern bool g_hapticRelay;
 
 // Post-connect haptic block (persisted, panel-controlled): when g_hapticBlockOn, Steam haptics are dropped for
 // g_hapticBlockMs after a (re)connect so the controller's haptic engine settles before the first real haptic.
@@ -121,8 +124,9 @@ void haptic82HostReport(const uint8_t *p, uint16_t n);
 bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot = 0);
 
 // queue + flush the pending host/test/stop relay inside the poll cadence (called from rf_link).
-// rfConnFlushRelay's s1 must carry a PID distinct from the GET poll that follows it (rf_link cycles the shared
-// PID counter), so the controller doesn't dedup the GET as a retransmit of the relay.
+// rfConnFlushRelay's s1 must carry a PID distinct from the GET poll that follows it. g_relayPid
+// is initialised 2 ahead of g_pollPid and both increment once per cycle, so the 2-bit PIDs stay
+// 2 apart (mod 4) forever and never collide — keeping the controller from deduplicating the GET.
 // Stability test: when g_stabTest (WebUSB cmd 0x0F), buzz all controllers every 10s to keep them awake for an
 // unattended uptime-until-hang measurement. hapticStabTask() is called from loop().
 extern bool g_stabTest;

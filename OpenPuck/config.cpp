@@ -65,9 +65,11 @@ void applyActiveType()
 // rumble strength % (200 = double); adjustable from the WebUSB panel
 uint8_t g_rumbleScale = 200;
 
-// poll rate is fixed. Faster than the controller can refresh wastes airtime; slower adds latency. Any rate
-// persisted by an older build is ignored and overwritten with the default on boot (see loadCfg).
-const uint32_t g_pollUs = POLL_US_DEFAULT;
+// poll rate defaults to POLL_US_DEFAULT (250 Hz), matching the real Valve puck (see config.h). The
+// delivered report rate equals the poll rate (fresh IMU in every reply). Live-adjustable via console
+// "PR<hz>" for on-HW sweeps; session-only, so any rate persisted by an older build is ignored and boot
+// always starts at the default (see loadCfg).
+uint32_t g_pollUs = POLL_US_DEFAULT;
 
 #define CFG_FILE "/cfg.bin"
 // Struct layout/semantics changed (haptic-block bytes repurposed); bump so old flash format is discarded ->

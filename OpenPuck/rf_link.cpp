@@ -42,12 +42,12 @@ bool g_e7announce =
 bool g_e1keepalive = true;
 
 bool g_connVerbose = false;
-// poll RX-window (us): the poll BUSY-WAITS up to this long for the controller's reply, so it is the dominant
-// per-poll loop cost and directly sets the poll rate -- one slot needs (g_rxWin + overhead) < g_pollUs(4000)
-// to sustain 250 Hz. 1200 is the proven 250 Hz value; it was briefly raised to 2000 (issue-72, delayed-reply
-// tolerance) which dropped the rate to ~220. FIXED + not configurable (like g_pollUs): there is no good
-// reason to raise it in the field, and doing so silently halves the poll rate. Any persisted/old value is
-// ignored.
+// poll RX-window (us): the poll BUSY-WAITS up to this long for the controller's reply. The reply returns
+// EARLY (EVENTS_END) on a successful poll, so this window is only paid IN FULL on a genuine no-reply --
+// one slot needs (g_rxWin + overhead) < g_pollUs(4000) so a no-reply poll still fits inside the 250 Hz
+// cycle. 1200 is the proven value; it was briefly raised to 2000 (issue-72, delayed-reply tolerance) which
+// dropped the rate. FIXED + not configurable (like g_pollUs): there is no good reason to raise it in the
+// field, and doing so silently starves the poll cycle. Any persisted/old value is ignored.
 const uint32_t g_rxWin = 1200;
 unsigned long g_connCooldown = 0;
 
@@ -108,7 +108,11 @@ int g_curSlot = -1;
 // +4 per cycle = 0 mod 4, so each slot's GET PID is constant => the controller never dequeues => ~60 new/s
 // instead of ~400. Each slot's counter increments once per poll-of-that-slot so it cycles 0,1,2,3 cleanly.
 static uint8_t g_pollPid[NSLOT] = {};
-static uint8_t g_relayPid[NSLOT] = {};
+// Relay PID is offset by 2 from poll PID so the two never share the same
+// 2-bit PID value in the same cycle. Both counters advance once per cycle;
+// starting 2 apart keeps them 2 apart (mod 4) forever, preventing the
+// controller from deduplicating the E3 GET as a retransmit of the relay.
+static uint8_t g_relayPid[NSLOT] = { 2, 2, 2, 2 };
 // All link statistics are PER SLOT: each controller's polls/replies/errors are counted (and reported --
 // serial stat line, WebUSB blob v13) against that controller only. The old scalar counters merged every
 // slot into one number, so the panel couldn't tell "controller B is drowning" from "everything is slow".
@@ -133,7 +137,8 @@ static uint8_t g_lastSeq[NSLOT] = { 0 };
 static uint32_t g_stNew[NSLOT] = {};
 static uint32_t g_stCrc[NSLOT] = {}, g_stNoRx[NSLOT] = {};
 static uint32_t g_chF1[3] = { 0, 0, 0 };
-// Cycle gate: fires once per g_pollUs; each fire polls every warm slot so all run at ~250 Hz.
+// Cycle gate: fires once per g_pollUs; each fire polls every warm slot so all run at ~250 Hz (oversampling
+// the controller's ~270 Hz report generation so no fresh trackpad sample is dropped -- see config.h).
 static uint32_t g_lastPollUs = 0;
 static uint32_t g_connRx = 0;
 static unsigned long g_lastSessBeacon = 0, g_lastDisc = 0;
@@ -196,17 +201,21 @@ static void rfHostFrameOnce(int slot, bool discovery)
 	NRF_RADIO->TASKS_TXEN = 1;
 	RWAIT_DISABLED();
 	NRF_RADIO->EVENTS_DISABLED = 0;
+
+	// Session keepalive: the controller answers E3 polls, not beacons.
+	// No reply arrives here; radio is already disabled from the TX
+	// END_DISABLE short, so skip the RX window entirely.
+	if (!discovery)
+		return;
+
+	// Discovery/pairing beacons listen for the controller's response.
 	NRF_RADIO->PACKETPTR = (uint32_t)rfrx;
 	rfrx[0] = 0;
 	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk;
 	NRF_RADIO->EVENTS_END = 0;
 	NRF_RADIO->TASKS_RXEN = 1;
-	// Discovery/pairing beacons listen for the controller's response (matters for RE/pairing); the connected
-	// session keepalive expects NO response (the controller answers E3 polls, not the beacon), so don't burn
-	// 800us of dead air per frame -- that was the bulk of the idle poll-rate deficit (40 beacons/s x slots).
-	uint16_t bwin = discovery ? 800u : 150u;
 	uint32_t t0 = micros();
-	while (!NRF_RADIO->EVENTS_END && (micros() - t0) < bwin) {
+	while (!NRF_RADIO->EVENTS_END && (micros() - t0) < 800u) {
 	}
 	if (NRF_RADIO->EVENTS_END) {
 		// any reception = controller answered our frame
@@ -907,6 +916,13 @@ static void rfConnStep()
 
 void rfLinkTask()
 {
+	// Poll before beacons: the cycle gate must fire as close to its
+	// 4 ms deadline as possible; beacon TX (up to 3.6 ms for 4 slots)
+	// runs after so it never delays the current poll.
+	if (g_connOn && millis() - g_connCooldown > 2500) {
+		rfConnStep();
+	} // connected-mode: poll controller, read input
+
 	// Host-frame beacon: sent continuously, INCLUDING while connected. The controller uses the periodic E1 (the
 	// real puck's per-hop-cycle announce) to stay synced and keep answering polls at full rate; suppressing it
 	// drops the reply rate from ~210/s to ~38/s. Paused only during the post-disconnect cooldown so a controller
@@ -937,9 +953,6 @@ void rfLinkTask()
 				rfHostFrameOnce(s, true);
 		}
 	}
-	if (g_connOn && millis() - g_connCooldown > 2500) {
-		rfConnStep();
-	} // connected-mode: poll controller, read input
 
 	// Release stale input on a per-slot link-drop edge. g_in[s] is refreshed ONLY
 	// by the 0x45 decode on a fresh reply, so once a controller goes silent the
