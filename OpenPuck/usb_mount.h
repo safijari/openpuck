@@ -36,3 +36,9 @@ void usbMountTask();
 // (fixed interfaces -- WebUSB / wake mouse -- replayed too), then re-attach. NO MCU reboot. Call with the map
 // already rebuilt for k connected controllers.
 void usbReenumerate(uint8_t k);
+
+// Persist `mode` and reboot into it, cleanly detaching USB first so the host tears down the outgoing
+// personality (releasing any held input) before the new one enumerates -- otherwise the ~ms reset-disconnect
+// can be too brief for the host to notice, leaving a ghost device with stuck input until a physical replug.
+// Does not return. Call for every user-facing mode switch (chord / panel / console).
+void modeSwitchReboot(uint8_t mode);

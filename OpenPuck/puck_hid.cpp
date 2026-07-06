@@ -885,6 +885,34 @@ void SteamPuckController::task()
 	// no periodic 0x79/0x7B while the host sleeps -- those sends can wake it too
 	if (USBDevice.suspended())
 		return;
+
+	// Lizard<->Steam handoff: release whatever the OUTGOING path was holding. lizardActive() is a pure
+	// runtime decision -- Steam opening/closing (its ~3s settings heartbeat starting/stopping) flips it with
+	// NO USB re-enumeration -- so a key/mouse-button held when Steam TAKES OVER, or a gamepad button held
+	// when Steam CLOSES, is otherwise never released and sticks on the host until a reconnect or power-cycle
+	// (the reported "stuck input after switching modes"). The link-drop neutral in rf_link only covers an RF
+	// outage, not this handoff. Fire a neutral through the path we're leaving on each edge. Placed after the
+	// suspend early-return: while suspended nothing can be sent, and a flip across a sleep is covered on
+	// resume (this edge fires once, plus the post-resume input mute). MODE_LIZARD never leaves lizard, so
+	// this is inert there.
+	{
+		static bool wasLizard = lizardActive();
+		bool nowLizard = lizardActive();
+		if (nowLizard != wasLizard) {
+			if (wasLizard) {
+				// leaving lizard -> release held desktop keyboard/mouse/consumer
+				rfLizardRelease(&hid[0], &hid[0], 0x40, 0x41);
+			} else {
+				// leaving gamepad-forward -> release held 0x45 buttons/sticks/triggers on every slot
+				static const uint8_t neutral45[45] = { 0 };
+				for (int s = 0; s < NSLOT; s++)
+					if (g_slot[s].used && hid[s].ready())
+						usbTxHid(&hid[s], 0x45, neutral45,
+							 sizeof neutral45);
+			}
+			wasLizard = nowLizard;
+		}
+	}
 	// Per-slot 0x79/0x7B: each connected slot reports its OWN edge and its OWN status. State arrays are
 	// per-slot so each controller's "connected" edge fires once and is re-sent only until Steam acks THAT
 	// slot. The real puck's per-slot edge-triggered 0x79 prevents re-triggering Steam's connect-chime loop.

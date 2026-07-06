@@ -99,6 +99,24 @@ void usbReenumerate(uint8_t k)
 	USBDevice.attach();
 }
 
+// Persist a new USB personality and reboot into it. The clean DETACH before the reset is the point: a bare
+// NVIC_SystemReset drops the D+ pullup only for the ~ms the reset takes -- too briefly for some hosts to
+// register a real unplug -- so when switching between DIFFERENT personalities (e.g. Steam <-> Xbox, which are
+// distinct VID/PID + class drivers), the OUTGOING device can linger as a ghost until a physical replug, and
+// any input held at the instant of the switch stays stuck on it. Detaching first makes the reboot behave like
+// that replug: the host tears the old device down (releasing all its input) before the new one enumerates.
+// Used by every user-facing mode change (back-4 chord, WebUSB panel, CDC console).
+void modeSwitchReboot(uint8_t mode)
+{
+	if (modeValid(mode))
+		saveMode(mode); // 0xFF / invalid => keep the current mode (bond-import reboot)
+	if (USBDevice.mounted())
+		USBDevice.detach();
+	delay(60); // let the host see the disconnect before the pullup returns on reset
+	faultDiagArmIntentionalReset();
+	NVIC_SystemReset();
+}
+
 void setup()
 {
 	// full-board wipe (debug-only "erase everything"): if the panel armed one, this never returns -- it erases

@@ -10,6 +10,7 @@
 #include "fault_diag.h"
 #include "fw_update.h"
 #include "usb_tx.h"
+#include "usb_mount.h" // modeSwitchReboot()
 #include <Arduino.h>
 #include <string.h>
 
@@ -733,12 +734,10 @@ void webusbPoll()
 			} else if (op == 0x0E) {
 				uint8_t mode = buf[1];
 				saveBonds();
-				if (modeValid(mode))
-					saveMode(mode);
 				usb_web.flush();
-				delay(40);
-				faultDiagArmIntentionalReset();
-				NVIC_SystemReset();
+				// clean detach + reboot into `mode` (0xFF = keep current); regenerates RF
+				// session addrs from the imported bonds and releases any held input.
+				modeSwitchReboot(mode);
 
 				// ---- lizard (desktop) binding map editor ----
 				// Renumbered to 0x11..0x15 on the merge with main: main already owns 0x0D (bond-slot
@@ -977,12 +976,11 @@ void webusbPoll()
 				uint8_t m = buf[1];
 				if (modeValid(m) && !USBDevice.suspended()) {
 					// best-effort status to the panel before the reboot; the SOF drain
-					// sends it during the delay(40) below (no blocking flush on loop()).
+					// sends it during the flush below (no blocking flush on loop()).
 					g_blobRequest = true;
-					saveMode(m);
-					delay(40);
-					faultDiagArmIntentionalReset();
-					NVIC_SystemReset();
+					usb_web.flush();
+					// clean detach + reboot (releases held input on the outgoing device)
+					modeSwitchReboot(m);
 				}
 			}
 			memmove(buf, buf + need, n - need);

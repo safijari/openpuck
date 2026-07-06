@@ -7,6 +7,7 @@
 #include "config.h"
 #include "puck_hid.h" // g_cmdCapture (feature-command capture toggle)
 #include "fault_diag.h"
+#include "usb_mount.h" // modeSwitchReboot()
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <stdlib.h>
@@ -185,10 +186,8 @@ void serialConsolePoll()
 							"# switch mode %u (reboot)\n",
 							m);
 						delay(20);
-						saveMode(m);
-						delay(40);
-						faultDiagArmIntentionalReset();
-						NVIC_SystemReset();
+						// clean detach + reboot (releases held input on the outgoing device)
+						modeSwitchReboot(m);
 					}
 				}
 			} else if (line[0] == 'c') {

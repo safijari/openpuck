@@ -8,6 +8,7 @@
 #include "controllers.h"
 #include "status_led.h"
 #include "fault_diag.h"
+#include "usb_mount.h" // modeSwitchReboot()
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -720,10 +721,9 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						    want != g_usbMode &&
 						    modeValid(want) &&
 						    !USBDevice.suspended()) {
-							saveMode(want);
-							delay(40);
-							faultDiagArmIntentionalReset();
-							NVIC_SystemReset();
+							// clean detach + reboot into the new mode (releases any held
+							// input on the outgoing device -- see modeSwitchReboot)
+							modeSwitchReboot(want);
 						}
 					} else {
 						chWant[g_curSlot] = want;

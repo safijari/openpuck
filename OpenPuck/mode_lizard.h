@@ -20,3 +20,10 @@
 // object (puck mode sends both reports to hid[0]).
 void rfLizard(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev, uint8_t mrid,
 	      uint8_t krid);
+
+// Release any keyboard/mouse/consumer input lizard is currently holding on the host and reset rfLizard's
+// internal last-sent + glide state. Call on the lizard->Steam handoff (Steam takes over the gamepad with no
+// USB re-enumeration): without it a key/button held at that instant stays latched on the desktop until a
+// reconnect or power-cycle. mdev/kdev may be the same object (puck mode uses hid[0] for both).
+void rfLizardRelease(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev,
+		     uint8_t mrid, uint8_t krid);
