@@ -24,12 +24,13 @@ int g_mDiv = 64, g_mFric = 94;
 // Per-type button config. back default {5,6,7,8} = L4->LB R4->RB L5->L3 R5->R3 (0..11 buttons, 12..15 D-pad,
 // 16/17 PS touch/mute, 18 Switch Capture). Switch differs: QAM defaults to Capture(18), A/B swap on, and
 // trackpad haptics off. qamMap 0 = unmapped (hardcoded per-mode behavior). ledBright 0 = no override.
-// rumble 1 = enabled (default), 0 = host rumble silenced for that type.
+// rumble 1 = enabled (default), 0 = host rumble silenced for that type. rumbleScale 200 = double strength
+// (default), 100 = native, 0 = off -- per emulated type.
 TypeCfg g_type[ET_COUNT] = {
-	/* ET_XBOX   */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1 },
-	/* ET_SWITCH */ { { 5, 6, 7, 8 }, 18, 1, 0, 0, 1 },
-	/* ET_DS4    */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1 },
-	/* ET_DS5    */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1 },
+	/* ET_XBOX   */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1, 200 },
+	/* ET_SWITCH */ { { 5, 6, 7, 8 }, 18, 1, 0, 0, 1, 200 },
+	/* ET_DS4    */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1, 200 },
+	/* ET_DS5    */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1, 200 },
 };
 uint8_t g_etype = ET_NONE;
 
@@ -55,6 +56,8 @@ void applyActiveType()
 		g_padHaptics = 1;
 		g_rumble = 1;
 		g_ledBright = 0;
+		g_rumbleScale =
+			200; // puck modes forward rumble verbatim; scale unused
 		return;
 	}
 	const TypeCfg &t = g_type[g_etype];
@@ -65,8 +68,10 @@ void applyActiveType()
 	g_padHaptics = t.padHaptics;
 	g_rumble = t.rumble;
 	g_ledBright = t.ledBright;
+	g_rumbleScale = t.rumbleScale;
 }
-// rumble strength % (200 = double); adjustable from the WebUSB panel
+// Live mirror of the active type's rumble strength % (200 = double). Set by applyActiveType(); the
+// per-type source of truth is g_type[et].rumbleScale, edited from the WebUSB panel / CDC console.
 uint8_t g_rumbleScale = 200;
 
 // poll rate defaults to POLL_US_DEFAULT (250 Hz), matching the real Valve puck (see config.h). The
@@ -76,12 +81,13 @@ uint8_t g_rumbleScale = 200;
 uint32_t g_pollUs = POLL_US_DEFAULT;
 
 #define CFG_FILE "/cfg.bin"
-// Struct layout/semantics changed (TypeCfg gained rumble byte); bump so old flash format is discarded ->
-// clean defaults once.
-#define CFG_MAGIC 0xCF
+// Struct layout/semantics changed (TypeCfg gained per-type rumbleScale byte; the old global rumbleScale byte
+// is now unused/reserved); bump so old flash format is discarded -> clean defaults once.
+#define CFG_MAGIC 0xD0
 struct Cfg {
+	// rsvd1 = ex-global rumbleScale; rumble strength is now per-emulated-type (see type[].rumbleScale).
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
-		bootMode, chordBtn[3], rumbleScale;
+		bootMode, chordBtn[3], rsvd1;
 	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
 	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
 	uint8_t rxWin10, lizKeep, landAll87;
@@ -99,7 +105,7 @@ void saveCfg()
 		  (uint8_t)(g_persistMode ? 1 : 0),
 		  g_bootMode,
 		  { g_chordBtn[0], g_chordBtn[1], g_chordBtn[2] },
-		  g_rumbleScale,
+		  0, // rsvd1 (ex-global rumbleScale; now per-type in type[])
 		  (uint8_t)(g_rxWin / 10),
 		  g_lizKeep,
 		  g_landAll87,
@@ -155,8 +161,8 @@ void loadCfg()
 							c.chordBtn[i] :
 							CHORD_DEF[i];
 
-			// 0 is a valid setting (rumble off)
-			g_rumbleScale = c.rumbleScale;
+			// per-type rumble strength loaded via c.type[] above; applyActiveType() (below)
+			// resolves the active type's rumbleScale into the g_rumbleScale live mirror.
 			// lizard-suppression keepalive enable (0/1; anything else = a pre-0xCE cfg leaked
 			// through -> keep the on default)
 			if (c.lizKeep <= 1)

@@ -206,12 +206,6 @@
     </div>
 
     <div class="card">
-      <h2>Rumble</h2>
-      <div class="row"><label>Strength</label><input type="range" id="rumble" min="0" max="255" step="5"><span class="val" id="rumbleV"></span></div>
-      <p class="note">Scales rumble amplitude across all modes (100% = native, 200% = double, 0% = off).</p>
-    </div>
-
-    <div class="card">
       <h2>Switch Pro motion</h2>
       <div class="row"><label>Report rate</label><select id="swRate"></select></div>
       <p class="note" style="margin:0 0 6px">Full rate (~250 Hz, default) is lowest-latency. 120 Hz is low-latency and drift-free. 66 Hz is a genuine-cadence compatibility fallback — drop to it only if your console rejects the faster rates.</p>
@@ -509,7 +503,7 @@ function setTab(et){
     tab.onclick=()=>setTab(et); bar.appendChild(tab);
     // panel
     const sec=document.createElement("div"); sec.style.cssText="background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:12px 14px;display:none";
-    const rec={sec,tab,activeDot:tab.querySelector(".active-dot"),back:[],qam:null,abSwap:null,pad:null,led:null,ledV:null,rumble:null};
+    const rec={sec,tab,activeDot:tab.querySelector(".active-dot"),back:[],qam:null,abSwap:null,pad:null,led:null,ledV:null,rumble:null,rumbleScale:null,rumbleScaleV:null};
     // A/B swap + trackpad haptics + rumble toggles
     const tog=document.createElement("div"); tog.className="row";
     tog.innerHTML='<label>A/B + X/Y swap</label>';
@@ -547,6 +541,18 @@ function setTab(et){
       sl.addEventListener("change",()=>setField(40+et*9+7, +sl.value));
       sec.appendChild(row);
       rec.led=sl; rec.ledV=vspan; }
+    // Rumble strength (per-type; write fields 30..33, blob v18 at JS p[180+et]). 0=off, 100=native, 200=double.
+    { const row=document.createElement("div"); row.className="row";
+      const lab=document.createElement("label"); lab.textContent="Rumble strength"; row.appendChild(lab);
+      const sl=document.createElement("input"); sl.type="range"; sl.min=0; sl.max=255; sl.step=5; row.appendChild(sl);
+      const vspan=document.createElement("span"); vspan.className="val"; row.appendChild(vspan);
+      sl.addEventListener("input",()=>{ vspan.textContent=sl.value+"%"; });
+      sl.addEventListener("change",()=>setField(30+et, +sl.value));
+      sec.appendChild(row);
+      const note=document.createElement("p"); note.className="note";
+      note.textContent="Scales host rumble for this controller type (100% = native, 200% = double, 0% = off). Use the toggle above to disable rumble entirely.";
+      sec.appendChild(note);
+      rec.rumbleScale=sl; rec.rumbleScaleV=vspan; }
     host.appendChild(sec); typeEls.push(rec);
   });
   setTab(0);
@@ -745,7 +751,6 @@ function applyBlob(p){
   // the built-in default behavior, so the editor is shown only when the device is in Lizard mode.
   $("#lizardCard").style.display = (mode===3 && p[0]>=16)?"":"none";
   const battery=(p.length>36?p[36]:0);
-  const rumbleScale=(p.length>51?p[51]:200);
   const swProRate=(p.length>52?p[52]:2);
   const swGyro10=(p.length>53?p[53]:10);
   const rssi=(p.length>37?p[37]:0);
@@ -926,7 +931,7 @@ function applyBlob(p){
   $("#updInstalled").textContent = buildId || "—"; // mirrored on the Firmware-update tab
   updateFwGate(); // (re)evaluate the firmware-tab gate on every blob — version is at p[0]
   checkUpdateNotice(); // needs BOTH the installed version (this blob) and relCache (fetched on connect)
-  setSlider("mDiv",mDiv); setSlider("mFric",mFric); setSlider("rumble",rumbleScale);
+  setSlider("mDiv",mDiv); setSlider("mFric",mFric);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
   // land-all-0x87 experiment toggle (blob v14/v17, firmware p[181] -> JS p[179])
   { const la=(p.length>179?p[179]:0); $("#landAll87").textContent = la?"on":"off"; $("#landAll87").classList.toggle("active",!!la); }
@@ -943,6 +948,9 @@ function applyBlob(p){
       rec.pad.textContent=pad?"on":"off"; rec.pad.classList.toggle("active",!!pad);
       rec.rumble.textContent=rum?"on":"off"; rec.rumble.classList.toggle("active",!!rum);
       if(document.activeElement!==rec.led){ rec.led.value=led; rec.ledV.textContent=(led===0)?"Auto":led+"%"; }
+      // per-type rumble strength (blob v18, firmware p[182+et] -> JS p[180+et]; defaults 200 for older fw)
+      { const rs=(p.length>180+et)?p[180+et]:200;
+        if(document.activeElement!==rec.rumbleScale){ rec.rumbleScale.value=rs; rec.rumbleScaleV.textContent=rec.rumbleScale.value+"%"; } }
       // dot marks the type matching the current puck mode
       rec.activeDot.style.display = (et===activeEt) ? "" : "none";
     });
@@ -958,7 +966,7 @@ function applyBlob(p){
   { const sel=$("#swGyro"); if(document.activeElement!==sel) sel.value=swGyro10; }
   for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
 }
-function fmtSlider(id,v){ return id==="rumble" ? v+"%" : id==="hapBlockS" ? v+" s" : ""+v; }
+function fmtSlider(id,v){ return id==="hapBlockS" ? v+" s" : ""+v; }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
 
 let inflight=false;
@@ -983,9 +991,10 @@ function buildBackup(p, bp){
     bonds.push({slot:s, used:!!((mask>>s)&1), rec:hexEnc(rec)}); }
   const types=[];
   for(let et=0; et<TYPE_DEFS.length; et++){ const q=73+et*9;
-    types.push({back:[p[q],p[q+1],p[q+2],p[q+3]], qam:p[q+4], abSwap:p[q+5], pad:p[q+6], led:p[q+7], rumble:p[q+8]}); }
+    types.push({back:[p[q],p[q+1],p[q+2],p[q+3]], qam:p[q+4], abSwap:p[q+5], pad:p[q+6], led:p[q+7], rumble:p[q+8],
+                rumbleScale:(p.length>180+et?p[180+et]:200)}); }
   const cfg={ mode:p[1], mDiv:p[2], mFric:p[3], persistMode:p[22], chord:[p[23],p[24],p[25]],
-              rumble:p[51], swProRate:p[52], swGyro10:p[53], types };
+              swProRate:p[52], swGyro10:p[53], types };
   // version 2: include the lizard map so it survives a backup/restore cycle.
   // Guard on !lizardBusy to avoid a race with the one-shot lazy load (lizardExchange sets
   // lizardBusy while the initial 0x11 fetch is in flight); if the load is still pending the
@@ -1032,11 +1041,13 @@ async function importBackup(file){
   // driven while the import replays every setting onto the puck, then closes on Done / on error.
   modalOpen("Restore backup");
   const c=obj.config;
-  // Pre-count every write so the bar tracks real progress: settings (9 base fields), per-type config
-  // (9 each), the lizard bindings, 4 bond slots, and the final commit.
+  // Pre-count every write so the bar tracks real progress: 8 base settings (+1 legacy global rumble for
+  // old backups), per-type config (10 each: back/qam/swap/pad/led/rumble/rumbleScale), the lizard bindings,
+  // 4 bond slots, and the final commit.
   const typeN=Array.isArray(c.types)?Math.min(c.types.length,4):0;
   const lizardN=(Array.isArray(c.lizardMap) && lizardCapable())?Math.min(c.lizardMap.length,LZ_MAX):0;
-  const total=9 + typeN*9 + lizardN + 4 + 1;
+  const legacyRumbleN=(c.rumble!==undefined)?1:0;
+  const total=8 + legacyRumbleN + typeN*10 + lizardN + 4 + 1;
   let step=0, stage="";
   const tick=()=>modalStage(stage, Math.min(99,Math.floor(step*100/total)));
   try{
@@ -1058,9 +1069,12 @@ async function importBackup(file){
     const sf=async(f,v)=>{ await w([0x02, f, (v|0)&0xff]); };
     // replay every setting (each persists; none reboot). mode is applied by the 0x0E commit below.
     stage="Restoring settings"; tick();
-    await sf(1,c.mDiv); await sf(2,c.mFric); await sf(22,c.rumble); await sf(16,c.persistMode?1:0);
+    await sf(1,c.mDiv); await sf(2,c.mFric); await sf(16,c.persistMode?1:0);
     await sf(17,c.chord[0]); await sf(18,c.chord[1]); await sf(19,c.chord[2]);
     await sf(23,c.swProRate); await sf(24,c.swGyro10);
+    // Legacy backups stored ONE global rumble strength (field 22 now edits the active type); newer backups
+    // carry it per-type in c.types[].rumbleScale (restored below), so only replay the global one if present.
+    if(legacyRumbleN) await sf(22,c.rumble);
     // c.types is absent in some very old backups created before per-type paddle/haptic config
     // was added to the panel export; guard so a missing field never crashes the import mid-flight.
     if(typeN){
@@ -1068,9 +1082,11 @@ async function importBackup(file){
         for(let k=0;k<4;k++) await sf(40+et*9+k, t.back[k]);
         await sf(40+et*9+4, t.qam); await sf(40+et*9+5, t.abSwap?1:0);
         await sf(40+et*9+6, t.pad?1:0); await sf(40+et*9+7, t.led);
-        await sf(40+et*9+8, t.rumble!==undefined?t.rumble:1); }
-      log("settings replayed ("+(9+typeN*9)+" fields)");
-    } else { log("settings replayed (9 fields — no per-type config in this backup)"); }
+        await sf(40+et*9+8, t.rumble!==undefined?t.rumble:1);
+        // per-type rumble strength (field 30..33); default 200 (2x) for pre-v18 backups
+        await sf(30+et, t.rumbleScale!==undefined?t.rumbleScale:200); }
+      log("settings replayed ("+(8+legacyRumbleN+typeN*10)+" fields)");
+    } else { log("settings replayed ("+(8+legacyRumbleN)+" fields — no per-type config in this backup)"); }
     // restore the lizard map if the backup includes it (version 2+) and the puck speaks v16+.
     // pre-lizard-map backups simply lack c.lizardMap; skip silently so they still import cleanly.
     if(lizardN){
@@ -1939,8 +1955,8 @@ $("#factoryErase").onclick=async()=>{
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
 $("#landAll87").onclick=async()=>{ const on=$("#landAll87").classList.contains("active"); await setField(29, on?0:1); log("land-all-0x87 "+(on?"disabled":"enabled")); };
 // Connection tuning: post-connect haptic block on (field 27) + seconds (field 28). (poll RX window is fixed.)
-for(const id of ["mDiv","mFric","rumble"]){
-  const field={mDiv:1,mFric:2,rumble:22}[id];
+for(const id of ["mDiv","mFric"]){
+  const field={mDiv:1,mFric:2}[id];
   $("#"+id).addEventListener("input", ()=>{ $("#"+id+"V").textContent=fmtSlider(id,$("#"+id).value); });
   $("#"+id).addEventListener("change", ()=>setField(field, +$("#"+id).value));
 }

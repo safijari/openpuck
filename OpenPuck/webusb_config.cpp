@@ -54,7 +54,9 @@ static void fwupAckPost(uint8_t status)
 //                [v13: per-slot link stats, 4x9B from p[145]: {pollsps u16, f1ps u16, newps u16, crc/s u8,
 //                 noRx/s u8, relay/s u8} -- each controller's own rates (the v4 aggregates are their sums)]
 //                [v14/v17: p[181] landAll87 (verbatim-0x87-relay experiment toggle)]
-#define WB_PAYLEN 180
+//                [v18: p[182..185] per-emulated-type rumble scale % (ET_XBOX/SWITCH/DS4/DS5); rumble
+//                 strength is now per-type -- p[53] mirrors the ACTIVE type for legacy readers]
+#define WB_PAYLEN 184
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -79,13 +81,14 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (17 = per-type rumble field (TypeCfg k=8), per-type stride 8->9; 16 = +configurable
+	// protocol version (18 = per-type rumble SCALE at p[182..185] (rumble strength is now per-emulated-type;
+	// p[53] mirrors the active type); 17 = per-type rumble field (TypeCfg k=8), per-type stride 8->9; 16 = +configurable
 	// lizard-map ops 0x11..0x15 / 0xAA frame, payload unchanged -- the panel MUST see >=16 before it dares
 	// send 0x11, or a blocking readLizard() would hang forever against a firmware that silently drops the
 	// unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87 toggle; 13 = +per-slot link
 	// stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type
 	// cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 17;
+	p[2] = 18;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -142,7 +145,7 @@ static void webusbSendBlob()
 		for (uint8_t i = 0; i < 12 && buildId[i]; i++)
 			p[41 + i] = (uint8_t)buildId[i];
 	}
-	p[53] = g_rumbleScale; // rumble strength % (protocol v5)
+	p[53] = g_rumbleScale; // ACTIVE type's rumble strength % (legacy display; per-type at p[182..185], v18)
 
 	// Switch Pro report rate 0=66/1=120/2=full (protocol v6)
 	p[54] = g_swProRate;
@@ -254,6 +257,10 @@ static void webusbSendBlob()
 	}
 	// v14/v17: verbatim-0x87-relay experiment toggle (panel reflects + toggles it)
 	p[181] = g_landAll87;
+	// v18: per-emulated-type rumble strength % (200 = double). One byte per ET_* type; the panel edits these
+	// via write fields 30..33. p[53] above mirrors whichever type is active for legacy/aggregate readers.
+	for (int et = 0; et < ET_COUNT; et++)
+		p[182 + et] = g_type[et].rumbleScale;
 	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
 	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
 	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
@@ -927,10 +934,26 @@ void webusbPoll()
 					}
 					break;
 
-				// rumble strength % (0=off, 100=1x, 200=double)
+				// LEGACY rumble strength % (0=off, 100=1x, 200=double): edits the ACTIVE emulated
+				// type (rumble strength is now per-type; kept so old panels / backups still apply).
 				case 22:
-					g_rumbleScale = v;
+					if (g_etype < ET_COUNT) {
+						g_type[g_etype].rumbleScale = v;
+						applyActiveType();
+					}
 					break;
+
+				// per-emulated-type rumble strength % (v18): fields 30..33 = ET_XBOX/SWITCH/DS4/DS5.
+				case 30:
+				case 31:
+				case 32:
+				case 33: {
+					uint8_t et = (uint8_t)(f - 30);
+					g_type[et].rumbleScale = v;
+					if (et == g_etype)
+						applyActiveType();
+					break;
+				}
 
 				// Switch Pro report rate (0=66Hz,1=120Hz,2=full)
 				case 23:
