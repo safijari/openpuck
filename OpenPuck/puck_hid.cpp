@@ -741,7 +741,8 @@ void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 		if (send && g_fwdContentDedup && blen >= 2) {
 			static uint8_t lastBody[NSLOT][53];
 			static uint8_t lastBodyLen[NSLOT] = { 0 };
-			uint8_t clen = (uint8_t)(blen - 1); // bytes after the counter
+			uint8_t clen =
+				(uint8_t)(blen - 1); // bytes after the counter
 			if (clen > sizeof lastBody[0])
 				clen = sizeof lastBody[0];
 			if (lastBodyLen[slot] == clen &&
