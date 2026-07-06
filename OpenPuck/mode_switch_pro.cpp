@@ -183,7 +183,7 @@ static inline uint8_t jcBondOf(uint8_t usbSlot)
 	int b = (usbSlot < NSLOT) ? g_usbToBond[usbSlot] : -1;
 	return (b >= 0) ? (uint8_t)b : usbSlot;
 }
-// --- Switch HD-rumble amplitude decoder (independent OpenPuck implementation).
+// --- Switch HD-rumble amplitude decoder.
 //
 // When we emulate a Pro Controller, the console streams us its HD-rumble output
 // every frame. A genuine controller drives dual-band linear actuators from it;
