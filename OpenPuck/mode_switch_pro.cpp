@@ -12,6 +12,7 @@
 #include <InternalFileSystem.h>
 #include <Arduino.h>
 #include <string.h>
+#include <math.h>
 using namespace Adafruit_LittleFS_Namespace;
 
 SwitchProController g_switchPro;
@@ -182,16 +183,194 @@ static inline uint8_t jcBondOf(uint8_t usbSlot)
 	int b = (usbSlot < NSLOT) ? g_usbToBond[usbSlot] : -1;
 	return (b >= 0) ? (uint8_t)b : usbSlot;
 }
-static uint16_t jcRumbleAmp(const uint8_t r[4])
+// --- Switch HD-rumble amplitude decoder (independent OpenPuck implementation).
+//
+// When we emulate a Pro Controller, the console streams us its HD-rumble output
+// every frame. A genuine controller drives dual-band linear actuators from it;
+// OpenPuck drives the SC2's single motor, so all we need is a scalar amplitude.
+// This decodes the on-wire rumble format down to that amplitude.
+//
+// Format (from the public Switch controller protocol, cross-checked against
+// SDL's zlib-licensed hidapi_switch rumble encoder and community RE notes):
+// each motor carries 4 bytes = one little-endian 32-bit word whose top two bits
+// pick how many amplitude/frequency updates are packed and at what width:
+//   mode 0 : no change  -- hold the running amplitude
+//   mode 1 : a single 5-bit or 7-bit update, or a 7-bit + two 5-bit burst
+//   mode 2 : two 5-bit updates, or a 7-bit + 5-bit followed by a 5-bit update
+//   mode 3 : three 5-bit updates
+// A 7-bit field is an ABSOLUTE amplitude on the documented log2 curve. A 5-bit
+// field is a compact command that either substitutes a preset level or nudges
+// the amplitude by a small step -- so the decoder carries per-motor state across
+// frames. Frequency fields exist but do nothing for an ERM, so we step past them
+// and keep only amplitude.
+//
+// The naive "read fixed bytes as amplitude" decode we shipped before ignored the
+// mode bits, so any game using the packed modes (Fire Emblem: Three Houses,
+// Crash Bandicoot, ...) decoded to spurious nonzero amplitude -> random idle/menu
+// buzzing. Handling every mode is what fixes that.
+//
+// Amplitude is carried in log2-linear 1/32 fixed-point over [-8.0, 0.0] -> the
+// integer range [-256, 0], and mapped to a 16-bit motor level via a boot-built
+// exp2 table so no floating point runs in the USB ISR. The curve constants below
+// are protocol facts (any correct decoder lands on the same numbers).
+enum { HDR_AMP_MIN = -256, HDR_AMP_OFF = -256 }; // -8.0 log2 units == silent
+
+// Absolute 7-bit amplitude code -> 1/32 log2 units. The documented curve is
+// piecewise linear with progressively finer steps toward full scale (slopes
+// 1/4, 1/16, 1/32); code 0 is silence.
+static inline int16_t hdrAmp7(uint8_t code)
 {
-	// Nintendo packs a high band (r[0],r[1]) and low band (r[2],r[3]) of frequency+amplitude. We only need a
-	// magnitude for the Steam motor, so pull the two amplitude fields: HF amp = r[1]>>1, LF amp = r[3]&0x3F.
-	// Every canonical idle/neutral frame (00 01 40 40, 00 00 01 40, all-zero) decodes to 0 this way, so a steady
-	// idle rumble stream maps to "off" instead of latching the motor on. No forced floor: 0 amplitude -> 0.
-	uint8_t hf = r[1] >> 1; // high-band amplitude (neutral 0x01 -> 0)
-	uint8_t lf = r[3] & 0x3F; // low-band amplitude  (neutral 0x40 -> 0)
-	uint8_t a = hf > lf ? hf : lf; // 0..0x7F
-	return (uint16_t)a << 9; // scale to ~16-bit motor speed
+	if (code == 0)
+		return HDR_AMP_MIN;
+	if (code < 16)
+		return (int16_t)(8 * (int)code - 248); // slope 1/4
+	if (code < 32)
+		return (int16_t)(2 * (int)code - 158); // slope 1/16
+	return (int16_t)((int)code - 127); // slope 1/32
+}
+// Apply a compact 5-bit command to the running amplitude (1/32 log2 units):
+//   0        -> silence
+//   1..11    -> substitute an absolute preset: 0, -0.5, -1.0, ... -5.0
+//   17..22   -> step up   (+0.125 for 17-19, +0.03125 for 20-22)
+//   26..31   -> step down (-0.03125 for 26-28, -0.125 for 29-31)
+//   other    -> amplitude unchanged (the code only carries a frequency command)
+static inline int16_t hdrAmp5(uint8_t code, int16_t cur)
+{
+	if (code == 0)
+		return HDR_AMP_OFF;
+	if (code <= 11)
+		return (int16_t)(-16 * (int)(code - 1)); // presets 0..-5.0
+	int step = 0;
+	if (code >= 17 && code <= 19)
+		step = 4;
+	else if (code >= 20 && code <= 22)
+		step = 1;
+	else if (code >= 26 && code <= 28)
+		step = -1;
+	else if (code >= 29 && code <= 31)
+		step = -4;
+	int v = (int)cur + step;
+	return v < HDR_AMP_MIN ? HDR_AMP_MIN : (v > 0 ? 0 : (int16_t)v);
+}
+// exp2(units/32) scaled to a 16-bit motor level, built once at boot. The two
+// lowest steps are treated as silent (the curve floors out there), matching how
+// the neutral/idle frame -- which decodes to minimum amplitude -- reads as off.
+static uint16_t g_hdrLevel[257];
+static void hdrBuildLevels()
+{
+	for (int u = HDR_AMP_MIN; u <= 0; u++) {
+		float lin = (float)u / 32.0f;
+		float amp = (lin >= -7.9375f) ? exp2f(lin) : 0.0f;
+		if (amp > 1.0f)
+			amp = 1.0f;
+		uint32_t v = (uint32_t)(amp * 65535.0f + 0.5f);
+		g_hdrLevel[u - HDR_AMP_MIN] = (v > 0xFFFF) ? 0xFFFF :
+							     (uint16_t)v;
+	}
+}
+// Per-slot, per-motor (0 = left, 1 = right) running band amplitudes. The packed
+// 5-bit commands are relative, so this state must persist between frames.
+struct HdrBands {
+	int16_t lo; // low-band amplitude, 1/32 log2 units
+	int16_t hi; // high-band amplitude, 1/32 log2 units
+};
+static HdrBands g_hdrState[NSLOT][2];
+static inline void hdrReset(uint8_t slot)
+{
+	g_hdrState[slot][0].lo = g_hdrState[slot][0].hi = HDR_AMP_OFF;
+	g_hdrState[slot][1].lo = g_hdrState[slot][1].hi = HDR_AMP_OFF;
+}
+// Pull a bit-field out of the 32-bit rumble word.
+static inline uint8_t hdrField(uint32_t w, uint8_t shift, uint8_t width)
+{
+	return (uint8_t)((w >> shift) & ((1u << width) - 1u));
+}
+// Decode one motor's 4 rumble bytes, advancing its state, and return the PEAK
+// motor level over the frame's updates (max across both bands and all samples).
+// Peak rather than final-sample keeps short pulses that a multi-update frame
+// packs together, while every idle/neutral frame still resolves to 0.
+static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4])
+{
+	HdrBands &s = g_hdrState[slot][motor];
+	uint32_t w = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+		     ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+	uint16_t peak = 0;
+#define HDR_SAMPLE()                                        \
+	do {                                                \
+		uint16_t la = g_hdrLevel[s.lo - HDR_AMP_MIN]; \
+		uint16_t ha = g_hdrLevel[s.hi - HDR_AMP_MIN]; \
+		uint16_t lv = la > ha ? la : ha;            \
+		if (lv > peak)                              \
+			peak = lv;                          \
+	} while (0)
+
+	switch (hdrField(w, 30, 2)) {
+	case 0: // hold
+		HDR_SAMPLE();
+		break;
+	case 1:
+		if ((w & 0xFFFFF) == 0) { // single 5-bit update
+			s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+			HDR_SAMPLE();
+		} else if ((w & 0x3) == 0) { // single 7-bit absolute
+			s.lo = hdrAmp7(hdrField(w, 23, 7));
+			s.hi = hdrAmp7(hdrField(w, 9, 7));
+			HDR_SAMPLE();
+		} else { // 7-bit for one band + two 5-bit updates
+			bool wantHi = (w & 1) != 0;
+			bool isFreq = ((w >> 2) & 1) != 0;
+			if (!isFreq) { // else the 7-bit is a frequency: ignore
+				if (wantHi)
+					s.hi = hdrAmp7(hdrField(w, 23, 7));
+				else
+					s.lo = hdrAmp7(hdrField(w, 23, 7));
+			}
+			HDR_SAMPLE();
+			s.lo = hdrAmp5(hdrField(w, 18, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 13, 5), s.hi);
+			HDR_SAMPLE();
+			s.lo = hdrAmp5(hdrField(w, 8, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 3, 5), s.hi);
+			HDR_SAMPLE();
+		}
+		break;
+	case 2:
+		if ((w & 0x3FF) == 0) { // two 5-bit updates
+			s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+			HDR_SAMPLE();
+			s.lo = hdrAmp5(hdrField(w, 15, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 10, 5), s.hi);
+			HDR_SAMPLE();
+		} else { // 7-bit + 5-bit, then a 5-bit update
+			if (w & 1) {
+				s.hi = hdrAmp7(hdrField(w, 23, 7));
+				s.lo = hdrAmp5(hdrField(w, 18, 5), s.lo);
+			} else {
+				s.lo = hdrAmp7(hdrField(w, 23, 7));
+				s.hi = hdrAmp5(hdrField(w, 18, 5), s.hi);
+			}
+			HDR_SAMPLE();
+			s.lo = hdrAmp5(hdrField(w, 13, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 8, 5), s.hi);
+			HDR_SAMPLE();
+		}
+		break;
+	case 3: // three 5-bit updates
+		s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+		s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+		HDR_SAMPLE();
+		s.lo = hdrAmp5(hdrField(w, 15, 5), s.lo);
+		s.hi = hdrAmp5(hdrField(w, 10, 5), s.hi);
+		HDR_SAMPLE();
+		s.lo = hdrAmp5(hdrField(w, 5, 5), s.lo);
+		s.hi = hdrAmp5(hdrField(w, 0, 5), s.hi);
+		HDR_SAMPLE();
+		break;
+	}
+#undef HDR_SAMPLE
+	return peak;
 }
 // Per-slot: each Pro Controller has its own rumble stream, so the "last" relay tracking must be per-slot.
 static uint16_t g_jcLastLo[NSLOT] = { 0 };
@@ -200,7 +379,8 @@ static void jcRumble(uint8_t slot, const uint8_t *p, uint16_t pn)
 {
 	if (pn < 9)
 		return; // [timer][left rumble x4][right rumble x4]
-	uint16_t lo = jcRumbleAmp(p + 1), hi = jcRumbleAmp(p + 5);
+	uint16_t lo = hdrDecode(slot, 0, p + 1),
+		 hi = hdrDecode(slot, 1, p + 5);
 	// only relay on change: the Switch streams rumble every frame; re-sending
 	// unchanged values would flood the RF relay and loop the motor
 	if (lo == g_jcLastLo[slot] && hi == g_jcLastHi[slot])
@@ -748,6 +928,9 @@ void SwitchProController::usbIdentity()
 void SwitchProController::beginPool()
 {
 	jcBuildStickCal();
+	hdrBuildLevels();
+	for (uint8_t s = 0; s < NSLOT; s++)
+		hdrReset(s);
 	loadUserCal();
 	swProLoadCfg();
 	initJcMacs();
@@ -768,6 +951,10 @@ void SwitchProController::mountSlots(uint8_t k)
 		// don't stream 0x30 before the (new) host has re-selected report mode.
 		g_swProReportMode[u] = 0;
 		g_jcQh[u] = g_jcQt[u] = 0;
+		// reset the rumble decoder + relay dedup so a stale amplitude from a
+		// prior session can't carry across the reconnect
+		hdrReset(u);
+		g_jcLastLo[u] = g_jcLastHi[u] = 0;
 		USBDevice.addInterface(g_swPro[u]);
 	}
 }
