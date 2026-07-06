@@ -18,17 +18,18 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 
 # --- firmware build ---------------------------------------------------------
 # The OpenPuck firmware needs two TinyUSB config values that differ from the Adafruit nRF52 core defaults:
-#   CFG_TUD_HID=4            -- four HID interfaces (Steam mode exposes four puck slots); core default is 2.
+#   CFG_TUD_HID=6            -- four HID interfaces (Steam mode exposes four puck slots) plus one for mouse 
+#								and one for WebUSB; core default is 2.
 #   CFG_TUD_TASK_QUEUE_SZ=64 -- deeper usbd event queue; the default 16 deadlocks the loop task under comms
 #                               load -> watchdog reset (see OpenPuck.ino + docs/BUILD_AND_DEPLOY.md).
 #   CFG_TUD_VENDOR_TX_BUFSIZE=256 -- the WebUSB status blob is ~118 B; the core default 64 can't hold it whole,
 #                               so the panel send (which drops rather than blocks when the FIFO is full) could
 #                               never fit a frame -> blank panel. Sized to hold a full blob with headroom.
 # They're baked in here so a normal build is just `make build` -- no need to remember the flags. Override any
-# on the command line, e.g.   make build CFG_TUD_HID=6 CFG_TUD_TASK_QUEUE_SZ=128
+# on the command line, e.g.   make build CFG_TUD_HID=8 CFG_TUD_TASK_QUEUE_SZ=128
 # or add your own defines:     make build EXTRA_FLAGS="-DOPK_LOG=1"
 FQBN ?= adafruit:nrf52:feather52840
-CFG_TUD_HID ?= 4
+CFG_TUD_HID ?= 6
 # Deep so a loop()-context sendReport never blocks on a full usbd event queue (the watchdog path). Sends run
 # from loop() now (usbTxPump) for stable RF timing, so this depth is what keeps that block from happening.
 CFG_TUD_TASK_QUEUE_SZ ?= 512

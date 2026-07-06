@@ -25,6 +25,7 @@ import os
 import struct
 import sys
 import time
+from pathlib import Path
 
 # ---- Linux ioctl numbers for hidraw (asm-generic _IOC) ----
 _IOC_NONE, _IOC_WRITE, _IOC_READ = 0, 1, 2
@@ -163,6 +164,21 @@ def enumerate_devices():
         vid, pid, serial = _sysfs_ids(node)
         if vid != VALVE_VID:
             continue
+
+        # Check if this hidraw object is actually a puck slot, or if it's a OpenPuck Wake mouse or similar
+        dxi = node.replace('/dev/', '')
+        base = Path(f"/sys/class/hidraw/{dxi}/device")
+        iface_dir = base.resolve().parent
+
+        bInterfaceClass = int((iface_dir / "bInterfaceClass").read_text().strip(), 16)
+        bInterfaceSubClass = int((iface_dir / "bInterfaceSubClass").read_text().strip(), 16)
+        bInterfaceProtocol = int((iface_dir / "bInterfaceProtocol").read_text().strip(), 16)
+
+        # A real puck slot has these values:
+        if (bInterfaceClass != 3 or bInterfaceSubClass != 0 or bInterfaceProtocol != 0):
+            # If these don't match, this is not a Puck slot, but some other random HID interface.
+            continue
+
         try:
             dev = HidDev(node, vid, pid, serial)
         except PermissionError:
