@@ -24,13 +24,13 @@ int g_mDiv = 64, g_mFric = 94;
 // Per-type button config. back default {5,6,7,8} = L4->LB R4->RB L5->L3 R5->R3 (0..11 buttons, 12..15 D-pad,
 // 16/17 PS touch/mute, 18 Switch Capture). Switch differs: QAM defaults to Capture(18), A/B swap on, and
 // trackpad haptics off. qamMap 0 = unmapped (hardcoded per-mode behavior). ledBright 0 = no override.
-// rumble 1 = enabled (default), 0 = host rumble silenced for that type. rumbleScale 200 = double strength
-// (default), 100 = native, 0 = off -- per emulated type.
+// rumble 1 = enabled (default), 0 = host rumble silenced for that type. rumbleScale 100 = native strength
+// (default), 200 = double (max), 0 = off -- per emulated type.
 TypeCfg g_type[ET_COUNT] = {
-	/* ET_XBOX   */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1, 200 },
-	/* ET_SWITCH */ { { 5, 6, 7, 8 }, 18, 1, 0, 0, 1, 200 },
-	/* ET_DS4    */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1, 200 },
-	/* ET_DS5    */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1, 200 },
+	/* ET_XBOX   */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1, 100 },
+	/* ET_SWITCH */ { { 5, 6, 7, 8 }, 18, 1, 0, 0, 1, 100 },
+	/* ET_DS4    */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1, 100 },
+	/* ET_DS5    */ { { 5, 6, 7, 8 }, 0, 0, 1, 0, 1, 100 },
 };
 uint8_t g_etype = ET_NONE;
 
@@ -57,7 +57,7 @@ void applyActiveType()
 		g_rumble = 1;
 		g_ledBright = 0;
 		g_rumbleScale =
-			200; // puck modes forward rumble verbatim; scale unused
+			100; // puck modes forward rumble verbatim; scale unused
 		return;
 	}
 	const TypeCfg &t = g_type[g_etype];
@@ -70,9 +70,9 @@ void applyActiveType()
 	g_ledBright = t.ledBright;
 	g_rumbleScale = t.rumbleScale;
 }
-// Live mirror of the active type's rumble strength % (200 = double). Set by applyActiveType(); the
-// per-type source of truth is g_type[et].rumbleScale, edited from the WebUSB panel / CDC console.
-uint8_t g_rumbleScale = 200;
+// Live mirror of the active type's rumble strength % (100 = native default, 200 = double max). Set by
+// applyActiveType(); the per-type source of truth is g_type[et].rumbleScale, edited from the WebUSB panel.
+uint8_t g_rumbleScale = 100;
 
 // poll rate defaults to POLL_US_DEFAULT (250 Hz), matching the real Valve puck (see config.h). The
 // delivered report rate equals the poll rate (fresh IMU in every reply). Live-adjustable via console

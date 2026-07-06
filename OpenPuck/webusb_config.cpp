@@ -934,22 +934,24 @@ void webusbPoll()
 					}
 					break;
 
-				// LEGACY rumble strength % (0=off, 100=1x, 200=double): edits the ACTIVE emulated
-				// type (rumble strength is now per-type; kept so old panels / backups still apply).
+				// LEGACY rumble strength % (0=off, 100=1x native, 200=double max): edits the ACTIVE
+				// emulated type (rumble strength is now per-type; kept so old panels/backups still apply).
 				case 22:
 					if (g_etype < ET_COUNT) {
-						g_type[g_etype].rumbleScale = v;
+						g_type[g_etype].rumbleScale =
+							v > 200 ? 200 : v;
 						applyActiveType();
 					}
 					break;
 
-				// per-emulated-type rumble strength % (v18): fields 30..33 = ET_XBOX/SWITCH/DS4/DS5.
+				// per-emulated-type rumble strength % (v18): fields 30..33 = ET_XBOX/SWITCH/DS4/DS5
+				// (0=off, 100=native default, 200=double max).
 				case 30:
 				case 31:
 				case 32:
 				case 33: {
 					uint8_t et = (uint8_t)(f - 30);
-					g_type[et].rumbleScale = v;
+					g_type[et].rumbleScale = v > 200 ? 200 : v;
 					if (et == g_etype)
 						applyActiveType();
 					break;

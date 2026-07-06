@@ -544,13 +544,13 @@ function setTab(et){
     // Rumble strength (per-type; write fields 30..33, blob v18 at JS p[180+et]). 0=off, 100=native, 200=double.
     { const row=document.createElement("div"); row.className="row";
       const lab=document.createElement("label"); lab.textContent="Rumble strength"; row.appendChild(lab);
-      const sl=document.createElement("input"); sl.type="range"; sl.min=0; sl.max=255; sl.step=5; row.appendChild(sl);
+      const sl=document.createElement("input"); sl.type="range"; sl.min=0; sl.max=200; sl.step=5; row.appendChild(sl);
       const vspan=document.createElement("span"); vspan.className="val"; row.appendChild(vspan);
       sl.addEventListener("input",()=>{ vspan.textContent=sl.value+"%"; });
       sl.addEventListener("change",()=>setField(30+et, +sl.value));
       sec.appendChild(row);
       const note=document.createElement("p"); note.className="note";
-      note.textContent="Scales host rumble for this controller type (100% = native, 200% = double, 0% = off). Use the toggle above to disable rumble entirely.";
+      note.textContent="Scales host rumble for this controller type (100% = native default, 200% = double max, 0% = off). Use the toggle above to disable rumble entirely.";
       sec.appendChild(note);
       rec.rumbleScale=sl; rec.rumbleScaleV=vspan; }
     host.appendChild(sec); typeEls.push(rec);
@@ -948,8 +948,8 @@ function applyBlob(p){
       rec.pad.textContent=pad?"on":"off"; rec.pad.classList.toggle("active",!!pad);
       rec.rumble.textContent=rum?"on":"off"; rec.rumble.classList.toggle("active",!!rum);
       if(document.activeElement!==rec.led){ rec.led.value=led; rec.ledV.textContent=(led===0)?"Auto":led+"%"; }
-      // per-type rumble strength (blob v18, firmware p[182+et] -> JS p[180+et]; defaults 200 for older fw)
-      { const rs=(p.length>180+et)?p[180+et]:200;
+      // per-type rumble strength (blob v18, firmware p[182+et] -> JS p[180+et]; defaults 100 for older fw)
+      { const rs=(p.length>180+et)?p[180+et]:100;
         if(document.activeElement!==rec.rumbleScale){ rec.rumbleScale.value=rs; rec.rumbleScaleV.textContent=rec.rumbleScale.value+"%"; } }
       // dot marks the type matching the current puck mode
       rec.activeDot.style.display = (et===activeEt) ? "" : "none";
@@ -992,7 +992,7 @@ function buildBackup(p, bp){
   const types=[];
   for(let et=0; et<TYPE_DEFS.length; et++){ const q=73+et*9;
     types.push({back:[p[q],p[q+1],p[q+2],p[q+3]], qam:p[q+4], abSwap:p[q+5], pad:p[q+6], led:p[q+7], rumble:p[q+8],
-                rumbleScale:(p.length>180+et?p[180+et]:200)}); }
+                rumbleScale:(p.length>180+et?p[180+et]:100)}); }
   const cfg={ mode:p[1], mDiv:p[2], mFric:p[3], persistMode:p[22], chord:[p[23],p[24],p[25]],
               swProRate:p[52], swGyro10:p[53], types };
   // version 2: include the lizard map so it survives a backup/restore cycle.
@@ -1083,8 +1083,8 @@ async function importBackup(file){
         await sf(40+et*9+4, t.qam); await sf(40+et*9+5, t.abSwap?1:0);
         await sf(40+et*9+6, t.pad?1:0); await sf(40+et*9+7, t.led);
         await sf(40+et*9+8, t.rumble!==undefined?t.rumble:1);
-        // per-type rumble strength (field 30..33); default 200 (2x) for pre-v18 backups
-        await sf(30+et, t.rumbleScale!==undefined?t.rumbleScale:200); }
+        // per-type rumble strength (field 30..33); default 100 (native) for pre-v18 backups
+        await sf(30+et, t.rumbleScale!==undefined?t.rumbleScale:100); }
       log("settings replayed ("+(8+legacyRumbleN+typeN*10)+" fields)");
     } else { log("settings replayed ("+(8+legacyRumbleN)+" fields — no per-type config in this backup)"); }
     // restore the lizard map if the backup includes it (version 2+) and the puck speaks v16+.
