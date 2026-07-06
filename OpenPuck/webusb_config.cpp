@@ -590,7 +590,7 @@ void webusbPoll()
 				break;
 			uint8_t op = buf[0];
 			if ((op < 0x01 || op > 0x15) &&
-			    (op < 0x20 || op > 0x24)) { // resync: drop one byte
+			    (op < 0x20 || op > 0x25)) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
 			}
@@ -615,6 +615,7 @@ void webusbPoll()
 				 op == 0x0F || op == 0x10 || op == 0x13) ?
 					       2 :
 				(op == 0x0A) ? 4 :
+				(op == 0x25) ? 5 :
 				(op == 0x20) ? 9 :
 				(op == 0x21) ? (uint8_t)(6 + (n >= 6 ? buf[5] :
 								       0)) :
@@ -691,6 +692,21 @@ void webusbPoll()
 				delay(40);
 				faultDiagArmIntentionalReset();
 				enterUf2Dfu();
+
+				// 0x25: FULL BOARD WIPE (debug panel only). Erase the app + config/bond + bootloader-settings
+				// flash and reboot app-less, so the board mounts as the UF2 drive on EVERY boot until it is
+				// flashed again -- no trace of the firmware left. Distinct from 0x0A (factory reset, which
+				// reformats settings but keeps the firmware). Guarded by the 4-byte magic "WIPE" so no stray
+				// byte can ever trigger it. Irreversible without re-flashing.
+			} else if (op == 0x25) {
+				if (buf[1] == 0x57 && buf[2] == 0x49 &&
+				    buf[3] == 0x50 && buf[4] == 0x45) {
+					usb_web.flush();
+					fwupArmFullWipe();
+					delay(40);
+					faultDiagArmIntentionalReset();
+					NVIC_SystemReset();
+				}
 
 				// 0x0D: write ONE bond slot into RAM -- the "clone onto this puck" side of Export/Import.
 				// [0x0D][slot][used][24 rec]. used=0 (or an empty record) clears the slot. The panel sends
