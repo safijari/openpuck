@@ -12,6 +12,7 @@
 #include <InternalFileSystem.h>
 #include <Arduino.h>
 #include <string.h>
+#include <math.h>
 using namespace Adafruit_LittleFS_Namespace;
 
 SwitchProController g_switchPro;
@@ -182,16 +183,175 @@ static inline uint8_t jcBondOf(uint8_t usbSlot)
 	int b = (usbSlot < NSLOT) ? g_usbToBond[usbSlot] : -1;
 	return (b >= 0) ? (uint8_t)b : usbSlot;
 }
-static uint16_t jcRumbleAmp(const uint8_t r[4])
+// --- Switch HD-rumble amplitude decoder (ported from ndeadly/MissionControl,
+// mc_mitm/source/controllers/switch_rumble_decoder.cpp, GPLv2). The 4 rumble
+// bytes per motor are NOT a fixed "hi-freq/hi-amp/lo-freq/lo-amp" layout: the
+// top 2 bits (packet_type) select one of several packing formats -- 0 = nop,
+// 1 = one 5-bit / one 7-bit / three 7-bit sample(s), 2 = two 5-bit / two 7-bit,
+// 3 = three 5-bit -- and the 5-bit formats are DELTA-encoded against the
+// previous frame's amplitude state. The old decode read fixed byte fields as
+// amplitude, so any game emitting the alternate/delta formats (Fire Emblem:
+// Three Houses, Crash Bandicoot, ... -- MissionControl issue #418) was misread
+// into spurious nonzero amplitude => random menu/idle buzzing.
+//
+// We only need a motor magnitude, so we track amplitude in the log2-linear
+// domain as fixed-point 1/32 units (frequency is decoded-then-ignored) and take
+// exp2 at output via a boot-built integer table -- no float in the USB ISR.
+// Amplitude linear range is [-8.0, 0.0]; * 32 -> [-256, 0] fixed units.
+enum { JC_AMP_MIN = -256, JC_AMP_OFF = -256 }; // -8.0 == motor off
+
+// Per 5-bit command (index 0..31): action + amplitude offset in 1/32 units.
+// action: 0=Ignore(keep), 1=Default(off), 2=Substitute(absolute), 3=Sum(delta).
+struct JcAmCmd {
+	uint8_t act;
+	int16_t off;
+};
+static const JcAmCmd JC_AMCMD[32] = {
+	{ 1, 0 },   { 2, 0 },	{ 2, -16 }, { 2, -32 }, { 2, -48 }, { 2, -64 },
+	{ 2, -80 }, { 2, -96 }, { 2, -112 }, { 2, -128 }, { 2, -144 },
+	{ 2, -160 }, { 0, 0 },	{ 0, 0 },   { 0, 0 },	{ 0, 0 },   { 0, 0 },
+	{ 3, 4 },   { 3, 4 },	{ 3, 4 },   { 3, 1 },	{ 3, 1 },   { 3, 1 },
+	{ 0, 0 },   { 0, 0 },	{ 0, 0 },   { 3, -1 },	{ 3, -1 },  { 3, -1 },
+	{ 3, -4 },  { 3, -4 },	{ 3, -4 }
+};
+// 7-bit absolute amplitude -> 1/32 units (Am7BitLookup, piecewise).
+static inline int16_t jcAm7(uint8_t i)
 {
-	// Nintendo packs a high band (r[0],r[1]) and low band (r[2],r[3]) of frequency+amplitude. We only need a
-	// magnitude for the Steam motor, so pull the two amplitude fields: HF amp = r[1]>>1, LF amp = r[3]&0x3F.
-	// Every canonical idle/neutral frame (00 01 40 40, 00 00 01 40, all-zero) decodes to 0 this way, so a steady
-	// idle rumble stream maps to "off" instead of latching the motor on. No forced floor: 0 amplitude -> 0.
-	uint8_t hf = r[1] >> 1; // high-band amplitude (neutral 0x01 -> 0)
-	uint8_t lf = r[3] & 0x3F; // low-band amplitude  (neutral 0x40 -> 0)
-	uint8_t a = hf > lf ? hf : lf; // 0..0x7F
-	return (uint16_t)a << 9; // scale to ~16-bit motor speed
+	if (i == 0)
+		return -256;
+	if (i < 16)
+		return (int16_t)(8 * (int)i - 248);
+	if (i < 32)
+		return (int16_t)(2 * (int)i - 158);
+	return (int16_t)((int)i - 127);
+}
+static inline int16_t jcAmpClamp(int v)
+{
+	return v < JC_AMP_MIN ? JC_AMP_MIN : (v > 0 ? 0 : (int16_t)v);
+}
+static inline int16_t jcApplyAm(uint8_t code, int16_t cur)
+{
+	const JcAmCmd &c = JC_AMCMD[code & 31];
+	switch (c.act) {
+	case 0:
+		return cur; // Ignore
+	case 2:
+		return c.off; // Substitute (absolute, already in range)
+	case 3:
+		return jcAmpClamp(cur + c.off); // Sum (delta, clamped)
+	default:
+		return JC_AMP_OFF; // Default
+	}
+}
+// exp2(units/32) scaled to 16-bit motor speed; built at boot (no ISR float).
+// Below -7.9375 (== -254 units) HD rumble treats amplitude as silent -> 0.
+static uint16_t g_jcAmpOut[257];
+static void jcBuildAmpTable()
+{
+	for (int u = JC_AMP_MIN; u <= 0; u++) {
+		float f = (float)u / 32.0f;
+		float amp = (f >= -7.9375f) ? exp2f(f) : 0.0f;
+		if (amp > 1.0f)
+			amp = 1.0f;
+		uint32_t v = (uint32_t)(amp * 65535.0f + 0.5f);
+		g_jcAmpOut[u - JC_AMP_MIN] = (v > 0xFFFF) ? 0xFFFF : (uint16_t)v;
+	}
+}
+// Per-slot, per-motor (0=left, 1=right) decoder state: the delta formats
+// accumulate against these across frames, so state must persist between reports.
+struct JcAmpState {
+	int16_t lo; // low-band amplitude, 1/32 units
+	int16_t hi; // high-band amplitude, 1/32 units
+};
+static JcAmpState g_jcAmp[NSLOT][2];
+static inline void jcAmpReset(uint8_t slot)
+{
+	g_jcAmp[slot][0].lo = g_jcAmp[slot][0].hi = JC_AMP_OFF;
+	g_jcAmp[slot][1].lo = g_jcAmp[slot][1].hi = JC_AMP_OFF;
+}
+// Decode one motor's 4 rumble bytes, advancing the persistent state, and return
+// the PEAK motor magnitude across the packet's samples (max of the two bands).
+// Peak (not last-sample) preserves short pulses packed into a multi-sample frame
+// while still mapping every idle/neutral frame to 0.
+static uint16_t jcDecodeAmp(uint8_t slot, uint8_t side, const uint8_t r[4])
+{
+	JcAmpState &st = g_jcAmp[slot][side];
+	uint32_t w = (uint32_t)r[0] | ((uint32_t)r[1] << 8) |
+		     ((uint32_t)r[2] << 16) | ((uint32_t)r[3] << 24);
+	uint16_t peak = 0;
+#define JC_EMIT()                                                              \
+	do {                                                                   \
+		uint16_t a = g_jcAmpOut[st.lo - JC_AMP_MIN];                   \
+		uint16_t b = g_jcAmpOut[st.hi - JC_AMP_MIN];                   \
+		uint16_t m = a > b ? a : b;                                    \
+		if (m > peak)                                                  \
+			peak = m;                                              \
+	} while (0)
+	switch ((w >> 30) & 3) {
+	case 0: // nop: state unchanged
+		JC_EMIT();
+		break;
+	case 1:
+		if ((w & 0xFFFFF) == 0) { // one 5-bit sample
+			st.lo = jcApplyAm((w >> 25) & 0x1F, st.lo);
+			st.hi = jcApplyAm((w >> 20) & 0x1F, st.hi);
+			JC_EMIT();
+		} else if ((w & 0x3) == 0) { // one 7-bit sample
+			st.lo = jcAm7((w >> 23) & 0x7F);
+			st.hi = jcAm7((w >> 9) & 0x7F);
+			JC_EMIT();
+		} else { // one 7-bit + two 5-bit samples
+			if (((w >> 2) & 1) == 0) { // freq_select clear -> amplitude
+				if (w & 1)
+					st.hi = jcAm7((w >> 23) & 0x7F);
+				else
+					st.lo = jcAm7((w >> 23) & 0x7F);
+			}
+			JC_EMIT();
+			st.lo = jcApplyAm((w >> 18) & 0x1F, st.lo);
+			st.hi = jcApplyAm((w >> 13) & 0x1F, st.hi);
+			JC_EMIT();
+			st.lo = jcApplyAm((w >> 8) & 0x1F, st.lo);
+			st.hi = jcApplyAm((w >> 3) & 0x1F, st.hi);
+			JC_EMIT();
+		}
+		break;
+	case 2:
+		if ((w & 0x3FF) == 0) { // two 5-bit samples
+			st.lo = jcApplyAm((w >> 25) & 0x1F, st.lo);
+			st.hi = jcApplyAm((w >> 20) & 0x1F, st.hi);
+			JC_EMIT();
+			st.lo = jcApplyAm((w >> 15) & 0x1F, st.lo);
+			st.hi = jcApplyAm((w >> 10) & 0x1F, st.hi);
+			JC_EMIT();
+		} else { // one 7-bit + one 5-bit, then one 5-bit sample
+			if (w & 1) {
+				st.hi = jcAm7((w >> 23) & 0x7F);
+				st.lo = jcApplyAm((w >> 18) & 0x1F, st.lo);
+			} else {
+				st.lo = jcAm7((w >> 23) & 0x7F);
+				st.hi = jcApplyAm((w >> 18) & 0x1F, st.hi);
+			}
+			JC_EMIT();
+			st.lo = jcApplyAm((w >> 13) & 0x1F, st.lo);
+			st.hi = jcApplyAm((w >> 8) & 0x1F, st.hi);
+			JC_EMIT();
+		}
+		break;
+	case 3: // three 5-bit samples
+		st.lo = jcApplyAm((w >> 25) & 0x1F, st.lo);
+		st.hi = jcApplyAm((w >> 20) & 0x1F, st.hi);
+		JC_EMIT();
+		st.lo = jcApplyAm((w >> 15) & 0x1F, st.lo);
+		st.hi = jcApplyAm((w >> 10) & 0x1F, st.hi);
+		JC_EMIT();
+		st.lo = jcApplyAm((w >> 5) & 0x1F, st.lo);
+		st.hi = jcApplyAm(w & 0x1F, st.hi);
+		JC_EMIT();
+		break;
+	}
+#undef JC_EMIT
+	return peak;
 }
 // Per-slot: each Pro Controller has its own rumble stream, so the "last" relay tracking must be per-slot.
 static uint16_t g_jcLastLo[NSLOT] = { 0 };
@@ -200,7 +360,8 @@ static void jcRumble(uint8_t slot, const uint8_t *p, uint16_t pn)
 {
 	if (pn < 9)
 		return; // [timer][left rumble x4][right rumble x4]
-	uint16_t lo = jcRumbleAmp(p + 1), hi = jcRumbleAmp(p + 5);
+	uint16_t lo = jcDecodeAmp(slot, 0, p + 1),
+		 hi = jcDecodeAmp(slot, 1, p + 5);
 	// only relay on change: the Switch streams rumble every frame; re-sending
 	// unchanged values would flood the RF relay and loop the motor
 	if (lo == g_jcLastLo[slot] && hi == g_jcLastHi[slot])
@@ -748,6 +909,9 @@ void SwitchProController::usbIdentity()
 void SwitchProController::beginPool()
 {
 	jcBuildStickCal();
+	jcBuildAmpTable();
+	for (uint8_t s = 0; s < NSLOT; s++)
+		jcAmpReset(s);
 	loadUserCal();
 	swProLoadCfg();
 	initJcMacs();
@@ -768,6 +932,10 @@ void SwitchProController::mountSlots(uint8_t k)
 		// don't stream 0x30 before the (new) host has re-selected report mode.
 		g_swProReportMode[u] = 0;
 		g_jcQh[u] = g_jcQt[u] = 0;
+		// reset the rumble decoder + relay dedup so a stale amplitude from a
+		// prior session can't carry across the reconnect
+		jcAmpReset(u);
+		g_jcLastLo[u] = g_jcLastHi[u] = 0;
 		USBDevice.addInterface(g_swPro[u]);
 	}
 }
