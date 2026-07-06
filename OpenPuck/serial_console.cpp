@@ -66,8 +66,9 @@ void serialConsolePoll()
 				else if (hz > 1000)
 					hz = 1000;
 				g_pollUs = (uint32_t)(1000000L / hz);
-				Serial.printf("# poll rate -> %ld Hz (%lu us)\n", hz,
-					      (unsigned long)g_pollUs);
+				Serial.printf(
+					"# poll rate -> %ld Hz (%lu us)\n", hz,
+					(unsigned long)g_pollUs);
 			} else if (!strcmp(line, "HR")) {
 				// A/B: disable the puck->controller haptic relay (Steam 0x80-0x86 rumble/pad feedback)
 				// to isolate whether relaying Steam's trackpad texture haptics degrades drag smoothness.
