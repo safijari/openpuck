@@ -79,6 +79,23 @@ static unsigned long g_rumble80Ms[NSLOT] = { 0 };
 // stuck-rumble watchdog is independent
 static bool g_rumble80On[NSLOT] = { false, false, false, false };
 
+// ---- Host-rumble strength via duty-cycle PWM ---------------------------------------------------------
+// The paired controller renders relayed rumble (report 0x80) at a FIXED amplitude: it turns the motor
+// on/off and IGNORES the intensity/speed magnitude we send. Only Steam's own 0x87 haptic-amplifier config
+// (absent in emulated modes -- there is no Steam) makes native strength vary. So to give every emulated
+// mode a working strength control we PULSE the motor on/off: the LRA mechanically averages a fast on/off
+// stream into a lower PERCEIVED strength. Duty = g_rumbleScale% (0 = off, 100 = full/native; the motor's
+// fixed level is the ceiling, so >100 can't boost and is clamped to steady-on). The host's desired state
+// is recorded here and the PWM task modulates it between host updates (mode decoders only call
+// hapticSteamRumble on CHANGE, so nothing else refreshes the stream while a steady rumble is held).
+#define RUMBLE_PWM_PERIOD_MS 20u // one on+off cycle; the motor smooths it (~5 poll cycles @250Hz)
+static bool g_rumbleWantOn[NSLOT] = { false, false, false, false };
+static uint16_t g_rumbleWantLo[NSLOT] = { 0 };
+static uint16_t g_rumbleWantHi[NSLOT] = { 0 };
+static bool g_rumblePwmOn[NSLOT] = { false, false, false,
+				     false }; // last phase we drove
+static unsigned long g_rumblePwmStart[NSLOT] = { 0 }; // current PWM period start
+
 // ---- relay rings: one per bond slot. Multi-producer (USB ISR + loop-context console/xinput), one consumer
 // per slot (rfConnFlushRelay on that slot's poll turn). Producers serialize under PRIMASK.
 struct RelayMsg {
@@ -308,21 +325,12 @@ void haptic82HostReport(const uint8_t *p, uint16_t n)
 	// 0x82 is a discrete pad click -- the spurious end-of-movement "click"/buzz the real puck never produces.
 	g_haptic82On = haptic82PayloadOn(p, n);
 }
-bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
+// Build + enqueue ONE Steam/Triton 0x80 rumble frame at the given (native, un-attenuated) amplitude. This is
+// the physical drive; strength attenuation is done by the PWM task toggling this on/off, NOT by scaling the
+// amplitude (the controller ignores magnitude -- see the PWM notes above).
+static bool sendRumble80(uint8_t slot, uint16_t lowFreq, uint16_t highFreq)
 {
-	if (slot >= NSLOT)
-		return false;
-	// user rumble-strength scale (percent; 200 = double). Clamp to 16-bit.
-	if (g_rumbleScale != 100) {
-		uint32_t l = (uint32_t)lowFreq * g_rumbleScale / 100,
-			 h = (uint32_t)highFreq * g_rumbleScale / 100;
-		lowFreq = (l > 0xFFFF) ? 0xFFFF : (uint16_t)l;
-		highFreq = (h > 0xFFFF) ? 0xFFFF : (uint16_t)h;
-	}
 	bool on = lowFreq || highFreq;
-	// per-type rumble disable: drop ON commands; zero/stop still pass to clear any queued relay
-	if (on && !g_rumble)
-		return false;
 	// Per-slot settle gate (the per-slot reconnect block + link-up check). 0x82 haptics in Steam mode use the
 	// same gate; for XInput, the host only sends a stream while a controller is connected, so this also doubles
 	// as "no controller here, no relay".
@@ -352,6 +360,62 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 	g_rumble80Ms[slot] = millis();
 	g_rumble80On[slot] = on;
 	return true;
+}
+bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
+{
+	if (slot >= NSLOT)
+		return false;
+	bool on = lowFreq || highFreq;
+	// per-type rumble disable: drop ON commands; zero/stop still pass to clear any queued relay
+	if (on && !g_rumble)
+		return false;
+	// user strength 0% -> silence entirely (treat as a stop, still relays the zero to clear any latch)
+	if (g_rumbleScale == 0)
+		on = false;
+	// Record the host's desired state; hapticRumblePwmTask() modulates the physical motor between the
+	// (change-only) host updates.
+	g_rumbleWantOn[slot] = on;
+	g_rumbleWantLo[slot] = lowFreq;
+	g_rumbleWantHi[slot] = highFreq;
+	if (!on) { // host stop (or 0% mute): drive off now, reset the PWM phase
+		g_rumblePwmOn[slot] = false;
+		g_rumblePwmStart[slot] = 0;
+		return sendRumble80(slot, 0, 0);
+	}
+	// on: start this PWM period in the ON phase and drive it now for immediate response. At >=100% the task
+	// leaves it steady-on (no toggling); at 1..99% the task pulses it off/on for the rest of the period.
+	g_rumblePwmStart[slot] = millis();
+	g_rumblePwmOn[slot] = true;
+	return sendRumble80(slot, lowFreq, highFreq);
+}
+// Duty-cycle the latched rumble so g_rumbleScale% controls PERCEIVED strength on a controller that renders
+// relayed rumble as a fixed-amplitude on/off. Called once per poll cycle (from loop, alongside the other
+// haptic housekeeping). No-op at 0% (already silenced at command time) and at >=100% (steady-on, no pulsing).
+void hapticRumblePwmTask()
+{
+	uint8_t duty = g_rumbleScale;
+	if (duty == 0 || duty >= 100)
+		return; // off / full: nothing to modulate
+	unsigned long now = millis();
+	uint32_t period = RUMBLE_PWM_PERIOD_MS;
+	uint32_t onMs = period * duty / 100; // motor-driven time per period
+	for (uint8_t s = 0; s < NSLOT; s++) {
+		if (!g_rumbleWantOn[s])
+			continue;
+		uint32_t el = (uint32_t)(now - g_rumblePwmStart[s]);
+		if (el >= period) { // wrap to a fresh period (ON phase first)
+			g_rumblePwmStart[s] = now;
+			el = 0;
+		}
+		bool phaseOn = el < onMs;
+		if (phaseOn == g_rumblePwmOn[s])
+			continue; // already in this phase
+		g_rumblePwmOn[s] = phaseOn;
+		if (phaseOn)
+			sendRumble80(s, g_rumbleWantLo[s], g_rumbleWantHi[s]);
+		else
+			sendRumble80(s, 0, 0);
+	}
 }
 // Queue a pending test-haptic / stop relay (runs inside the poll cadence -- never at raw loop rate). Test
 // haptics broadcast to all connected slots (slot 0xFF); the stop frame is broadcast too (a stuck latch can
@@ -596,6 +660,9 @@ void hapticInit()
 		g_rqHead[s] = g_rqTail[s] = 0;
 		g_rumble80On[s] = false;
 		g_rumble80Ms[s] = 0;
+		g_rumbleWantOn[s] = false;
+		g_rumblePwmOn[s] = false;
+		g_rumblePwmStart[s] = 0;
 		// post-connect haptic block is permanently disabled (not armed, not configurable)
 		g_hapticBlockUntil[s] = 0;
 	}
@@ -612,6 +679,9 @@ void hapticOnReconnect(int slot)
 	g_haptic82On = false;
 	g_rumble80On[slot] = false;
 	g_rumble80Ms[slot] = 0;
+	g_rumbleWantOn[slot] = false;
+	g_rumblePwmOn[slot] = false;
+	g_rumblePwmStart[slot] = 0;
 	// Scrub haptics queued before the link came up (stale across the reconnect) -- this slot only.
 	hapticCancelPendingOn(slot);
 	// NO automatic haptic re-init. hapticReinit lands 0x81 (CLEAR DIGITAL MAPPINGS -- rid < 0x87 so it

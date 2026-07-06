@@ -122,9 +122,10 @@ extern int g_mDiv, g_mFric; // xbox/lizard mouse sensitivity divisor / friction%
 // ledBright = LED brightness sent to the controller on connect: 0 = no override (controller default),
 // 1-100 = brightness %. Steam sets brightness each session; emulated modes never do, so the controller
 // comes up at full brightness. Setting a value here preserves the preferred brightness across mode switches.
-// rumbleScale = host-rumble strength for this type, percent of decoded amplitude (0 = off, 100 = 1x native
-// default, 200 = double max). Applied in hapticSteamRumble() -- the choke point every emulated mode's rumble
-// passes through -- so each emulated controller can be tuned independently.
+// rumbleScale = host-rumble strength for this type, percent (0 = off, 100 = full/native default). The paired
+// controller renders relayed rumble at a fixed amplitude (ignores magnitude), so below 100 the motor is
+// duty-cycled (PWM) to feel weaker -- see hapticRumblePwmTask(). 100 is the native ceiling; it attenuates
+// only. Per emulated type so each emulated controller can be tuned independently.
 struct TypeCfg {
 	uint8_t back[4];
 	uint8_t qamMap;
@@ -152,9 +153,9 @@ extern uint8_t g_ledBright;
 
 // Copy g_type[g_etype] into the live mirrors above (safe defaults when g_etype == ET_NONE).
 void applyActiveType();
-// Live mirror of the active emulated type's rumble strength (percent of decoded amplitude; 100 = 1x
-// default, 200 = 2x max). Read by hapticSteamRumble(); refreshed by applyActiveType() (100 for puck modes,
-// which forward rumble verbatim and never scale). Edit the per-type value in g_type[et].rumbleScale.
+// Live mirror of the active emulated type's rumble strength (percent; 100 = full/native default, below
+// which the rumble is PWM-attenuated). Read by hapticSteamRumble()/hapticRumblePwmTask(); refreshed by
+// applyActiveType() (100 for puck modes, which forward rumble verbatim). Source: g_type[et].rumbleScale.
 extern uint8_t g_rumbleScale;
 // Switch Pro motion settings. Persisted in their OWN flash file (mode_switch_pro.cpp), NOT in Cfg -- so changing
 // them never resets the rest of the config. Set from the WebUSB panel.

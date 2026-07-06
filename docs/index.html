@@ -541,16 +541,16 @@ function setTab(et){
       sl.addEventListener("change",()=>setField(40+et*9+7, +sl.value));
       sec.appendChild(row);
       rec.led=sl; rec.ledV=vspan; }
-    // Rumble strength (per-type; write fields 30..33, blob v18 at JS p[180+et]). 0=off, 100=native, 200=double.
+    // Rumble strength (per-type; write fields 30..33, blob v18 at JS p[180+et]). 0=off, 100=full/native; below 100 = PWM-attenuated.
     { const row=document.createElement("div"); row.className="row";
       const lab=document.createElement("label"); lab.textContent="Rumble strength"; row.appendChild(lab);
-      const sl=document.createElement("input"); sl.type="range"; sl.min=0; sl.max=200; sl.step=5; row.appendChild(sl);
+      const sl=document.createElement("input"); sl.type="range"; sl.min=0; sl.max=100; sl.step=5; row.appendChild(sl);
       const vspan=document.createElement("span"); vspan.className="val"; row.appendChild(vspan);
       sl.addEventListener("input",()=>{ vspan.textContent=sl.value+"%"; });
       sl.addEventListener("change",()=>setField(30+et, +sl.value));
       sec.appendChild(row);
       const note=document.createElement("p"); note.className="note";
-      note.textContent="Scales host rumble for this controller type (100% = native default, 200% = double max, 0% = off). Use the toggle above to disable rumble entirely.";
+      note.textContent="Rumble strength for this controller type (100% = full/native default, 0% = off). Below 100% the motor is duty-cycled (pulsed) to feel weaker; the controller's native level is the ceiling, so this attenuates only. Use the toggle above to disable rumble entirely.";
       sec.appendChild(note);
       rec.rumbleScale=sl; rec.rumbleScaleV=vspan; }
     host.appendChild(sec); typeEls.push(rec);

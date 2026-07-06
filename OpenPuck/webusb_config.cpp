@@ -257,7 +257,7 @@ static void webusbSendBlob()
 	}
 	// v14/v17: verbatim-0x87-relay experiment toggle (panel reflects + toggles it)
 	p[181] = g_landAll87;
-	// v18: per-emulated-type rumble strength % (200 = double). One byte per ET_* type; the panel edits these
+	// v18: per-emulated-type rumble strength % (100 = full/native, below = PWM-attenuated). One byte per ET_* type; the panel edits these
 	// via write fields 30..33. p[53] above mirrors whichever type is active for legacy/aggregate readers.
 	for (int et = 0; et < ET_COUNT; et++)
 		p[182 + et] = g_type[et].rumbleScale;
@@ -934,24 +934,25 @@ void webusbPoll()
 					}
 					break;
 
-				// LEGACY rumble strength % (0=off, 100=1x native, 200=double max): edits the ACTIVE
-				// emulated type (rumble strength is now per-type; kept so old panels/backups still apply).
+				// LEGACY rumble strength % (0=off, 100=full/native): edits the ACTIVE emulated type
+				// (rumble strength is now per-type; kept so old panels/backups still apply). PWM only
+				// attenuates below the controller's fixed level, so 100 is the ceiling -> clamp there.
 				case 22:
 					if (g_etype < ET_COUNT) {
 						g_type[g_etype].rumbleScale =
-							v > 200 ? 200 : v;
+							v > 100 ? 100 : v;
 						applyActiveType();
 					}
 					break;
 
 				// per-emulated-type rumble strength % (v18): fields 30..33 = ET_XBOX/SWITCH/DS4/DS5
-				// (0=off, 100=native default, 200=double max).
+				// (0=off, 100=full/native default; below 100 = PWM-attenuated, 100 is the ceiling).
 				case 30:
 				case 31:
 				case 32:
 				case 33: {
 					uint8_t et = (uint8_t)(f - 30);
-					g_type[et].rumbleScale = v > 200 ? 200 : v;
+					g_type[et].rumbleScale = v > 100 ? 100 : v;
 					if (et == g_etype)
 						applyActiveType();
 					break;

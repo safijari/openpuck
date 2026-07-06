@@ -311,6 +311,7 @@ void loop()
 	faultDiagStackTick(); // per-task stack headroom (self-gated ~1Hz) -- usbd-overflow hypothesis check
 	faultDiagFlightTick(); // flight recorder: refresh vitals + heartbeat crumb + live CDC vitals line
 	hapticStabTask(); // stability-test keepalive buzz (no-op unless armed via WebUSB)
+	hapticRumblePwmTask(); // duty-cycle host rumble for the strength setting (no-op at 0%/>=100%)
 	// cross-check HFCLK(micros) vs LFCLK(millis) once a second -- cheap, both builds (clone clock diagnostic)
 	clockDiagTick();
 	if (g_dirty) {

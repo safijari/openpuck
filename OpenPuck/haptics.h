@@ -131,6 +131,10 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot = 0);
 // unattended uptime-until-hang measurement. hapticStabTask() is called from loop().
 extern bool g_stabTest;
 void hapticStabTask();
+// Duty-cycle the active host rumble so the per-type rumble-strength setting (g_rumbleScale%) controls
+// PERCEIVED strength on a controller that renders relayed rumble as a fixed-amplitude on/off. Called once
+// per poll cycle from loop(); no-op at 0% and >=100%.
+void hapticRumblePwmTask();
 
 void rfConnQueueHapticRelay();
 // returns true if a relay frame was actually transmitted this call (queue had an entry), so the poll loop can
