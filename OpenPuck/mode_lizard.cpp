@@ -101,7 +101,9 @@ static bool plt[NSLOT] = { false };
 static float sacc = 0;
 static uint8_t pmbtn = 0; // last-sent mouse buttons
 static uint8_t prevCC = 0; // last-sent consumer bits
-static uint8_t pmod = 0, pkc[6] = { 0, 0, 0, 0, 0, 0 }; // last-sent kbd modifier + keycodes
+static uint8_t pmod = 0, pkc[6] = {
+	0, 0, 0, 0, 0, 0
+}; // last-sent kbd modifier + keycodes
 
 void rfLizard(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev, uint8_t mrid,
 	      uint8_t krid)

@@ -109,7 +109,8 @@ void usbReenumerate(uint8_t k)
 void modeSwitchReboot(uint8_t mode)
 {
 	if (modeValid(mode))
-		saveMode(mode); // 0xFF / invalid => keep the current mode (bond-import reboot)
+		saveMode(
+			mode); // 0xFF / invalid => keep the current mode (bond-import reboot)
 	if (USBDevice.mounted())
 		USBDevice.detach();
 	delay(60); // let the host see the disconnect before the pullup returns on reset

@@ -907,7 +907,8 @@ void SteamPuckController::task()
 				static const uint8_t neutral45[45] = { 0 };
 				for (int s = 0; s < NSLOT; s++)
 					if (g_slot[s].used && hid[s].ready())
-						usbTxHid(&hid[s], 0x45, neutral45,
+						usbTxHid(&hid[s], 0x45,
+							 neutral45,
 							 sizeof neutral45);
 			}
 			wasLizard = nowLizard;
