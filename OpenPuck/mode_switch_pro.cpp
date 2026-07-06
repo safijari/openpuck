@@ -183,8 +183,15 @@ static inline uint8_t jcBondOf(uint8_t usbSlot)
 	int b = (usbSlot < NSLOT) ? g_usbToBond[usbSlot] : -1;
 	return (b >= 0) ? (uint8_t)b : usbSlot;
 }
-// --- Switch HD-rumble amplitude decoder (ported from ndeadly/MissionControl,
-// mc_mitm/source/controllers/switch_rumble_decoder.cpp, GPLv2). The 4 rumble
+// --- Switch HD-rumble amplitude decoder.
+//
+// The packing/decoding logic below is ported from MissionControl by ndeadly:
+//   https://github.com/ndeadly/MissionControl
+//   mc_mitm/source/controllers/switch_rumble_decoder.{cpp,hpp}
+//   Copyright (c) 2020-2026 ndeadly -- licensed GPL-2.0.
+// Reused here under GPL-2.0; original copyright and license are retained.
+//
+// The 4 rumble
 // bytes per motor are NOT a fixed "hi-freq/hi-amp/lo-freq/lo-amp" layout: the
 // top 2 bits (packet_type) select one of several packing formats -- 0 = nop,
 // 1 = one 5-bit / one 7-bit / three 7-bit sample(s), 2 = two 5-bit / two 7-bit,
