@@ -295,13 +295,13 @@ static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4])
 	uint32_t w = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
 		     ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
 	uint16_t peak = 0;
-#define HDR_SAMPLE()                                        \
-	do {                                                \
+#define HDR_SAMPLE()                                          \
+	do {                                                  \
 		uint16_t la = g_hdrLevel[s.lo - HDR_AMP_MIN]; \
 		uint16_t ha = g_hdrLevel[s.hi - HDR_AMP_MIN]; \
-		uint16_t lv = la > ha ? la : ha;            \
-		if (lv > peak)                              \
-			peak = lv;                          \
+		uint16_t lv = la > ha ? la : ha;              \
+		if (lv > peak)                                \
+			peak = lv;                            \
 	} while (0)
 
 	switch (hdrField(w, 30, 2)) {
@@ -379,8 +379,7 @@ static void jcRumble(uint8_t slot, const uint8_t *p, uint16_t pn)
 {
 	if (pn < 9)
 		return; // [timer][left rumble x4][right rumble x4]
-	uint16_t lo = hdrDecode(slot, 0, p + 1),
-		 hi = hdrDecode(slot, 1, p + 5);
+	uint16_t lo = hdrDecode(slot, 0, p + 1), hi = hdrDecode(slot, 1, p + 5);
 	// only relay on change: the Switch streams rumble every frame; re-sending
 	// unchanged values would flood the RF relay and loop the motor
 	if (lo == g_jcLastLo[slot] && hi == g_jcLastHi[slot])
