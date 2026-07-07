@@ -79,6 +79,11 @@ static unsigned long g_rumble80Ms[NSLOT] = { 0 };
 // stuck-rumble watchdog is independent
 static bool g_rumble80On[NSLOT] = { false, false, false, false };
 
+// A rumble STOP is relayed as this many copies over successive poll cycles (see hapticSteamRumble): the relay
+// is NO-ACK, and a lost final stop leaves the controller latched rumbling. 3 gives temporal diversity a
+// single-frame RF loss can't wipe out without meaningfully changing steady-state traffic.
+#define RUMBLE_STOP_REPS 3
+
 // ---- relay rings: one per bond slot. Multi-producer (USB ISR + loop-context console/xinput), one consumer
 // per slot (rfConnFlushRelay on that slot's poll turn). Producers serialize under PRIMASK.
 struct RelayMsg {
@@ -347,7 +352,22 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 	p[6] = (uint8_t)(highFreq & 0xFF);
 	p[7] = (uint8_t)(highFreq >> 8);
 	p[8] = 0;
-	if (!relayEnqueue(0x80, p, sizeof p, slot))
+	// The RF relay is NO-ACK -- any single frame can be lost. For an ON that's self-healing: a continuous
+	// stream of rumble commands follows during play, so a dropped frame is corrected microseconds later. A
+	// STOP is the dangerous one: if the host's FINAL zero (game/stream quit) -- or the watchdog's stop below
+	// -- is the last frame on the wire and it's lost, the controller stays latched rumbling with nothing left
+	// to correct it (the reported "constant rumble that didn't stop after closing GFN", cleared only by a
+	// replug). And once we optimistically mark g_rumble80On=false, the watchdog can't rescue it either. So
+	// relay a STOP as a short BURST: rfConnFlushRelay drains one ring entry per poll cycle, so N copies go out
+	// on successive cycles (~4ms apart) -- temporal diversity that a single-frame RF loss can't wipe out.
+	// Bursting only the on->off transition leaves steady-state (repeated-ON / repeated-OFF) traffic unchanged.
+	bool stopping = !on && g_rumble80On[slot];
+	uint8_t reps = stopping ? RUMBLE_STOP_REPS : 1;
+	bool queued = false;
+	for (uint8_t i = 0; i < reps; i++)
+		if (relayEnqueue(0x80, p, sizeof p, slot))
+			queued = true;
+	if (!queued)
 		return false;
 	g_rumble80Ms[slot] = millis();
 	g_rumble80On[slot] = on;
