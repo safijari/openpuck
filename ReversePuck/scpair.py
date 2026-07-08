@@ -399,14 +399,58 @@ def write_controller_slot(slot=0, puck_serial=None, pkey=None):
         ctrl.set_feature(1, 0x95, bytes([0x52, 0xAF, 0x27, 0xA4]))
         print("paired. controller rebooting into wireless — move the puck to your host.")
 
+def get_controller_pairings():
+    devs = enumerate_devices()
+    ctrls = sorted(devs["ctrl"], key=nodesort)
 
+    if not ctrls:
+        return []
+
+    controllers = []
+
+    for c in ctrls:
+        slots = []
+        i = 0
+
+        for bond_str in [b"esb/bond\x00", b"esb/bond_2\x00"]:
+            c.set_feature(1, 0xED, bond_str)
+            bond = c.get_feature(1)
+
+            if bond[0] == 0x01 and bond[1] == 0xed and bond[2] > 0:
+                bond_len = bond[2]
+                bond_key = bond[3:3+8]
+                bond_name = bond[11:11+(bond_len-8)]
+                slots.append({"idx": i, "used": True, "key": bond_key.hex(), "serial": bond_name.decode("latin1", "replace")})
+            else: 
+                slots.append({"idx": i, "used": False})
+
+            i = i + 1
+
+        controllers.append({"serial": c.read_serial(1), "slots": slots})
+
+    return controllers
 
 
 def cmd_list():
     devs = enumerate_devices()
     pucks = sorted(devs["puck"], key=nodesort)
     ctrls = sorted(devs["ctrl"], key=nodesort)
-    print("controllers:", [(d.node, "%04X" % d.pid, d.read_serial(1)) for d in ctrls] or "(none)")
+
+    if ctrls:
+        cs = get_controller_pairings()
+
+        for c in cs:
+            print(f"Controller: {c['serial']}")
+
+            for s in c['slots']:
+                if s['used']:
+                    print("  slot %d: %s (key %s)" % (s["idx"], s["serial"], s["key"]))
+                else:
+                    print("  slot %d: Unused" % (s["idx"]))
+    else:
+        print("No controller connected.")
+
+
 
     if pucks:
         ps = read_slots(pucks)
@@ -421,7 +465,7 @@ def cmd_list():
                 else: 
                     print("  slot %d: Empty" % (s["idx"]))
     else:
-        print("puck: (none)")
+        print("No Puck connected.")
 
 
 def steam_key_check(key):
