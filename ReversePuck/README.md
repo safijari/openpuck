@@ -44,11 +44,12 @@ analog offsets in `input_source.py` if anything's off. The IMU axis remap (`IMU_
 
 The `ReversePuck` launcher runs the app via [`uv`](https://docs.astral.sh/uv/), which provisions its own
 Python and the three deps (`pyserial` + `pygame` + `pyusb`, all prebuilt wheels; `pyusb` uses the system
-`libusb-1.0.so`) into uv's cache — **nothing touches the read-only rootfs**. You might need to install this
-before ReversePuck will function.
+`libusb-1.0.so`) into uv's cache — **nothing touches the read-only rootfs**. The launcher **auto-installs
+`uv` on first run** if it isn't already present (into `~/.local/bin`, no root), so the manual step below is
+only needed if you'd rather install it yourself or the auto-install can't reach the network.
 
 ```bash
-# one-time: install uv (lands in ~/.local/bin, no root)
+# optional: the launcher does this for you on first run (lands in ~/.local/bin, no root)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ./ReversePuck            # fullscreen touchscreen UI (first run pulls deps)
@@ -115,6 +116,22 @@ when the device reappears, so a transient USB hiccup never wedges it or leaves t
 Validate the RF link first with `./ReversePuck --debug` (headless): you want a line like
 `link=True fwd=False ch=18 [0 FXB99602xxxxx LIVE]`. Keep the puck on USB (so it beacons) and the nRF
 plugged in.
+
+## Manage & flash the dongle from the browser panel
+
+The nRF dongle firmware (`../ReversePuckFirmware`) now exposes a WebUSB vendor interface, so the OpenPuck
+browser panel (`docs/index.html`, hosted at the project's GitHub Pages) connects to it just like it does a
+puck. Plug the dongle into any Chrome/Edge machine, click **Connect**, and pick the `28DE:1302` device. The
+panel detects the controller and shows a reduced UI:
+
+- **Paired pucks** — every puck the dongle is bonded to, with a live/offline badge and a **Remove**
+  (un-bond) button. Same list the Deck app shows over CDC, just over WebUSB.
+- **Firmware update** — drop a `ReversePuckFirmware` `.uf2` on the card to stream it over WebUSB (verified
+  on-device, applied on an automatic reboot), or use **UF2 DFU** / **Serial DFU** in the top bar to reboot
+  into the bootloader for drag-and-drop / `adafruit-nrfutil` flashing.
+
+Build a flashable dongle image with `make reversepuck` (from the repo root); flash a connected dongle with
+`make reversepuck-deploy <port>` (double-tap reset for the bootloader first — see `docs/BUILD_AND_DEPLOY.md`).
 
 ## Notes / known iteration points
 

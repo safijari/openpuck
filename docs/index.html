@@ -20,6 +20,9 @@
   .wrap{max-width:980px;margin:0 auto;padding:20px}
   /* cards stack in one column; width comes from the wider wrap + grids/rows filling it horizontally */
   .card{background:var(--card);border:1px solid #272d3d;border-radius:12px;padding:16px 18px;margin:0 0 16px}
+  /* ReversePuck dongle: hide every puck-only Controller card, keep just the paired-pucks card (this leaves
+     the debugonly/lizard inline visibility rules untouched, so switching back to a puck restores them). */
+  body.dongle #tabMain > .cards > .card:not(#pairedCard){display:none !important}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 14px}
   .row{display:flex;align-items:center;gap:14px;margin:12px 0;flex-wrap:wrap}
   .row label{flex:0 0 150px;color:var(--fg)}
@@ -119,6 +122,15 @@
 
     <div id="tabMain">
     <div class="cards">
+    <div class="card wide" id="pairedCard" style="display:none">
+      <h2>Paired pucks</h2>
+      <div class="row" style="gap:10px;align-items:center;margin-bottom:4px">
+        <span class="pill" id="pairedLink">—</span>
+        <span class="note" id="pairedFwd" style="flex:1">—</span>
+      </div>
+      <div id="pairedList"><p class="note">Reading paired pucks…</p></div>
+      <p class="note" style="margin-top:8px">This is a <strong>ReversePuck</strong> controller dongle (28DE:1302). It emulates a Steam Controller to whichever puck it's paired with. Pair new pucks with <code>scpair.py</code>; use the <em>Firmware update</em> tab to flash a new dongle build.</p>
+    </div>
     <div class="card">
       <h2>USB mode</h2>
       <div class="modes" style="flex-wrap:wrap">
@@ -314,7 +326,7 @@
         </div>
       </div>
 
-      <div class="card fwupcard">
+      <div class="card fwupcard" id="relCard">
         <h2>Update from a release</h2>
         <div class="row" style="margin-top:0">
           <span class="note" style="flex:1;margin:0">Official builds from <a href="https://github.com/safijari/openpuck/releases" target="_blank" rel="noopener" style="color:var(--acc2)">github.com/safijari/openpuck/releases</a> &nbsp;·&nbsp; installed: <b id="updInstalled" style="color:var(--acc)">—</b></span>
@@ -345,6 +357,10 @@
 const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)"];
 const CHORD_FIELD = [17, 18, 19];
 let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false, backupBusy=false;
+// A ReversePuck CONTROLLER dongle (28DE:1302) speaks a REDUCED subset of this protocol: no status blob /
+// lizard / config, just a paired-pucks list (0xAC) plus the identical firmware-update + DFU ops. When true,
+// the panel shows the controller UI (manage paired pucks + flash) and skips every puck-only poll.
+let isDongle=false;
 let lastP=null; // most recent status-blob payload (config source for Export)
 // Stability test: armed = active across reconnects; stabStart = ms of the current run; stabLastRun = last
 // completed run {secs} (ended by a reset). Kept in-page so it survives the device reset (not a page refresh).
@@ -626,13 +642,17 @@ async function openDevice(d){
     ifNum=found.ifNum; epIn=found.epIn; epOut=found.epOut;
     await dev.claimInterface(ifNum);
     await dev.controlTransferOut({requestType:"class", recipient:"interface", request:0x22, value:0x01, index:ifNum});
+    isDongle = (dev.productId === 0x1302); // ReversePuck controller dongle vs a puck (0x1304 / real)
+    const kind = isDongle ? "ReversePuck" : "puck";
     $("#connState").textContent="connected"; $("#connState").className="pill up";
-    $("#connState").title = dev.serialNumber ? ("puck serial "+dev.serialNumber) : "";
+    $("#connState").title = dev.serialNumber ? (kind+" serial "+dev.serialNumber) : "";
     $("#connectBtn").textContent="Reconnect";
     $("#panel").classList.remove("hide");
-    log(`connected — puck ${dev.serialNumber||"?"} (VID ${dev.vendorId.toString(16)} iface ${ifNum})`);
+    applyDeviceProfile(); // show the controller UI + hide puck-only cards (or vice-versa)
+    log(`connected — ${kind} ${dev.serialNumber||"?"} (VID ${dev.vendorId.toString(16)} PID ${dev.productId.toString(16)} iface ${ifNum})`);
     // resume a stability test across the reset: re-arm the firmware buzz and start timing the next run
-    if(stabArmed){ await send([0x0F,1]); stabStart=Date.now(); log("stability test resumed — timing next run"); }
+    // (puck-only: the dongle has no stability-test / haptic path)
+    if(stabArmed && !isDongle){ await send([0x0F,1]); stabStart=Date.now(); log("stability test resumed — timing next run"); }
     updateStabUI();
     // The lizard-map dump (0x11 -> 0xAA) is loaded LAZILY, gated on the firmware advertising v16+ (see
     // applyBlob). Older firmware (every pre-lizard build, including the v15 updater builds) silently drops
@@ -640,7 +660,8 @@ async function openDevice(d){
     // firmware-update gate depends on. So we never send 0x11 until a status blob proves the puck speaks v16.
     lizardLoaded=false;
     startPolling();
-    loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
+    // GitHub releases are PUCK firmware; skip the fetch for a dongle (it flashes via the local-file card).
+    if(!isDongle) loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
     return true;
   }catch(e){ log("connect failed: "+e.message); dev=null; return false; }
 }
@@ -698,10 +719,11 @@ async function send(bytes){
 }
 // Read one framed reply and return its payload (with the 2-byte [marker][len] header stripped). The blob and
 // the bond-export dump share the same framing, distinguished by the marker byte (0xA5 status, 0xA7 bonds).
-async function readFrame(marker, minLen){
+async function readFrame(marker, minLen, readLen){
   try{
     // largest frame (status blob) spans multiple USB-FS packets; read generously to capture it in one call.
-    const r = await dev.transferIn(epIn, 192);
+    // readLen is overridable: the dongle's 0xAC paired-pucks list reaches 213 B (8 pucks) and needs 256.
+    const r = await dev.transferIn(epIn, readLen||192);
     if(r.status!=="ok"||r.data.byteLength<2) return null;
     const d=new Uint8Array(r.data.buffer);
     // Live wedge reporter (0xA9): emitted from the firmware's SOF callback (usbd task) while loop() is stalled --
@@ -967,9 +989,75 @@ async function refresh(){
   if(!dev||inflight||capturing||backupBusy||flightBusy||lizardBusy) return; inflight=true;
   // try/finally: an exception anywhere in here (applyBlob included) must never leave inflight latched true --
   // that would silently kill all future polls and read as a fake "heartbeat lost".
-  try{ await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
+  try{
+    if(isDongle){ await send([0x01]); const p=await readFrame(0xAC, 3, 256); if(p) applyDongleStatus(p); }
+    else { await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
+  }
   catch(e){ log("refresh err: "+e.message); }
   finally{ inflight=false; }
+}
+
+// ---- ReversePuck controller dongle: paired-pucks list (0xAC frame) ----
+// Payload (readFrame strips the [0xAC][len] header): [ver][flags][count] + per bond 26B:
+//   [slot][alive][puuid4][iuuid4][serial16]. flags bit0=forwarding a Deck, bit1=an RF link is up.
+function applyDongleStatus(p){
+  window._lastBlobTs=Date.now(); // heartbeat + waitReconnect success signal (mirrors applyBlob)
+  if(pendingHang){ // a reconnect after a reboot: close out the hang-log row we opened on disconnect
+    pendingHang=null;
+  }
+  const flags=p[1], count=p[2], bonds=[];
+  for(let i=0;i<count;i++){
+    const q=3+i*26; if(q+26>p.length) break;
+    const dec=new TextDecoder("latin1");
+    let serial=dec.decode(new Uint8Array(p.slice(q+10,q+26)));
+    const z=serial.indexOf(" "); if(z>=0) serial=serial.slice(0,z);
+    serial=serial.replace(/[^\x20-\x7e]/g,"").trim(); // strip NUL padding / stray non-printables
+    bonds.push({slot:p[q], alive:!!p[q+1],
+      puuid:p.slice(q+2,q+6), iuuid:p.slice(q+6,q+10), serial});
+  }
+  renderPaired(bonds, flags);
+}
+function renderPaired(bonds, flags){
+  const list=$("#pairedList"); if(!list) return;
+  $("#pairedFwd").textContent = (flags&1) ? "forwarding a Steam Deck" : "idle";
+  $("#pairedLink").textContent = (flags&2) ? "RF link up" : "no RF link";
+  $("#pairedLink").className = "pill "+((flags&2)?"up":"dn");
+  if(!bonds.length){ list.innerHTML='<p class="note">No pucks paired yet. Pair one with <code>scpair.py</code> (see ReversePuck/README.md), then it appears here.</p>'; return; }
+  const hex=a=>[...a].map(x=>x.toString(16).padStart(2,"0")).join("");
+  list.innerHTML="";
+  for(const b of bonds){
+    const row=document.createElement("div"); row.className="row"; row.style.cssText="align-items:center;gap:10px;margin:6px 0";
+    const badge=b.alive?'<span class="pill up" style="flex:0 0 auto">live</span>':'<span class="pill" style="flex:0 0 auto">offline</span>';
+    row.innerHTML=`${badge}<div style="flex:1"><div style="font-weight:600">${b.serial||"(unnamed puck)"}</div>`
+      +`<div class="note" style="font-family:ui-monospace,Menlo,monospace">slot ${b.slot} · puuid ${hex(b.puuid)} · iuuid ${hex(b.iuuid)}</div></div>`;
+    const rm=document.createElement("button"); rm.textContent="Remove"; rm.className="danger"; rm.style.flex="0 0 auto";
+    rm.title="Un-bond this puck from the ReversePuck. You'll need to re-pair to use it again.";
+    rm.onclick=async()=>{
+      if(!confirm(`Remove paired puck "${b.serial||"slot "+b.slot}"?\n\nThe ReversePuck forgets this pairing; re-pair with scpair.py to use it again.`)) return;
+      await send([0x30, b.slot & 0xff]); log("removed paired puck slot "+b.slot);
+      // the firmware replies with a fresh 0xAC after the remove; the next poll (or this read) refreshes the list
+    };
+    row.appendChild(rm); list.appendChild(row);
+  }
+}
+
+// Toggle the UI between the full puck panel and the reduced ReversePuck (controller dongle) panel. Called on
+// every (re)connect so switching a puck<->dongle in one session lands on the right layout.
+function applyDeviceProfile(){
+  const d=isDongle;
+  // body.dongle drives the CSS that hides the puck-only Controller cards; toggling the class back on a puck
+  // reconnect restores them without clobbering the debugonly/lizard inline visibility rules.
+  document.body.classList.toggle("dongle", d);
+  const paired=$("#pairedCard"); if(paired) paired.style.display = d ? "" : "none";
+  // top-bar buttons: factory-erase is a puck-only op (0x0A); the dongle keeps DFU + (debug) wipe-board
+  const fe=$("#factoryErase"); if(fe) fe.style.display = d ? "none" : "";
+  // the GitHub "Update from a release" list is puck firmware; a dongle flashes via the local-file drop card
+  const rc=$("#relCard"); if(rc) rc.style.display = d ? "none" : "";
+  const ua=$("#updAvail"); if(ua && d) ua.classList.add("hide");
+  // flashing the dongle is a primary use, so reveal the Firmware-update tab for it even without ?beta=true
+  // (which otherwise gates the tab for pucks).
+  if(d){ const ut=$('#mainTabs .slot-tab[data-tab="tabUpdate"]'); if(ut) ut.style.display=""; }
+  updateFwGate(); // the dongle always supports panel updates
 }
 
 // ---- Backup / clone ----
@@ -1632,7 +1720,7 @@ $("#updAvail").onclick=()=>{ document.querySelector('#mainTabs .slot-tab[data-ta
 // update tab to be usable. Too old => banner explains + both cards go inert until a capable build is flashed
 // the manual way once.
 function updateFwGate(){
-  const ok = !!(lastP && lastP[0]>=15);
+  const ok = isDongle || !!(lastP && lastP[0]>=15);
   $("#updGate").classList.toggle("hide", ok);
   if(!ok) $("#updGateMsg").textContent =
     "This puck is running "+(blobBuildId(lastP)||"an unknown build")+" (status v"+(lastP?lastP[0]:"?")
@@ -1667,8 +1755,9 @@ async function waitReconnect(t0,ms){
 // applied, reconnect observed. getImage runs INSIDE the modal so release downloads show progress there.
 async function runUpdate(title, confirmText, getImage){
   if(dfuBusy) return;
-  if(!dev){ log("connect to the puck first — the update travels over this WebUSB connection"); return; }
-  if(!lastP || lastP[0]<15){
+  if(!dev){ log("connect to the device first — the update travels over this WebUSB connection"); return; }
+  // The dongle always speaks the update ops; only gate a PUCK on its status-blob version.
+  if(!isDongle && (!lastP || lastP[0]<15)){
     log("this puck's firmware ("+(blobBuildId(lastP)||"?")+", status v"+(lastP?lastP[0]:"?")+") predates panel updates (needs v15+) — flash a panel-update-capable build once via UF2 DFU + drag-and-drop, then this works");
     return;
   }

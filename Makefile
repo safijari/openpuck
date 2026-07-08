@@ -44,10 +44,16 @@ USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID)
 # (No auto-detect -- uploading to a guessed serial port risks writing to the wrong device. List with
 # `arduino-cli board list`.) FLASH_PORT = whatever goal isn't one of our real targets; the catch-all rule at
 # the bottom swallows it so make doesn't try to build the port path as a target.
-FLASH_PORT := $(filter-out format format-check check build build-recovery flash deploy,$(MAKECMDGOALS))
+FLASH_PORT := $(filter-out format format-check check build build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy,$(MAKECMDGOALS))
 UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 
-.PHONY: format format-check check build build-recovery flash deploy
+# ReversePuck (controller dongle, 28DE:1302) build flags. It has ONE HID interface (core default 2 is fine),
+# so it doesn't need CFG_TUD_HID; it DOES need the deeper vendor TX FIFO to hold the 0xAC paired-pucks list
+# whole, and the deeper usbd task queue keeps loop()-context WebUSB/CDC/HID sends off the watchdog path.
+RP_USB_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
+RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
+
+.PHONY: format format-check check build build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy
 
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
 ## EXTRA_FLAGS / FQBN as make variables if needed.
@@ -57,6 +63,21 @@ build:
 ## One-time factory-reset recovery image (wipes persistent storage once on first boot). See §6 of the build doc.
 build-recovery:
 	$(MAKE) build EXTRA_FLAGS="$(EXTRA_FLAGS) -DOPK_FACTORY_RESET=1"
+
+## Compile the ReversePuck controller dongle firmware (28DE:1302) with its WebUSB vendor flags baked in.
+reversepuck:
+	arduino-cli compile -b $(FQBN) --build-property "build.extra_flags=$(RP_USB_FLAGS)" ReversePuckFirmware
+
+## Upload the most recent ReversePuck build. Usage: make reversepuck-flash <port>
+reversepuck-flash:
+	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make reversepuck-flash <port>   e.g. make reversepuck-flash /dev/cu.usbmodem1101"; exit 1; }
+	$(RP_UPLOAD)
+
+## Build then upload the ReversePuck dongle in one step. Usage: make reversepuck-deploy <port>
+reversepuck-deploy:
+	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make reversepuck-deploy <port>   e.g. make reversepuck-deploy /dev/cu.usbmodem1101"; exit 1; }
+	$(MAKE) reversepuck
+	$(RP_UPLOAD)
 
 ## Upload the most recent build. Usage: make flash <port>   e.g.  make flash /dev/cu.usbmodem1101
 ## The board may need DFU/bootloader mode first (double-tap RST): puck (Steam/Lizard) mode drops the CDC port
