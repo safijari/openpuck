@@ -111,7 +111,7 @@ jobs:
             --clean \
             --build-path build/cache/reversepuck \
             --output-dir build/reversepuck \
-            --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb}" \
+            --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_TASK_QUEUE_SZ=64 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" \
             ReversePuckFirmware
 
       - name: Generate UF2 (ReversePuckFirmware)
