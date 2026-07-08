@@ -20,6 +20,7 @@
 using namespace Adafruit_LittleFS_Namespace;
 
 #include "config.h"
+#include "board_config.h"
 
 // OPK_GIT_HASH: tags the one-time factory-reset build
 #include "build_info.h"
@@ -108,7 +109,9 @@ void setup()
 	// staged firmware update (WebUSB "flash on reboot"): if the panel committed one, this never returns --
 	// it copies staged->app from RAM and resets into the new firmware. MUST run before anything else touches
 	// hardware; the board looks dead for the ~5 s the copy takes.
+#if OPK_HAS_ADAFRUIT_DFU
 	fwupApplyIfArmed();
+#endif
 	genSerial();
 	ledInit();
 

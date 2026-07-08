@@ -73,6 +73,82 @@ make build FQBN=adafruit:nrf52:somethingelse          # a different nRF52840 boa
 arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4 -DCFG_TUD_TASK_QUEUE_SZ=64 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" OpenPuck
 ```
 
+### 4a. Raytac MDBT50Q-CX-40
+
+Retail listings may shorten MDBT50Q-CX-40 to `MDBT50Q-CX`. This target is only
+for the nRF52840 model with 1 MB flash and 256 KB RAM, not the CX-33.
+
+The build borrows Adafruit's `adafruit:nrf52:mdbt50qrx` profile for its
+nRF52840, S140, and linker settings; it does not modify that installed profile.
+CX-40 GPIO differences remain in OpenPuck.
+
+#### Prerequisites
+
+Download [nRF Util](https://www.nordicsemi.com/Products/Development-tools/nRF-Util)
+and put it in your path.
+
+```bash
+mkdir -p ~/.local/bin
+install -m 755 ~/Downloads/nrfutil ~/.local/bin/nrfutil
+export PATH="$HOME/.local/bin:$PATH"
+
+# Install the DFU packaging and flashing commands.
+nrfutil --version
+nrfutil install nrf5sdk-tools
+nrfutil install device
+```
+
+#### First-time S140 provisioning
+
+OpenPuck requires S140 6.1.1 (`0xB6`). Download and extract Nordic's
+[nRF5 SDK](https://www.nordicsemi.com/Products/Development-software/nRF5-SDK),
+then provision its SoftDevice before installing OpenPuck for the first time:
+
+```bash
+# Hold the dongle button while inserting it; release when the LED fades.
+SDK=/path/to/nRF5_SDK
+make provision-raytac-softdevice \
+  SOFTDEVICE_HEX="$SDK/components/softdevice/s140/hex/\
+s140_nrf52_6.1.1_softdevice.hex"
+
+# Unplug the dongle and re-enter Open DFU before installing the application.
+```
+
+Provisioning is separate from routine builds and updates.
+
+#### Build and flash
+
+```bash
+# Build and create a Nordic Secure DFU application package.
+make build-raytac
+make package-raytac
+
+# Enter physical Open DFU mode, then flash the package.
+make flash-raytac
+
+# For later updates, this runs all three commands above.
+make deploy-raytac
+```
+
+The Adafruit compile recipe also emits `build/raytac/OpenPuck.ino.zip` in its
+older DFU v0.5 format; ignore that automatic output. `make package-raytac`
+creates `OpenPuck-mdbt50q-cx-40.zip`, the Secure DFU package used by the
+factory Open DFU bootloader. These targets do not replace that bootloader or
+use `arduino-cli upload`.
+
+The relevant flash layout is:
+
+- S140 and the MBR occupy the region below the application.
+- OpenPuck starts at `0x26000` and must end before `0xED000`.
+- InternalFS occupies `0xED000` through `0xF3FFF`.
+- The factory bootloader occupies `0xF4000` through `0xFFFFF`.
+
+The populated active-low blue LED is P0.08. OpenPuck reserves it for the
+existing remote-wake diagnostic rather than connection or pairing state.
+The WebUSB firmware updater and its serial/UF2 DFU buttons target the Adafruit
+bootloader and are rejected by this build; use the physical Open DFU workflow
+above instead.
+
 ## 5. Upload the firmware
 
 The quickest path is `make`. The serial port is a **required argument** (find it with `arduino-cli board list`):

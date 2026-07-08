@@ -44,15 +44,66 @@ USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID)
 # (No auto-detect -- uploading to a guessed serial port risks writing to the wrong device. List with
 # `arduino-cli board list`.) FLASH_PORT = whatever goal isn't one of our real targets; the catch-all rule at
 # the bottom swallows it so make doesn't try to build the port path as a target.
-FLASH_PORT := $(filter-out format format-check check build build-recovery flash deploy,$(MAKECMDGOALS))
+FLASH_PORT := $(filter-out format format-check check build build-raytac \
+	package-raytac flash-raytac deploy-raytac provision-raytac-softdevice \
+	build-recovery flash deploy,$(MAKECMDGOALS))
 UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 
-.PHONY: format format-check check build build-recovery flash deploy
+.PHONY: format format-check check build build-raytac package-raytac \
+	flash-raytac deploy-raytac provision-raytac-softdevice build-recovery \
+	flash deploy
 
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
 ## EXTRA_FLAGS / FQBN as make variables if needed.
 build:
 	arduino-cli compile -b $(FQBN) --build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" OpenPuck
+
+## Build for the Raytac MDBT50Q-CX-40 without replacing its Open DFU bootloader.
+build-raytac:
+	./gen_version.sh
+	mkdir -p build/raytac build/cache/raytac
+	arduino-cli compile --clean -b adafruit:nrf52:mdbt50qrx \
+		--build-path build/cache/raytac \
+		--output-dir build/raytac \
+		--build-property "build.extra_flags=$(USB_EXTRA_FLAGS) -DOPK_BOARD_MDBT50Q_CX_40=1" OpenPuck
+
+## Package an existing Raytac build for its factory Nordic Open DFU bootloader.
+package-raytac:
+	@test -f build/raytac/OpenPuck.ino.hex || { \
+		echo "run 'make build-raytac' first"; exit 1; }
+	$(RM) build/raytac/OpenPuck-mdbt50q-cx-40.zip
+	nrfutil nrf5sdk-tools pkg generate --hw-version 52 --sd-req 0xB6 \
+		--application-version 1 \
+		--application build/raytac/OpenPuck.ino.hex \
+		build/raytac/OpenPuck-mdbt50q-cx-40.zip
+
+## Program the application package with the device in physical Open DFU mode.
+flash-raytac:
+	@test -f build/raytac/OpenPuck-mdbt50q-cx-40.zip || { \
+		echo "run 'make package-raytac' first"; exit 1; }
+	nrfutil device program \
+		--firmware build/raytac/OpenPuck-mdbt50q-cx-40.zip \
+		--traits nordicDfu
+
+## Build, package, and program the application without changing the SoftDevice.
+deploy-raytac:
+	$(MAKE) build-raytac
+	$(MAKE) package-raytac
+	$(MAKE) flash-raytac
+
+## One-time S140 6.1.1 provisioning; re-enter Open DFU before flashing the app.
+provision-raytac-softdevice:
+	@test -f "$(SOFTDEVICE_HEX)" || { \
+		echo "set SOFTDEVICE_HEX to Nordic's S140 6.1.1 HEX"; \
+		exit 1; }
+	mkdir -p build/raytac
+	$(RM) build/raytac/s140-6.1.1.zip
+	nrfutil nrf5sdk-tools pkg generate --hw-version 52 \
+		--sd-req 0xAE,0xB6 --sd-id 0xB6 \
+		--softdevice "$(SOFTDEVICE_HEX)" \
+		build/raytac/s140-6.1.1.zip
+	nrfutil device program --firmware build/raytac/s140-6.1.1.zip \
+		--traits nordicDfu
 
 ## One-time factory-reset recovery image (wipes persistent storage once on first boot). See §6 of the build doc.
 build-recovery:
