@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenPuck Config</title>
 <style>
-  :root{ --bg:#11131a; --card:#1b1f2b; --fg:#e7ecf3; --mut:#8a93a6; --acc:#5bd6a0; --acc2:#5b9bd6; --bad:#d65b6e; }
+  :root{ --bg:#11131a; --card:#1b1f2b; --fg:#e7ecf3; --mut:#8a93a6; --acc:#5bd6a0; --acc2:#5b9bd6; --bad:#d65b6e; --warn:#e3b341; }
   *{box-sizing:border-box}
   body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
   h1{font-size:20px;margin:0 0 4px}
@@ -30,6 +30,8 @@
   button:hover{border-color:var(--acc2)}
   button.primary{background:var(--acc2);border-color:var(--acc2);color:#06121f;font-weight:600}
   button.active{background:var(--acc);border-color:var(--acc);color:#062018;font-weight:600}
+  button.beta{background:#2d2613;border-color:#80651c;color:#ffd875;font-weight:600}
+  button.beta.active{background:var(--warn);border-color:var(--warn);color:#1d1604}
   button.danger{background:#3a1420;border-color:#7a2233;color:#ff9bb0;font-weight:600}
   button.danger:hover{border-color:#ff9bb0}
   button:disabled{opacity:.4;cursor:default}
@@ -64,6 +66,8 @@
   /* ---- top-level tabs (Controller / Firmware update) ---- */
   #mainTabs{margin:0 0 16px}
   #mainTabs .slot-tab{font-size:13px;padding:7px 18px}
+  #mainTabs .slot-tab.beta-gated{background:#31270e;border-color:#8a6b1e;color:#ffd875}
+  #mainTabs .slot-tab.beta-gated:hover{border-color:var(--warn);color:#ffe7a0}
 
   /* ---- firmware update tab ---- */
   .dropzone{border:2px dashed #36405a;border-radius:12px;padding:26px 18px;text-align:center;cursor:pointer;
@@ -102,6 +106,7 @@
   <button id="connectBtn" class="primary">Connect</button>
   <span id="updAvail" class="pill hide" title="A newer OpenPuck release is available — click to open the Firmware update tab">…</span>
   <span class="spacer"></span>
+  <button id="betaBtn" class="beta" title="Show beta features warning and enable beta UI">Beta</button>
   <button id="debugCdc" title="Reboot ONCE with the CDC serial console enabled (WebUSB goes away for that boot); auto-reverts on the next boot">Debug CDC</button>
   <button id="dfuSerial" title="Reboot into serial DFU (adafruit-nrfutil), then replug">Serial DFU</button>
   <button id="dfuUf2" title="Reboot into the UF2 mass-storage bootloader; drop a .uf2 on the drive">UF2 DFU</button>
@@ -119,6 +124,16 @@
 
     <div id="tabMain">
     <div class="cards">
+    <div class="card">
+      <h2>Version</h2>
+      <div class="statgrid">
+        <div class="stat"><div class="k">Firmware build</div><div class="v" id="stVersionBuild">—</div></div>
+        <div class="stat"><div class="k">Status protocol</div><div class="v" id="stVersionProto">—</div></div>
+        <div class="stat"><div class="k">Panel update</div><div class="v" id="stVersionUpdate">—</div></div>
+      </div>
+      <p class="note">This section reflects the connected puck. Reconnect after flashing or changing modes to verify what is currently running.</p>
+    </div>
+
     <div class="card">
       <h2>USB mode</h2>
       <div class="modes" style="flex-wrap:wrap">
@@ -398,12 +413,69 @@ const $ = s=>document.querySelector(s);
 // -- only the UI is hidden, so adding ?debug=true after an unattended incident still shows the history.
 const DEBUG_UI = new URLSearchParams(location.search).get("debug")==="true";
 if(!DEBUG_UI) for(const el of document.querySelectorAll(".debugonly")) el.style.display="none";
-// Firmware-update tab gate: only visible with ?beta=true in the URL.
+// Firmware-update tab gate: beta enables tested-but-not-yet-default surfaces.
 const BETA_UI = new URLSearchParams(location.search).get("beta")==="true";
-if(!BETA_UI){
-  $('#mainTabs .slot-tab[data-tab="tabUpdate"]').style.display="none";
-  $("#updAvail").style.display="none";
+$("#betaBtn").textContent = BETA_UI ? "Beta on" : "Beta";
+$("#betaBtn").classList.toggle("active", BETA_UI);
+$("#betaBtn").title = BETA_UI
+  ? "Show beta-disable confirmation and return to the standard UI"
+  : "Show beta warning and enable beta UI";
+$('#mainTabs .slot-tab[data-tab="tabUpdate"]').classList.toggle("beta-gated", !BETA_UI);
+function escHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 }
+function betaPopup({title, body, okText="OK", cancelText="Cancel"}){
+  return new Promise(resolve=>{
+    let done=false;
+    const shade=document.createElement("div");
+    shade.style.cssText="position:fixed;inset:0;z-index:90;background:rgba(8,10,16,.55);display:flex;align-items:center;justify-content:center;padding:18px";
+    shade.innerHTML = '<div style="background:var(--card);border:1px solid #80651c;border-radius:12px;padding:20px 22px;width:min(440px,94vw);box-shadow:0 18px 60px rgba(0,0,0,.45)">'
+      +'<h3 style="margin:0 0 10px;font-size:16px">'+escHtml(title)+'</h3>'
+      +body.map(p=>'<p class="note" style="margin:8px 0">'+escHtml(p)+'</p>').join("")
+      +'<div class="row" style="justify-content:flex-end;margin:18px 0 0">'
+      +'<button data-beta-cancel>'+escHtml(cancelText)+'</button>'
+      +'<button class="beta active" data-beta-ok>'+escHtml(okText)+'</button>'
+      +'</div></div>';
+    const finish=ok=>{
+      if(done) return;
+      done=true;
+      shade.remove();
+      resolve(!!ok);
+    };
+    shade.querySelector("[data-beta-cancel]").onclick=()=>finish(false);
+    shade.querySelector("[data-beta-ok]").onclick=()=>finish(true);
+    shade.onclick=e=>{ if(e.target===shade) finish(false); };
+    shade.onkeydown=e=>{ if(e.key==="Escape") finish(false); };
+    document.body.appendChild(shade);
+    shade.tabIndex=-1;
+    shade.focus();
+  });
+}
+$("#betaBtn").onclick=async()=>{
+  const u=new URL(location.href);
+  if(BETA_UI){
+    const ok=await betaPopup({
+      title:"Disable beta mode?",
+      body:["Beta-only tabs and controls will be gated again after the page reloads.",
+        "Let any firmware or config operation already in progress finish before leaving beta mode."],
+      okText:"Disable beta"
+    });
+    if(!ok) return;
+    u.searchParams.delete("beta");
+    location.href=u.toString();
+    return;
+  }
+  const ok=await betaPopup({
+    title:"Enable beta mode?",
+    body:["Beta features are still being tested.",
+      "They may not work correctly, can disconnect the panel or puck, and may write invalid or difficult-to-recover configs.",
+      "Export a backup first if the puck is already paired and configured."],
+    okText:"Enable beta"
+  });
+  if(!ok) return;
+  u.searchParams.set("beta","true");
+  location.href=u.toString();
+};
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
 
 // ---- Loop-state trail (persistent) ----
@@ -925,6 +997,7 @@ function applyBlob(p){
     ? (buildId + (gitDirty ? ' <span class="pill dn">dirty</span>' : ' <span class="pill up">clean</span>'))
     : "—";
   $("#updInstalled").textContent = buildId || "—"; // mirrored on the Firmware-update tab
+  updateVersionUI();
   updateFwGate(); // (re)evaluate the firmware-tab gate on every blob — version is at p[0]
   checkUpdateNotice(); // needs BOTH the installed version (this blob) and relCache (fetched on connect)
   setSlider("mDiv",mDiv); setSlider("mFric",mFric); setSlider("rumble",rumbleScale);
@@ -1617,6 +1690,7 @@ function verTriple(s){
 }
 function checkUpdateNotice(){
   const el=$("#updAvail");
+  if(!BETA_UI){ el.classList.add("hide"); return; }
   const inst=verTriple(blobBuildId(lastP));
   const rel=(relCache||[]).find(r=>!r.prerelease && relAsset(r,false));
   const latest=rel ? verTriple(rel.tag_name) : null;
@@ -1640,6 +1714,15 @@ function updateFwGate(){
     +"gets you back: click “UF2 DFU” in the top bar, then drag a panel-update-capable .uf2 onto the UF2BOOT "
     +"drive it mounts. Every update after that happens right here.";
   for(const c of document.querySelectorAll(".fwupcard")) c.classList.toggle("gated", !ok);
+}
+function updateVersionUI(){
+  const build=blobBuildId(lastP), proto=lastP ? lastP[0] : 0;
+  const dirty=lastP && lastP.length>38 ? lastP[38] : 0;
+  $("#stVersionBuild").innerHTML = build
+    ? (build + (dirty ? ' <span class="pill dn">dirty</span>' : ' <span class="pill up">clean</span>'))
+    : "—";
+  $("#stVersionProto").textContent = proto ? ("v"+proto) : "—";
+  $("#stVersionUpdate").textContent = proto >= 15 ? "supported" : (proto ? "manual UF2 only" : "—");
 }
 // after the apply-reboot: resolved once the puck is back.
 // Returns true if the panel auto-reconnected and received a fresh status blob (desktop), "appeared"
@@ -1877,7 +1960,22 @@ $("#relRefresh").onclick=()=>loadReleases(true);
 
 // ---- top-level tabs ----
 for(const t of document.querySelectorAll("#mainTabs .slot-tab")){
-  t.onclick=()=>{
+  t.onclick=async()=>{
+    if(t.dataset.tab==="tabUpdate" && !BETA_UI){
+      const ok=await betaPopup({
+        title:"Firmware update is beta",
+        body:["Firmware update is still being tested and may not work correctly.",
+          "A bad image or interrupted recovery path can leave you needing UF2 DFU to recover.",
+          "Enable beta mode before using this feature."],
+        okText:"Enable beta"
+      });
+      if(ok){
+        const u=new URL(location.href);
+        u.searchParams.set("beta","true");
+        location.href=u.toString();
+      }
+      return;
+    }
     for(const x of document.querySelectorAll("#mainTabs .slot-tab")) x.classList.toggle("active",x===t);
     $("#tabMain").classList.toggle("hide", t.dataset.tab!=="tabMain");
     $("#tabUpdate").classList.toggle("hide", t.dataset.tab!=="tabUpdate");
