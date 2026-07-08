@@ -109,11 +109,12 @@ def _first_usage_page(fd):
 
 
 class HidDev:
-    def __init__(self, node, vid, pid, serial):
+    def __init__(self, node, vid, pid, serial, vendor_str = "Valve"):
         self.node = node
         self.vid = vid
         self.pid = pid
         self.serial = serial
+        self.vendor_str = vendor_str
         self.fd = os.open(node, os.O_RDWR)
         self.usage_page = _first_usage_page(self.fd)
 
@@ -179,8 +180,19 @@ def enumerate_devices():
             # If these don't match, this is not a Puck slot, but some other random HID interface.
             continue
 
+        # If we're here, this is a Puck. Let's detect and display if it's a Valve Puck or an OpenPuck.
+        # OpenPuck can be detected by the OpenPuck mouse wake interface. 
+
+        devnode = iface_dir.parent
+        device_vendor = "Valve"
+
+        for subnode in glob.glob(str(devnode) + "/" + devnode.name + ":*/interface"):
+            txt = Path(subnode).read_text().strip()
+            if "OpenPuck" in txt:
+                device_vendor = "OpenPuck"
+
         try:
-            dev = HidDev(node, vid, pid, serial)
+            dev = HidDev(node, vid, pid, serial, device_vendor)
         except PermissionError:
             print("permission denied on %s (run with sudo or install the udev rule)" % node, file=sys.stderr)
             continue
@@ -214,7 +226,7 @@ def read_slots(puck_list):
     for dev in sorted(puck_list, key=nodesort):
         if last_dev is not None and dev.serial != last_dev.serial:
             # This is a new puck, append the old puck and all its slots to the list.
-            pucks.append({"serial": last_dev.serial, "slots": slots})
+            pucks.append({"serial": last_dev.serial, "slots": slots, "vendor": last_dev.vendor_str})
             slots = []
             idx = 0
         try:
@@ -230,7 +242,7 @@ def read_slots(puck_list):
         last_dev = dev
         idx = idx + 1
 
-    pucks.append({"serial": dev.serial, "slots": slots})
+    pucks.append({"serial": dev.serial, "slots": slots, "vendor": dev.vendor_str})
     return pucks
 
 
@@ -401,7 +413,7 @@ def cmd_list():
         for puck in ps:
             slots = puck['slots']
 
-            print(f"Puck: {puck['serial']}")
+            print(f"Puck: {puck['serial']} ({puck['vendor']})")
 
             for s in slots: 
                 if s["used"]:
