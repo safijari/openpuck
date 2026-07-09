@@ -11,6 +11,7 @@
 #include "fw_update.h"
 #include "usb_tx.h"
 #include "usb_mount.h" // modeSwitchReboot()
+#include "audio.h" // PCM/tone playback + mode-announce clips
 #include <Arduino.h>
 #include <string.h>
 
@@ -55,7 +56,8 @@ static void fwupAckPost(uint8_t status)
 //                [v13: per-slot link stats, 4x9B from p[145]: {pollsps u16, f1ps u16, newps u16, crc/s u8,
 //                 noRx/s u8, relay/s u8} -- each controller's own rates (the v4 aggregates are their sums)]
 //                [v14/v17: p[181] landAll87 (verbatim-0x87-relay experiment toggle)]
-#define WB_PAYLEN 180
+//                [v18: p[182] announceEnabled (on-boot mode-announce jingle+speech)]
+#define WB_PAYLEN 181
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -86,7 +88,7 @@ static void webusbSendBlob()
 	// unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87 toggle; 13 = +per-slot link
 	// stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type
 	// cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 17;
+	p[2] = 18;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -255,6 +257,8 @@ static void webusbSendBlob()
 	}
 	// v14/v17: verbatim-0x87-relay experiment toggle (panel reflects + toggles it)
 	p[181] = g_landAll87;
+	// v18: on-boot mode-announce enable (panel reflects + toggles it)
+	p[182] = g_announceEnabled;
 	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
 	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
 	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
@@ -590,7 +594,7 @@ void webusbPoll()
 			if (n == 0)
 				break;
 			uint8_t op = buf[0];
-			if ((op < 0x01 || op > 0x15) &&
+			if ((op < 0x01 || op > 0x1D) &&
 			    (op < 0x20 || op > 0x25)) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
@@ -608,12 +612,14 @@ void webusbPoll()
 			// binding (18 B); 0x05/0x0E/0x0F/0x10/0x13 carry one value byte; 0x02 a field+value; 0x0A a
 			// 3-byte magic. Firmware update: 0x20 begin [size u32][crc32 u32], 0x21 data (6 B header +
 			// payload), 0x22/0x23/0x24 bare. (0x11/0x14/0x15 are bare lizard opcodes -> default 1.)
+			// 0x1D [mode] = test a mode's announce jingle.
 			uint8_t need =
 				(op == 0x0D) ? 27 :
 				(op == 0x12) ? 18 :
 				(op == 0x02) ? 3 :
 				(op == 0x03 || op == 0x05 || op == 0x0E ||
-				 op == 0x0F || op == 0x10 || op == 0x13) ?
+				 op == 0x0F || op == 0x10 || op == 0x13 ||
+				 op == 0x1D) ?
 					       2 :
 				(op == 0x0A) ? 4 :
 				(op == 0x25) ? 5 :
@@ -819,6 +825,11 @@ void webusbPoll()
 				fwupAbort();
 				fwupAckPost(FWUP_OK);
 
+				// 0x1D [mode]: test a mode's announcement jingle now (audio.cpp).
+			} else if (op == 0x1D) {
+				audioAnnounceNow(buf[1]);
+				g_blobRequest = true;
+
 			} else if (op == 0x02) {
 				uint8_t f = buf[1], v = buf[2];
 
@@ -967,6 +978,11 @@ void webusbPoll()
 				// instead of the discard-whitelist. Persisted; blob p[181] reflects state.
 				case 29:
 					g_landAll87 = v ? 1 : 0;
+					break;
+
+				// on-boot mode-announce (jingle) enable
+				case 30:
+					g_announceEnabled = v ? 1 : 0;
 					break;
 				}
 				if (persist)

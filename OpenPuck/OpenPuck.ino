@@ -28,6 +28,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "radio.h"
 #include "controllers.h"
 #include "haptics.h"
+#include "audio.h"
 #include "rf_link.h"
 #include "puck_hid.h" // puckCmdLogDrain()
 #include "rf_diag.h"
@@ -263,6 +264,7 @@ void setup()
 	usbTxBegin();
 	webusbInit(); // also drain the WebUSB status blob from the usbd task (its flush() can block loop() too)
 	hapticInit();
+	audioInit();
 	static const char *MODE_NAME[] = {
 		"STEAM(puck)",	       "XBOX(xinput+mouse)",
 		"SWITCH(horipad)",     "LIZARD(puck kb/mouse)",
@@ -373,6 +375,7 @@ void loop()
 	t = micros();
 	faultDiagSetStage(5);
 	hapticTask();
+	audioTask();
 	acc[5] += (uint32_t)(micros() - t);
 	t = micros();
 	faultDiagSetStage(6);
@@ -416,6 +419,7 @@ void loop()
 	rfLinkTask();
 	faultDiagSetStage(5);
 	hapticTask();
+	audioTask();
 	faultDiagSetStage(6);
 	ledTask();
 	faultDiagSetStage(7);

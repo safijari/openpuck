@@ -68,6 +68,8 @@ void applyActiveType()
 }
 // rumble strength % (200 = double); adjustable from the WebUSB panel
 uint8_t g_rumbleScale = 200;
+// on-boot mode-announce (jingle + spoken clip via haptics) enable; persisted, panel-toggleable (see audio.cpp)
+uint8_t g_announceEnabled = 1;
 
 // poll rate defaults to POLL_US_DEFAULT (250 Hz), matching the real Valve puck (see config.h). The
 // delivered report rate equals the poll rate (fresh IMU in every reply). Live-adjustable via console
@@ -76,15 +78,16 @@ uint8_t g_rumbleScale = 200;
 uint32_t g_pollUs = POLL_US_DEFAULT;
 
 #define CFG_FILE "/cfg.bin"
-// Struct layout/semantics changed (TypeCfg gained rumble byte); bump so old flash format is discarded ->
+// Struct layout/semantics changed (added `announce`); bump so old flash format is discarded ->
 // clean defaults once.
-#define CFG_MAGIC 0xCF
+#define CFG_MAGIC 0xD0
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
 		bootMode, chordBtn[3], rumbleScale;
 	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
 	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
 	uint8_t rxWin10, lizKeep, landAll87;
+	uint8_t announce; // on-boot mode-announce (jingle + spoken clip) enable, see audio.cpp
 	TypeCfg type[ET_COUNT]; // per-emulated-type back/qam/abSwap/padHaptics
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
@@ -103,6 +106,7 @@ void saveCfg()
 		  (uint8_t)(g_rxWin / 10),
 		  g_lizKeep,
 		  g_landAll87,
+		  g_announceEnabled,
 		  {} };
 	for (int i = 0; i < ET_COUNT; i++)
 		c.type[i] = g_type[i];
@@ -164,6 +168,9 @@ void loadCfg()
 			// verbatim-0x87-relay experiment toggle (0/1; default off)
 			if (c.landAll87 <= 1)
 				g_landAll87 = c.landAll87;
+			// on-boot mode-announce enable (0/1; default on)
+			if (c.announce <= 1)
+				g_announceEnabled = c.announce;
 			// The poll RX window is now FIXED (g_rxWin is const) -- any persisted rxWin10 is ignored.
 		}
 		f.close();

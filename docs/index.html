@@ -165,6 +165,20 @@
       </div>
     </div>
 
+    <div class="card wide" id="audioCard">
+      <h2>Mode announcements</h2>
+      <p class="note" style="margin-top:0">When the puck boots into a mode (which happens on every mode switch), it plays that mode's short tone jingle through the connected controller's haptics, so you can tell which mode you're in without looking. (Streamed audio/speech isn't carried reliably over the wireless link — single tone commands are, so the announcements are distinct jingles.)</p>
+      <div class="row" style="align-items:center;gap:10px">
+        <label>Announce on boot</label>
+        <button id="audAnnounceEn">off</button>
+        <span class="note" style="flex:1">Play the mode jingle when a controller connects after boot. Persisted.</span>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;margin-top:12px;border-top:1px solid #272d3d;padding-top:12px">
+        <label style="min-width:90px">Test jingle</label>
+        <div id="annTestRow" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+      </div>
+    </div>
+
     <div class="card">
       <h2>Back4 + face button chords</h2>
       <p class="note" style="margin-top:0">Hold all four back paddles (L4+R4+L5+R5) plus a face button to switch mode without the WebUI. <strong>A is always Steam.</strong> B / X / Y are configurable below (defaults: B=Lizard, X=Xbox, Y=Switch HORIPAD).</p>
@@ -1026,6 +1040,8 @@ function applyBlob(p){
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
   // land-all-0x87 experiment toggle (blob v14/v17, firmware p[181] -> JS p[179])
   { const la=(p.length>179?p[179]:0); $("#landAll87").textContent = la?"on":"off"; $("#landAll87").classList.toggle("active",!!la); }
+  // on-boot mode-announce toggle (blob v18, firmware p[182] -> JS p[180])
+  if(p.length>180 && p[0]>=18){ const an=p[180]; $("#audAnnounceEn").textContent=an?"on":"off"; $("#audAnnounceEn").classList.toggle("active",!!an); }
   // per-type button config (blob v10/v17): 4 types x 9 bytes. readBlob() strips the 2-byte [0xA5][len] header, so
   // the firmware's buffer index 75 lands at JS index 73 here.
   if(p.length>=73+TYPE_DEFS.length*9){
@@ -2155,6 +2171,16 @@ for(const b of document.querySelectorAll(".modebtn")){
     const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold back-paddle 4 + A to return to Steam mode.":"");
     if(confirm(msg)){ send([0x03, m]); log("mode switch requested — device will reboot"); } };
 }
+// ===== Mode announcements (tone jingles) =====
+const ANN_MODES=[
+  {m:0,label:"Steam"},{m:1,label:"Xbox"},{m:2,label:"Switch"},{m:3,label:"Lizard"},
+  {m:4,label:"Switch Pro"},{m:5,label:"PS5"},{m:6,label:"PS4 (DS4)"},{m:9,label:"PS3"},
+];
+$("#audAnnounceEn").onclick=()=>{ const on=$("#audAnnounceEn").classList.contains("active"); setField(30, on?0:1); };
+(function(){ const host=$("#annTestRow"); if(!host) return;
+  for(const it of ANN_MODES){ const b=document.createElement("button"); b.textContent=it.label;
+    b.onclick=()=>{ if(dev) send([0x1D, it.m]); else log("connect first"); }; host.appendChild(b); }
+})();
 updateUf2UI();
 updateFwGate(); // start gated: stays inert until the first status blob proves the firmware speaks v15+
 if(!("usb" in navigator)) $("#connectBtn").outerHTML='<b style="color:var(--bad)">WebUSB not supported — use Chrome or Edge.</b>';

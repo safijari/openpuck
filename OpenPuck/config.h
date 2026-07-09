@@ -150,6 +150,8 @@ extern uint8_t g_ledBright;
 void applyActiveType();
 // rumble strength, percent of decoded amplitude (100 = 1x, 200 = 2x default), all modes
 extern uint8_t g_rumbleScale;
+// on-boot mode-announce enable (jingle + spoken clip through the controller's haptics); default on, persisted.
+extern uint8_t g_announceEnabled;
 // Switch Pro motion settings. Persisted in their OWN flash file (mode_switch_pro.cpp), NOT in Cfg -- so changing
 // them never resets the rest of the config. Set from the WebUSB panel.
 // Switch Pro report cadence: 0 = 66Hz (15ms, compat), 1 = 120Hz (8ms, DEFAULT), 2 = full (~250Hz)
