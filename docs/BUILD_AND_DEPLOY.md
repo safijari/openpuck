@@ -54,8 +54,8 @@ make build
 
 That's the whole command — the USB flags the firmware needs are baked in, so you don't pass them yourself:
 
-- `CFG_TUD_HID=4` — Steam mode exposes four HID interfaces (the Adafruit nRF core defaults to 2).
-- `CFG_TUD_TASK_QUEUE_SZ=64` — a deeper TinyUSB device event queue; the default of 16 can deadlock the firmware's loop under heavy USB traffic and trip the watchdog.
+- `CFG_TUD_HID=6` — Steam mode exposes four HID interfaces (the Adafruit nRF core defaults to 2); one extra for mouse and one for WebUSB brings the total to 6.
+- `CFG_TUD_TASK_QUEUE_SZ=512` — a deeper TinyUSB device event queue; the default of 16 can deadlock the firmware's loop under heavy USB traffic and trip the watchdog.
 - `CFG_TUD_VENDOR_TX_BUFSIZE=256` — the WebUSB status blob (~118 B) must fit the vendor TX FIFO in one write; the default 64 is too small and the panel (which drops frames rather than block the loop) would send nothing — a blank dashboard.
 
 **Overriding the defaults** (only if you need to) — pass them as `make` variables:
@@ -70,7 +70,7 @@ make build FQBN=adafruit:nrf52:somethingelse          # a different nRF52840 boa
 `#error`s without them (so a forgotten flag fails loudly instead of shipping a broken/deadlock-prone image):
 
 ```bash
-arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4 -DCFG_TUD_TASK_QUEUE_SZ=64 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" OpenPuck
+arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" OpenPuck
 ```
 
 ## 5. Upload the firmware

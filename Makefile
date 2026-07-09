@@ -30,6 +30,10 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 # or add your own defines:     make build EXTRA_FLAGS="-DOPK_LOG=1"
 FQBN ?= adafruit:nrf52:feather52840
 CFG_TUD_HID ?= 6
+# Optional output paths; when set, --clean is implied and build artifacts land in OUTPUT_DIR.
+# Used by CI: make build BUILD_PATH=build/cache/openpuck OUTPUT_DIR=build/openpuck
+BUILD_PATH ?=
+OUTPUT_DIR ?=
 # Deep so a loop()-context sendReport never blocks on a full usbd event queue (the watchdog path). Sends run
 # from loop() now (usbTxPump) for stable RF timing, so this depth is what keeps that block from happening.
 CFG_TUD_TASK_QUEUE_SZ ?= 512
@@ -39,6 +43,8 @@ CFG_TUD_VENDOR_TX_BUFSIZE ?= 256
 EXTRA_FLAGS ?=
 # {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
 USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
+# When BUILD_PATH is set, --clean + path flags are injected; omitted for fast incremental dev builds.
+_PATH_FLAGS = $(if $(BUILD_PATH),--clean --build-path $(BUILD_PATH) --output-dir $(OUTPUT_DIR))
 
 # `flash`/`deploy` take the serial port as a REQUIRED POSITIONAL arg: `make flash /dev/cu.usbmodem1101`.
 # (No auto-detect -- uploading to a guessed serial port risks writing to the wrong device. List with
@@ -58,15 +64,15 @@ RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
 ## EXTRA_FLAGS / FQBN as make variables if needed.
 build:
-	arduino-cli compile -b $(FQBN) --build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" OpenPuck
+	arduino-cli compile -b $(FQBN) $(_PATH_FLAGS) --build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" OpenPuck
 
 ## One-time factory-reset recovery image (wipes persistent storage once on first boot). See §6 of the build doc.
 build-recovery:
-	$(MAKE) build EXTRA_FLAGS="$(EXTRA_FLAGS) -DOPK_FACTORY_RESET=1"
+	$(MAKE) build BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR) EXTRA_FLAGS="$(EXTRA_FLAGS) -DOPK_FACTORY_RESET=1"
 
 ## Compile the ReversePuck controller dongle firmware (28DE:1302) with its WebUSB vendor flags baked in.
 reversepuck:
-	arduino-cli compile -b $(FQBN) --build-property "build.extra_flags=$(RP_USB_FLAGS)" ReversePuckFirmware
+	arduino-cli compile -b $(FQBN) $(_PATH_FLAGS) --build-property "build.extra_flags=$(RP_USB_FLAGS)" ReversePuckFirmware
 
 ## Upload the most recent ReversePuck build. Usage: make reversepuck-flash <port>
 reversepuck-flash:
@@ -76,7 +82,7 @@ reversepuck-flash:
 ## Build then upload the ReversePuck dongle in one step. Usage: make reversepuck-deploy <port>
 reversepuck-deploy:
 	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make reversepuck-deploy <port>   e.g. make reversepuck-deploy /dev/cu.usbmodem1101"; exit 1; }
-	$(MAKE) reversepuck
+	$(MAKE) reversepuck BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR)
 	$(RP_UPLOAD)
 
 ## Upload the most recent build. Usage: make flash <port>   e.g.  make flash /dev/cu.usbmodem1101
@@ -89,7 +95,7 @@ flash:
 ## Build then upload in one step. Usage: make deploy <port>   (same build overrides as `build`).
 deploy:
 	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make deploy <port>   e.g. make deploy /dev/cu.usbmodem1101"; exit 1; }
-	$(MAKE) build
+	$(MAKE) build BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR)
 	$(UPLOAD)
 
 # Swallow the positional <port> arg so make doesn't error trying to build it as a target. Scoped to things
