@@ -38,6 +38,14 @@ void puckCmdLogDrain(void);
 // config; OpenPuck doesn't need it). On by default; console "S81" toggles for A/B.
 extern bool g_drop81;
 
+// Note that a controller power-off (0x9F "off!") was just relayed to `slot` (or ALL used slots for the 0xFF
+// broadcast). The puck then presents that slot as cleanly DISCONNECTED to Steam and HOLDS it there through the
+// controller's messy shutdown -- a real controller keeps streaming F1 for up to ~1s after the off command, and
+// without this the puck faithfully reports "still connected" -> conn bounces -> Steam sees a phantom reconnect
+// (the "reappears for a split second") and re-runs its connect config, or never sees a clean disconnect and
+// leaves the controller in its list. Called from hapticSendShutdown() so every power-off path is covered.
+void puckNotePowerOff(uint8_t slot);
+
 class SteamPuckController : public IController {
     public:
 	void begin() override;

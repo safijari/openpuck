@@ -64,6 +64,11 @@ void hapticSendShutdown(uint8_t slot)
 	faultDiagTrace(FR_OFF, slot);
 	for (uint8_t i = 0; i < HAPTIC_SHUTDOWN_SHOTS; i++)
 		relayEnqueue(0x9F, OFF, sizeof OFF, slot);
+	// Tell the puck presentation layer to show this slot (or all, for 0xFF broadcast) cleanly DISCONNECTED to
+	// Steam and hold it there through the controller's post-off F1 tail -- otherwise the dying replies bounce
+	// the connection state (phantom reconnect / never-removed). Covers every power-off path (Steam 0x9F, the
+	// Steam+Y chord, the panel button, host suspend) since they all funnel through here.
+	puckNotePowerOff(slot);
 }
 
 // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
