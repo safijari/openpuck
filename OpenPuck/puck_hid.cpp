@@ -30,7 +30,8 @@ static volatile unsigned long g_powerOffMs[NSLOT] = { 0 };
 #define POWEROFF_HOLD_MS 2000u
 void puckNotePowerOff(uint8_t slot)
 {
-	if (slot >= NSLOT) { // 0xFF broadcast ("all off": host suspend, panel/test button)
+	if (slot >=
+	    NSLOT) { // 0xFF broadcast ("all off": host suspend, panel/test button)
 		for (int s = 0; s < NSLOT; s++)
 			if (g_slot[s].used)
 				g_powerOffMs[s] = millis();
@@ -947,8 +948,9 @@ void SteamPuckController::task()
 	// slot. The real puck's per-slot edge-triggered 0x79 prevents re-triggering Steam's connect-chime loop.
 	static bool usbConn[NSLOT] = { 0 };
 	static unsigned long last79[NSLOT] = { 0 }, last7B[NSLOT] = { 0 },
-			     connEdgeMs[NSLOT] = { 0 }, discEdgeMs[NSLOT] = { 0 },
-			     last43[NSLOT] = { 0 }, poHandled[NSLOT] = { 0 };
+			     connEdgeMs[NSLOT] = { 0 },
+			     discEdgeMs[NSLOT] = { 0 }, last43[NSLOT] = { 0 },
+			     poHandled[NSLOT] = { 0 };
 	for (int s = 0; s < NSLOT; s++) {
 		if (!g_slot[s].used || !hid[s].ready())
 			continue;
@@ -985,14 +987,15 @@ void SteamPuckController::task()
 		// controller light is solid (it re-adopted the beacon) but no input flows." Resend disc every 750ms but
 		// BOUNDED to DISC_RESEND_MS so a lost packet converges without the forever-spam the "real puck sends
 		// 0x79 once" note warns against.
-		bool discResend =
-			!conn && (millis() - discEdgeMs[s] < DISC_RESEND_MS);
+		bool discResend = !conn &&
+				  (millis() - discEdgeMs[s] < DISC_RESEND_MS);
 		if (conn != usbConn[s] ||
 		    (conn && !steamAcked && millis() - last79[s] >= 750) ||
 		    (discResend && millis() - last79[s] >= 750)) {
 			if (conn && !usbConn[s])
 				connEdgeMs[s] = millis();
-			if (!conn && usbConn[s]) // connect->disc edge: anchor the resend window
+			if (!conn &&
+			    usbConn[s]) // connect->disc edge: anchor the resend window
 				discEdgeMs[s] = millis();
 			uint8_t st = conn ? 0x02 : 0x01;
 			hapLogAdd(0xFB, 0x79, &st, 1); // ->host push (capture)

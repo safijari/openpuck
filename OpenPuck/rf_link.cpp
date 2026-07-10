@@ -923,8 +923,8 @@ static void rfConnStep()
 			unsigned long silentMs =
 				everReplied ? (nowMs - g_connReplyMs[k]) : 0;
 			bool cold = everReplied && silentMs > SLOT_COLD_MS;
-			bool quiet =
-				everReplied && !cold && silentMs > SLOT_QUIET_MS;
+			bool quiet = everReplied && !cold &&
+				     silentMs > SLOT_QUIET_MS;
 			bool phantom = !everReplied;
 			unsigned long retry = (cold || phantom) ?
 						      SLOT_COLD_RETRY_MS :
