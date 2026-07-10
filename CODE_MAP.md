@@ -2,7 +2,7 @@
 
 nRF52840 / Adafruit Arduino core / TinyUSB. The device impersonates a Valve Steam
 Controller 2 "puck" over USB and talks to SC2 controllers over a bare-metal nRF52
-RADIO (ESB-style, **no SoftDevice**) protocol. Built with `-DCFG_TUD_HID=4`.
+RADIO (ESB-style, **no SoftDevice**) protocol. Built with `-DCFG_TUD_HID=6`.
 
 > This map describes what the **code actually does**. Source comments in this repo
 > are known to be misleading and were ignored.
