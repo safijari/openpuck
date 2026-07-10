@@ -887,30 +887,53 @@ static void rfConnStep()
 		g_connPoll++;
 	};
 
-	// Poll a slot every cycle (full rate) only when its controller is actually here. Throttle the rest to
-	// every SLOT_COLD_RETRY_MS:
-	//   - "cold": WAS connected but silent > SLOT_COLD_MS (controller powered off / out of range);
-	//   - "phantom": NEVER replied AND another controller is already connected. This is the cloned-puck case
-	//     (issue: bonds copied from a backup include controllers that aren't present). Polling a phantom slot
-	//     every cycle was doubling/tripling Polls/s, flooding noRx, and stealing reply windows from the live
-	//     controller. A never-replied slot with nothing else connected still polls full-rate, so the FIRST
-	//     controller connects instantly; a phantom only backs off once a real link exists to protect.
 	bool linkUp = anySlotLinkUp();
-	for (int k = 0; k < NSLOT; k++) {
-		if (!g_slot[k].used)
-			continue;
-		bool everReplied = g_connReplyMs[k] != 0;
-		unsigned long silentMs =
-			everReplied ? (nowMs - g_connReplyMs[k]) : 0;
-		bool cold = everReplied && silentMs > SLOT_COLD_MS;
-		bool quiet = everReplied && !cold && silentMs > SLOT_QUIET_MS;
-		bool phantom = !everReplied && linkUp;
-		unsigned long retry = (cold || phantom) ? SLOT_COLD_RETRY_MS :
-				      quiet		? SLOT_QUIET_RETRY_MS :
-							  0;
-		if (retry && nowMs - g_slotLastAttemptMs[k] < retry)
-			continue;
-		doPoll(k);
+	if (!linkUp) {
+		// (RE)ACQUIRE MODE -- nothing is linked. Poll used slots to catch a (re)connecting controller fast,
+		// but ROUND-ROBIN: exactly ONE slot per cycle, so radio duty stays bounded to a single ~g_rxWin no-reply
+		// wait per cycle no matter how many bonds are absent.
+		//
+		// Why not poll every absent slot per cycle: doing so was the fix for the solid-light reconnect livelock
+		// (a slot silent > SLOT_COLD_MS had dropped to a 2s poll that kept missing the controller's re-adopt
+		// window), BUT with two bonds absent it put TWO full ~g_rxWin no-reply waits + the every-loop beaconing
+		// on every cycle -- a radio-duty spike that starved loop()/USB into a watchdog reset. The puck then
+		// re-enumerated on every disconnect, so Steam saw a "new controller" and popped its setup wizard every
+		// time. One slot per cycle keeps acquire snappy (N bonds => each polled at 250/N Hz, still far faster
+		// than the old 2s cold cadence) while capping duty. A single used slot is still polled every cycle.
+		static int acqIdx = 0;
+		for (int n = 0; n < NSLOT; n++) {
+			int k = (acqIdx + n) % NSLOT;
+			if (g_slot[k].used) {
+				acqIdx = (k + 1) % NSLOT;
+				doPoll(k);
+				break;
+			}
+		}
+	} else {
+		// CONNECTED -- at least one controller is live. Poll every WARM slot per cycle (all bonded controllers
+		// at full rate -- the real puck services them all per cycle), and throttle the SILENT ones so they don't
+		// steal reply windows from the live controller(s) (the issue-#72 radio-duty concern):
+		//   - "cold": WAS connected but silent > SLOT_COLD_MS (controller powered off / out of range);
+		//   - "quiet": briefly silent (fade) -> back off to SLOT_QUIET_RETRY_MS until it recovers or goes cold;
+		//   - "phantom": NEVER replied while another controller is live (e.g. a stale bond from a cloned backup).
+		for (int k = 0; k < NSLOT; k++) {
+			if (!g_slot[k].used)
+				continue;
+			bool everReplied = g_connReplyMs[k] != 0;
+			unsigned long silentMs =
+				everReplied ? (nowMs - g_connReplyMs[k]) : 0;
+			bool cold = everReplied && silentMs > SLOT_COLD_MS;
+			bool quiet = everReplied && !cold &&
+				     silentMs > SLOT_QUIET_MS;
+			bool phantom = !everReplied;
+			unsigned long retry = (cold || phantom) ?
+						      SLOT_COLD_RETRY_MS :
+					      quiet ? SLOT_QUIET_RETRY_MS :
+						      0;
+			if (retry && nowMs - g_slotLastAttemptMs[k] < retry)
+				continue;
+			doPoll(k);
+		}
 	}
 }
 

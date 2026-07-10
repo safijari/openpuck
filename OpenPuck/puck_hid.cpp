@@ -23,6 +23,29 @@ uint8_t g_fwdNewOnly = 1;
 uint8_t g_fwdContentDedup = 1;
 SteamPuckController g_steamPuck;
 
+// millis() a power-off (0x9F) was last relayed to each slot; 0 = never. See puckNotePowerOff() / task().
+static volatile unsigned long g_powerOffMs[NSLOT] = { 0 };
+// Present a powered-off slot as DISCONNECTED to Steam for this long, to ride out the controller's post-off
+// F1 tail (measured ~<=1s of dying replies after the "off!" command) without bouncing the connection state.
+#define POWEROFF_HOLD_MS 2000u
+void puckNotePowerOff(uint8_t slot)
+{
+	if (slot >=
+	    NSLOT) { // 0xFF broadcast ("all off": host suspend, panel/test button)
+		for (int s = 0; s < NSLOT; s++)
+			if (g_slot[s].used)
+				g_powerOffMs[s] = millis();
+	} else {
+		g_powerOffMs[slot] = millis();
+	}
+}
+// True while `slot` is inside its post-power-off hold window (present it disconnected, ignore dying replies).
+static inline bool slotPoweringOff(int slot)
+{
+	return slot >= 0 && slot < NSLOT && g_powerOffMs[slot] &&
+	       (millis() - g_powerOffMs[slot] < POWEROFF_HOLD_MS);
+}
+
 // Cloned puck HID report descriptor: mouse(0x40)+keyboard(0x41)+vendor(FF00) with the 63-byte FEATURE
 // command reports on report id 1/2. Each of the 4 interfaces uses this.
 static const uint8_t PUCK_HID_DESC[] = {
@@ -207,6 +230,9 @@ static inline void hostStampAlive()
 // as a real click/keypress into the just-woken desktop. Set when task() sees the suspended->active transition.
 static unsigned long g_resumeMs = 0;
 #define POST_RESUME_MUTE_MS 1500u
+// How long to keep re-asserting the 0x79 DISCONNECT edge to Steam after a controller drops, so a single
+// lost report can't strand Steam in "connected" (see task()). Bounded to avoid forever-spamming disc.
+#define DISC_RESEND_MS 6000u
 
 // ===================== puck feature command channel =====================
 // `slot` is the interface index (interface N == bond slot N).
@@ -420,8 +446,11 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		hostStampAlive();
 		S.resp[0] = 0xB4;
 		S.resp[1] = 0x01;
+		// Report disconnected during the post-power-off hold so B4 agrees with the 0x79 disconnect (they used
+		// different windows -- 500ms here vs the 300ms conn/DOWN edge -- so right after a power-off Steam's B4
+		// probe answered "still connected" and contradicted the disconnect we just pushed).
 		S.resp[2] = (slot >= 0 && slot < NSLOT && !g_xbox &&
-			     g_slot[slot].used &&
+			     g_slot[slot].used && !slotPoweringOff(slot) &&
 			     (millis() - g_connReplyMs[slot] < 500)) ?
 				    0x02 :
 				    0x01;
@@ -919,11 +948,31 @@ void SteamPuckController::task()
 	// slot. The real puck's per-slot edge-triggered 0x79 prevents re-triggering Steam's connect-chime loop.
 	static bool usbConn[NSLOT] = { 0 };
 	static unsigned long last79[NSLOT] = { 0 }, last7B[NSLOT] = { 0 },
-			     connEdgeMs[NSLOT] = { 0 }, last43[NSLOT] = { 0 };
+			     connEdgeMs[NSLOT] = { 0 },
+			     discEdgeMs[NSLOT] = { 0 }, last43[NSLOT] = { 0 },
+			     poHandled[NSLOT] = { 0 };
 	for (int s = 0; s < NSLOT; s++) {
 		if (!g_slot[s].used || !hid[s].ready())
 			continue;
-		bool conn = (millis() - g_connReplyMs[s] < 300);
+		// Power-off just relayed to this slot -> force ONE clean disconnect to Steam now, regardless of the
+		// prior edge state. The controller's noisy shutdown (it keeps streaming F1 for ~1s after "off!") can
+		// leave usbConn desynced from what Steam shows, so the ordinary conn!=usbConn edge sometimes never
+		// fired -> Steam kept the controller in its list (the "doesn't get removed" case). Anchor discEdgeMs
+		// too so the bounded resend covers a dropped packet.
+		if (g_powerOffMs[s] && g_powerOffMs[s] != poHandled[s]) {
+			poHandled[s] = g_powerOffMs[s];
+			uint8_t st = 0x01;
+			hapLogAdd(0xFB, 0x79, &st, 1); // ->host push (capture)
+			usbTxHid(&hid[s], 0x79, &st, 1);
+			usbConn[s] = false;
+			discEdgeMs[s] = millis();
+			last79[s] = millis();
+		}
+		// Hold the slot DISCONNECTED through the controller's post-power-off F1 tail (see slotPoweringOff);
+		// otherwise a stray dying reply bounces conn true -> a phantom 0x79=02 that Steam reads as a reconnect
+		// and answers by re-running its connect config (the "reappears for a split second").
+		bool conn = !slotPoweringOff(s) &&
+			    (millis() - g_connReplyMs[s] < 300);
 		// 0x79 connection state: on edge, then repeated every 750ms ONLY until Steam reacts (its first OUTPUT/
 		// settings write after the edge -- g_steamAliveMs). The real puck sends 0x79 ONCE, edge-triggered; an
 		// unconditional forever-resend re-triggers Steam's connect handling (connect chime) every 750ms before
@@ -932,10 +981,22 @@ void SteamPuckController::task()
 		bool steamAcked = g_steamAliveMs &&
 				  (int32_t)(g_steamAliveMs - connEdgeMs[s]) >=
 					  0;
+		// The DISCONNECT edge (0x79=01) also needs resending: it used to be sent exactly ONCE, so a single
+		// dropped report left Steam believing the controller was still connected indefinitely -- observed as
+		// "WebUSB panel shows the slot DOWN (g_connReplyMs stale) while Steam still lists it connected, and the
+		// controller light is solid (it re-adopted the beacon) but no input flows." Resend disc every 750ms but
+		// BOUNDED to DISC_RESEND_MS so a lost packet converges without the forever-spam the "real puck sends
+		// 0x79 once" note warns against.
+		bool discResend = !conn &&
+				  (millis() - discEdgeMs[s] < DISC_RESEND_MS);
 		if (conn != usbConn[s] ||
-		    (conn && !steamAcked && millis() - last79[s] >= 750)) {
+		    (conn && !steamAcked && millis() - last79[s] >= 750) ||
+		    (discResend && millis() - last79[s] >= 750)) {
 			if (conn && !usbConn[s])
 				connEdgeMs[s] = millis();
+			if (!conn &&
+			    usbConn[s]) // connect->disc edge: anchor the resend window
+				discEdgeMs[s] = millis();
 			uint8_t st = conn ? 0x02 : 0x01;
 			hapLogAdd(0xFB, 0x79, &st, 1); // ->host push (capture)
 			usbTxHid(&hid[s], 0x79, &st, 1);
