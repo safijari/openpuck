@@ -207,6 +207,9 @@ static inline void hostStampAlive()
 // as a real click/keypress into the just-woken desktop. Set when task() sees the suspended->active transition.
 static unsigned long g_resumeMs = 0;
 #define POST_RESUME_MUTE_MS 1500u
+// How long to keep re-asserting the 0x79 DISCONNECT edge to Steam after a controller drops, so a single
+// lost report can't strand Steam in "connected" (see task()). Bounded to avoid forever-spamming disc.
+#define DISC_RESEND_MS 6000u
 
 // ===================== puck feature command channel =====================
 // `slot` is the interface index (interface N == bond slot N).
@@ -919,7 +922,8 @@ void SteamPuckController::task()
 	// slot. The real puck's per-slot edge-triggered 0x79 prevents re-triggering Steam's connect-chime loop.
 	static bool usbConn[NSLOT] = { 0 };
 	static unsigned long last79[NSLOT] = { 0 }, last7B[NSLOT] = { 0 },
-			     connEdgeMs[NSLOT] = { 0 }, last43[NSLOT] = { 0 };
+			     connEdgeMs[NSLOT] = { 0 }, discEdgeMs[NSLOT] = { 0 },
+			     last43[NSLOT] = { 0 };
 	for (int s = 0; s < NSLOT; s++) {
 		if (!g_slot[s].used || !hid[s].ready())
 			continue;
@@ -932,10 +936,21 @@ void SteamPuckController::task()
 		bool steamAcked = g_steamAliveMs &&
 				  (int32_t)(g_steamAliveMs - connEdgeMs[s]) >=
 					  0;
+		// The DISCONNECT edge (0x79=01) also needs resending: it used to be sent exactly ONCE, so a single
+		// dropped report left Steam believing the controller was still connected indefinitely -- observed as
+		// "WebUSB panel shows the slot DOWN (g_connReplyMs stale) while Steam still lists it connected, and the
+		// controller light is solid (it re-adopted the beacon) but no input flows." Resend disc every 750ms but
+		// BOUNDED to DISC_RESEND_MS so a lost packet converges without the forever-spam the "real puck sends
+		// 0x79 once" note warns against.
+		bool discResend =
+			!conn && (millis() - discEdgeMs[s] < DISC_RESEND_MS);
 		if (conn != usbConn[s] ||
-		    (conn && !steamAcked && millis() - last79[s] >= 750)) {
+		    (conn && !steamAcked && millis() - last79[s] >= 750) ||
+		    (discResend && millis() - last79[s] >= 750)) {
 			if (conn && !usbConn[s])
 				connEdgeMs[s] = millis();
+			if (!conn && usbConn[s]) // connect->disc edge: anchor the resend window
+				discEdgeMs[s] = millis();
 			uint8_t st = conn ? 0x02 : 0x01;
 			hapLogAdd(0xFB, 0x79, &st, 1); // ->host push (capture)
 			usbTxHid(&hid[s], 0x79, &st, 1);

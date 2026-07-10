@@ -895,6 +895,17 @@ static void rfConnStep()
 	//     every cycle was doubling/tripling Polls/s, flooding noRx, and stealing reply windows from the live
 	//     controller. A never-replied slot with nothing else connected still polls full-rate, so the FIRST
 	//     controller connects instantly; a phantom only backs off once a real link exists to protect.
+	//
+	// CRITICAL: every throttle (cold/quiet/phantom) is gated on linkUp -- i.e. it applies ONLY while another
+	// controller is currently connected and its reply windows must be protected (the issue-#72 radio-duty
+	// concern). With NOTHING linked we are in (re)acquire mode, so EVERY used slot polls at full rate, exactly
+	// like a first-boot connect. This fixes the solid-light reconnect wedge: after a controller is powered off
+	// for > SLOT_COLD_MS its slot went "cold" and dropped to a 2s poll cadence; on power-on the controller heard
+	// the E1 beacon and re-adopted the session (solid light) but then timed out waiting to be polled and dropped
+	// again before the next 2s cold poll ever landed -- a permanent livelock that only a puck replug (which
+	// resets the slot to never-replied => full rate) recovered. Full-rate acquire when !linkUp cannot regress
+	// issue #72: that hang was about starving a LIVE controller under comms load, and there is no live
+	// controller (and no comms load) here to starve.
 	bool linkUp = anySlotLinkUp();
 	for (int k = 0; k < NSLOT; k++) {
 		if (!g_slot[k].used)
@@ -902,8 +913,9 @@ static void rfConnStep()
 		bool everReplied = g_connReplyMs[k] != 0;
 		unsigned long silentMs =
 			everReplied ? (nowMs - g_connReplyMs[k]) : 0;
-		bool cold = everReplied && silentMs > SLOT_COLD_MS;
-		bool quiet = everReplied && !cold && silentMs > SLOT_QUIET_MS;
+		bool cold = linkUp && everReplied && silentMs > SLOT_COLD_MS;
+		bool quiet = linkUp && everReplied && !cold &&
+			     silentMs > SLOT_QUIET_MS;
 		bool phantom = !everReplied && linkUp;
 		unsigned long retry = (cold || phantom) ? SLOT_COLD_RETRY_MS :
 				      quiet		? SLOT_QUIET_RETRY_MS :
