@@ -437,7 +437,8 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 	// QAM (3 dots) remap -> applied via codeToJc below like a back paddle (so Capture(18)/any target work).
 	bool qam = g_qamMap && (b & TB_QAM);
 	if ((b & CHORD_BACK4) == CHORD_BACK4)
-		b &= ~(uint32_t)(TB_A | TB_B | TB_X | TB_Y);
+		b &= ~(uint32_t)(TB_A | TB_B | TB_X | TB_Y | TB_DUP | TB_DDN |
+				 TB_DLF | TB_DRT);
 	uint32_t fA = g_abSwap ? JC_BTN_B : JC_BTN_A,
 		 fB = g_abSwap ? JC_BTN_A : JC_BTN_B;
 	uint32_t fX = g_abSwap ? JC_BTN_Y : JC_BTN_X,

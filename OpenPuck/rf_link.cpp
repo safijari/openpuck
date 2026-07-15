@@ -610,15 +610,22 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									 .gy,
 								&g_in[g_curSlot]
 									 .gz);
-						// Mode-switch chord (all 4 back + face): don't leak the face press to the host. g_in[g_curSlot].buttons stays
+						// Mode-switch chord (all 4 back + face/dpad): don't leak the press to the host. g_in[g_curSlot].buttons stays
 						// intact so the chord detector still fires; per-mode builders mask the same bits while back-4 held.
 						if ((bb & CHORD_BACK4) ==
-						    CHORD_BACK4)
+						    CHORD_BACK4) {
 							((uint8_t *)rep)[2] &= ~(
 								uint8_t)(TB_A |
 									 TB_B |
 									 TB_X |
 									 TB_Y);
+							((uint8_t *)rep)[3] &= ~(
+								uint8_t)((TB_DDN |
+									  TB_DRT |
+									  TB_DLF |
+									  TB_DUP) >>
+									 8);
+						}
 						// Hand the report to the active controller. STREAM modes ignore it (they emit from task() reading
 						// g_in); PUSH modes (Xbox, puck/lizard) build + send their host report here.
 						if (g_active)
@@ -687,7 +694,8 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					}
 					idx += tlen + 2;
 				}
-				// mode-switch chord (back4 + face): A=always Steam; B/X/Y=configurable (g_chordBtn[]). Debounced.
+				// mode-switch chord (back4 + face/dpad): A=always Steam; B/X/Y=configurable (g_chordBtn[]);
+				// dpad left=PS3, up=DS4 game, right=PS5 game, down=Switch HORI. Debounced.
 				{
 					// Per-slot debounce: the chord input is per-slot (g_in[g_curSlot]), so the debounce counter
 					// must be too. The shared-static form worked with 1 controller because slot 0 polled
@@ -714,6 +722,18 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						else if (g_in[g_curSlot].buttons &
 							 TB_Y)
 							want = g_chordBtn[2];
+						else if (g_in[g_curSlot].buttons &
+							 TB_DLF)
+							want = MODE_PS3;
+						else if (g_in[g_curSlot].buttons &
+							 TB_DUP)
+							want = MODE_DS4_GAME;
+						else if (g_in[g_curSlot].buttons &
+							 TB_DRT)
+							want = MODE_PS5_GAME;
+						else if (g_in[g_curSlot].buttons &
+							 TB_DDN)
+							want = MODE_SW_HORI;
 					}
 					if (want != 0xFF &&
 					    want == chWant[g_curSlot]) {
