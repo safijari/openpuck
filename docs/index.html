@@ -169,6 +169,10 @@
         <button id="persistMode">off</button>
         <span class="note" style="flex:1">Off (default): every restart / fresh reconnect boots into Steam mode. On: remembers the last mode you selected.</span>
       </div>
+      <div class="row"><label>Mode color LED</label>
+        <button id="modeLed">on</button>
+        <span class="note" style="flex:1">On boards with an RGB user LED (e.g. XIAO nRF52840) the LED shows a steady color for the current mode: white = Steam/Lizard, green = Xbox, red = Switch, blue = PlayStation. No effect on boards without one (Pro Micro / Feather).</span>
+      </div>
     </div>
 
     <div class="card">
@@ -1072,6 +1076,8 @@ function applyBlob(p){
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
   // land-all-0x87 experiment toggle (blob v14/v17, firmware p[181] -> JS p[179])
   { const la=(p.length>179?p[179]:0); $("#landAll87").textContent = la?"on":"off"; $("#landAll87").classList.toggle("active",!!la); }
+  // board RGB mode-color LED toggle (blob v21, firmware p[195] -> JS p[193]; default on for older firmware)
+  { const ml=(p.length>193?p[193]:1); $("#modeLed").textContent = ml?"on":"off"; $("#modeLed").classList.toggle("active",!!ml); }
   // per-type button config (blob v10/v17): 4 types x 9 bytes. readBlob() strips the 2-byte [0xA5][len] header, so
   // the firmware's buffer index 75 lands at JS index 73 here.
   if(p.length>=73+TYPE_DEFS.length*9){
@@ -2207,6 +2213,7 @@ $("#wipeBoard").onclick=async()=>{
   log("FULL BOARD WIPE sent — the board is erasing firmware + all data (~15–20 s), then reboots as a blank UF2 drive. Flash OpenPuck (.uf2) to restore it.");
 };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
+$("#modeLed").onclick=()=>{ const on=$("#modeLed").classList.contains("active"); setField(30, on?0:1); };
 $("#landAll87").onclick=async()=>{ const on=$("#landAll87").classList.contains("active"); await setField(29, on?0:1); log("land-all-0x87 "+(on?"disabled":"enabled")); };
 // Connection tuning: post-connect haptic block on (field 27) + seconds (field 28). (poll RX window is fixed.)
 for(const id of ["mDiv","mFric"]){

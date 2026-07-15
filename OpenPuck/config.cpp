@@ -51,6 +51,9 @@ uint8_t g_padHaptics = 1;
 uint8_t g_rumble = 1;
 uint8_t g_ledBright = 0;
 
+// board RGB mode-color LED enable (status_led.cpp); default on
+uint8_t g_modeLed = 1;
+
 void applyActiveType()
 {
 	g_etype = etypeForMode(g_usbMode);
@@ -86,8 +89,6 @@ void applyActiveType()
 uint32_t g_pollUs = POLL_US_DEFAULT;
 
 #define CFG_FILE "/cfg.bin"
-// Struct layout/semantics changed (TypeCfg gained rumble byte); bump so old flash format is discarded ->
-// clean defaults once.
 #define CFG_MAGIC 0xCF
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
@@ -103,6 +104,8 @@ struct Cfg {
 	uint8_t chordDpad[4];
 	// per-type trackpad->stick mapping: [et][0] = left pad, [et][1] = right pad (PS_*)
 	uint8_t padStick[ET_COUNT][2];
+	// Appending keeps cfg.bin files from older firmware readable.
+	uint8_t modeLed;
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 // Shortest cfg.bin we still accept: the layout as of CFG_MAGIC 0xCF, i.e. everything before the appended tail.
@@ -128,7 +131,8 @@ void saveCfg()
 		  {},
 		  { g_chordDpad[0], g_chordDpad[1], g_chordDpad[2],
 		    g_chordDpad[3] },
-		  {} };
+		  {},
+		  g_modeLed };
 	for (int i = 0; i < ET_COUNT; i++) {
 		c.type[i] = g_type[i];
 		c.padStick[i][0] = g_padStickCfg[i][0];
@@ -210,6 +214,9 @@ void loadCfg()
 			// verbatim-0x87-relay experiment toggle (0/1; default off)
 			if (c.landAll87 <= 1)
 				g_landAll87 = c.landAll87;
+			// board RGB mode-color LED enable (0/1; default on)
+			if (c.modeLed <= 1)
+				g_modeLed = c.modeLed;
 			// The poll RX window is now FIXED (g_rxWin is const) -- any persisted rxWin10 is ignored.
 		}
 		f.close();
