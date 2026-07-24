@@ -11,7 +11,9 @@ CLANG_FORMAT ?= $(shell command -v clang-format-18 \
 	|| command -v clang-format)
 
 # All hand-written C/C++ sources. Generated headers (git_version.h) are
-# gitignored and excluded here so formatting never touches them.
+# gitignored and excluded here so formatting never touches them. The vendored
+# Arduino platform under arduino/ is deliberately excluded: those variant files
+# are LGPL-2.1 (adapted from the Seeed core) and keep their upstream style.
 FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 	\( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.ino' \) \
 	-not -name 'git_version.h')
@@ -52,8 +54,15 @@ _PATH_FLAGS = $(if $(BUILD_PATH),--clean --build-path $(BUILD_PATH) --output-dir
 # the bottom swallows it so make doesn't try to build the port path as a target.
 FLASH_PORT := $(filter-out format format-check check build build-raytac \
 	package-raytac flash-raytac deploy-raytac provision-raytac-softdevice \
-	build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy,$(MAKECMDGOALS))
+	build-recovery reversepuck reversepuck-flash reversepuck-deploy flash \
+	deploy build-xiao build-xiao-recovery flash-xiao deploy-xiao,$(MAKECMDGOALS))
 UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
+
+# Seeed XIAO nRF52840: same OpenPuck sketch + USB flags, built for the vendored
+# in-repo platform (arduino/hardware/openpuck/nrf52, app linked @ 0x27000). The
+# xiao goals below export ARDUINO_DIRECTORIES_USER so arduino-cli finds that
+# platform; it flows into the recursive $(MAKE) build and the upload.
+FQBN_XIAO ?= openpuck:nrf52:xiao_nrf52840
 
 # ReversePuck (controller dongle, 28DE:1302) build flags. It has ONE HID interface (core default 2 is fine),
 # so it doesn't need CFG_TUD_HID; it DOES need the deeper vendor TX FIFO to hold the 0xAC paired-pucks list
@@ -63,7 +72,13 @@ RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 
 .PHONY: format format-check check build build-raytac package-raytac \
 	flash-raytac deploy-raytac provision-raytac-softdevice build-recovery \
-	reversepuck reversepuck-flash reversepuck-deploy flash deploy
+	reversepuck reversepuck-flash reversepuck-deploy flash deploy build-xiao \
+	build-xiao-recovery flash-xiao deploy-xiao
+
+# The vendored XIAO platform lives in-repo; point arduino-cli's user directory at
+# it for the xiao goals only (exported so it reaches the recursive $(MAKE) build
+# and the arduino-cli upload).
+build-xiao build-xiao-recovery flash-xiao deploy-xiao: export ARDUINO_DIRECTORIES_USER = $(CURDIR)/arduino
 
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
 ## EXTRA_FLAGS / FQBN as make variables if needed.
@@ -150,6 +165,26 @@ deploy:
 	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make deploy <port>   e.g. make deploy /dev/cu.usbmodem1101"; exit 1; }
 	$(MAKE) build BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR)
 	$(UPLOAD)
+
+## Compile OpenPuck for the Seeed XIAO nRF52840 (vendored platform, app @ 0x27000).
+## Same overrides as `build`; FQBN_XIAO selects the board.
+build-xiao:
+	$(MAKE) build FQBN=$(FQBN_XIAO) BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR) EXTRA_FLAGS="$(EXTRA_FLAGS)"
+
+## One-time factory-reset XIAO image (wipes persistent storage once on first boot). See §6 of the build doc.
+build-xiao-recovery:
+	$(MAKE) build FQBN=$(FQBN_XIAO) BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR) EXTRA_FLAGS="$(EXTRA_FLAGS) -DOPK_FACTORY_RESET=1"
+
+## Upload the most recent XIAO build. Usage: make flash-xiao <port>   (double-tap RST for DFU first).
+flash-xiao:
+	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make flash-xiao <port>   e.g. make flash-xiao COM7   (list ports: arduino-cli board list)"; exit 1; }
+	arduino-cli upload -b $(FQBN_XIAO) -p "$(FLASH_PORT)" OpenPuck
+
+## Build then upload the XIAO in one step. Usage: make deploy-xiao <port>
+deploy-xiao:
+	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make deploy-xiao <port>   e.g. make deploy-xiao COM7"; exit 1; }
+	$(MAKE) build-xiao BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR)
+	arduino-cli upload -b $(FQBN_XIAO) -p "$(FLASH_PORT)" OpenPuck
 
 # Swallow the positional <port> arg so make doesn't error trying to build it as a target. Scoped to things
 # that look like a serial port (so a real typo like `make buld` still errors instead of silently no-op'ing).

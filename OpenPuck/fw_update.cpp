@@ -6,11 +6,21 @@
 #include <Arduino.h>
 #include <string.h>
 
-// nRF52840 flash map (Adafruit UF2 bootloader layout): MBR 0x0-0x1000, SoftDevice to 0x26000, app region
-// 0x26000-0xED000, internal LittleFS 0xED000-0xF4000, bootloader 0xF4000+, its settings page at 0xFF000.
-// We manage the TOP of the app region: the meta/commit page at 0xEC000 and the staged image right below it,
-// growing downward. Nothing outside [APP_BASE, 0xED000) is ever written except FWUP_BL_SETTINGS (see apply).
+// nRF52840 flash map (Adafruit UF2 bootloader layout): MBR 0x0-0x1000, SoftDevice to FWUP_APP_BASE, app
+// region FWUP_APP_BASE-0xED000, internal LittleFS 0xED000-0xF4000, bootloader 0xF4000+, its settings page at
+// 0xFF000. We manage the TOP of the app region: the meta/commit page at 0xEC000 and the staged image right
+// below it, growing downward. Nothing outside [FWUP_APP_BASE, 0xED000) is ever written except FWUP_BL_SETTINGS.
+//
+// FWUP_APP_BASE = where the board's UF2 bootloader hands the app control: 0x27000 on the XIAO (Seeed
+// bootloader, SoftDevice S140 v7.3.0) vs 0x26000 on Feather/SuperMini (S140 v6.1.1). This is a compile-time
+// fact -- each board's image is linked at its own origin -- and CANNOT be read at runtime: with the
+// SoftDevice present but never started, the MBR forwards interrupts via a RAM word and SCB->VTOR stays 0.
+// vectorsPlausible() keys off this base, so a build for one board rejects a staged image linked for the other.
+#if defined(ARDUINO_XIAO_NRF52840)
+#define FWUP_APP_BASE 0x27000UL
+#else
 #define FWUP_APP_BASE 0x26000UL
+#endif
 #define FWUP_APP_END 0xED000UL
 #define FWUP_META 0xEC000UL
 // internal LittleFS (cfg.bin + bonds.bin) sits between the app region and the bootloader; wiped whole by the
@@ -19,8 +29,9 @@
 #define FWUP_FS_END 0xF4000UL
 #define FWUP_BL_SETTINGS 0xFF000UL
 #define FWUP_PAGE 4096UL
-// Image cap. Also what makes the apply copy safe from self-overlap: dst ends at most at 0x26000+0x60000 =
-// 0x86000, while the staged source starts at (0xEC000-size)&~0xFFF >= 0x8C000 -- disjoint by >=24 KiB.
+// Image cap. Also what makes the apply copy safe from self-overlap: dst ends at most at
+// FWUP_APP_BASE+0x60000 (0x86000 on v6, 0x87000 on the XIAO's v7), while the staged source starts at
+// (0xEC000-size)&~0xFFF >= 0x8C000 -- disjoint by >=24 KiB (>=20 KiB on the XIAO).
 #define FWUP_MAX_IMG 0x60000UL
 
 // Capability tag, searched for BY THE PANEL inside any .uf2 it is about to flash: an image without this
