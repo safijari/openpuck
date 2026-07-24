@@ -531,6 +531,11 @@ static void switchProBuild(uint8_t slot, uint8_t out[63])
 	int16_t groll = gscale((int16_t)g_in[bond].gy);
 	int16_t gpitch = gscale((int16_t)(-(int16_t)g_in[bond].gx));
 	int16_t gyaw = gscale((int16_t)g_in[bond].gz);
+
+	// The physical yaw of the SC is making the roll (or yaw if facing to wall like on switch) move to fast in switch mode.
+	// Reducing it to 80% sensitivity. Using int32 to fix a possible overflow during the multiplication.
+	groll = (int16_t)(((int32_t)groll * 4) / 5);
+	
 	for (int k = 0; k < 3; k++) {
 		int o = 12 + k * 12;
 		out[o + 0] = aX & 0xFF;
