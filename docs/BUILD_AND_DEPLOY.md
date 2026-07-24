@@ -152,6 +152,37 @@ build; use the physical Open DFU workflow above instead. The panel's factory
 erase (§6, filesystem-only) and the serial `ERASE-ALL` console command work
 normally.
 
+### 4b. Build for the Seeed XIAO nRF52840
+
+The Seeed XIAO nRF52840 (and XIAO nRF52840 **Sense**) is supported through an in-repo Arduino platform
+(`arduino/hardware/openpuck/nrf52/`) that **references the same Adafruit nRF52 core** used above — there is no
+separate/old Seeeduino core and no TinyUSB library swapping. The only thing that differs from a Pro
+Micro/Feather build is the application link origin: the XIAO's Seeed UF2 bootloader ships SoftDevice S140
+v7.3.0 and hands the app control at `0x27000`, where the Pro Micro/Feather boards (S140 v6.1.1) use `0x26000`.
+OpenPuck never starts the SoftDevice, but the bootloader jumps to that fixed address, so the image must be
+linked there.
+
+This needs **arduino-cli ≥ 1.0.4** (for the core-reference `runtime.use_core_platform_path…` mechanism the
+vendored platform relies on). The `make` targets point arduino-cli at the vendored platform automatically:
+
+```sh
+make build-xiao            # compile for openpuck:nrf52:xiao_nrf52840
+make flash-xiao COM7       # upload the most recent XIAO build (put the board in DFU first — below)
+make deploy-xiao COM7      # build + flash in one step
+make build-xiao-recovery   # one-time factory-reset image (see §6)
+```
+
+Use the port for your OS (macOS `/dev/cu.usbmodem*`, Linux `/dev/ttyACM0`, Windows `COM7`).
+
+**Drag-and-drop / DFU:** double-tap **RST** to mount the bootloader drive — labelled **`XIAO-SENSE`** on the
+Sense (`XIAO-BOOT` on some units) — then copy the `.uf2` onto it. The board flashes and reboots automatically.
+
+> ⚠️ **Never cross-flash.** A Pro Micro/Feather image (linked at `0x26000`) will not run on the XIAO, and a
+> XIAO image (`0x27000`) will not run on a Pro Micro/Feather — the board comes up app-less and re-mounts its
+> UF2 bootloader. Double-tap RST and flash the correct image to recover; it is never a hard brick. CI asserts
+> each release image's link address, and the in-browser WebUSB updater refuses a `.uf2` linked for the other
+> board.
+
 ## 5. Upload the firmware
 
 The quickest path is `make`. The serial port is a **required argument** (find it with `arduino-cli board list`):

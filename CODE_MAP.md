@@ -4,6 +4,12 @@ nRF52840 / Adafruit Arduino core / TinyUSB. The device impersonates a Valve Stea
 Controller 2 "puck" over USB and talks to SC2 controllers over a bare-metal nRF52
 RADIO (ESB-style, **no SoftDevice**) protocol. Built with `-DCFG_TUD_HID=6`.
 
+Boards: Pro Micro/SuperMini and Feather (S140 v6, app @ `0x26000`) build with the
+stock `adafruit:nrf52:feather52840` FQBN; the Seeed XIAO nRF52840 (S140 v7, app @
+`0x27000`) builds via a vendored in-repo platform (`arduino/hardware/openpuck/nrf52/`,
+`make build-xiao`) that references the same Adafruit core and only changes the linker
+origin. Per-board behavior is gated on `ARDUINO_XIAO_NRF52840` (LED pins, updater base).
+
 > This map describes what the **code actually does**. Source comments in this repo
 > are known to be misleading and were ignored.
 
@@ -452,6 +458,10 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
   dead-last), verifies word-for-word, rewrites the bootloader settings page to the
   drag-and-drop state (`BANK_VALID_APP`, crc-check off), erases meta, resets. Any
   interruption leaves the board app-less → UF2 bootloader, never a half image.
+- `FWUP_APP_BASE` is compile-time per board (`0x26000` S140 v6 Feather/SuperMini, `0x27000`
+  S140 v7 XIAO), so `vectorsPlausible()` rejects a staged image linked for the other board.
+  `fwupAppBase()` exposes it; the WebUSB blob's v19 board byte (`p[183]`) lets the panel offer
+  only the connected board's release asset and refuse a cross-board `.uf2`.
 
 ### `serial_console.cpp` / `serial_console.h` — CDC debug CLI (loop task)
 - `serialConsolePoll()` drains available CDC bytes into `static char line[24]` (bounded),
@@ -466,8 +476,13 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
 ## 13. Status & fault
 
 ### `status_led.cpp` / `status_led.h` (loop task)
-Drives two GPIO pins (LED_BUILTIN + pin 24) together. `ledWakePulse()` lights them and
-stamps `g_pulseMs`; `ledTask()` clears after `PULSE_MS=500`. No buffers/delays/radio.
+Plain boards (Pro Micro/Feather): drives two GPIO pins (LED_BUILTIN + pin 24) together.
+`ledWakePulse()` lights them and stamps `g_pulseMs`; `ledTask()` clears after `PULSE_MS=500`.
+On boards whose variant defines LED_RED/GREEN/BLUE (the Seeed XIAO → `OPK_RGB_LED`), the LED
+instead shows a steady color for the current USB mode (white=Steam, green=Xbox, red=Switch,
+blue=PS; `g_modeLed` toggles it via `ledShowMode()`) with the wake pulse riding the same
+channels. A `#if defined(ARDUINO_XIAO_NRF52840)` gate fixes the wake-LED pins/polarity for a
+plain `-DOPK_RGB_LED=0` XIAO build. No buffers/delays/radio.
 
 ### `fault_diag.cpp` / `fault_diag.h`
 - **`HardFault_Handler()` (ISR / exception context)** — a **strong override** of the
