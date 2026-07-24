@@ -131,25 +131,64 @@ jobs:
       - name: Generate UF2 (recovery)
         run: ./gen_uf2.sh build/openpuck-recovery/OpenPuck.ino.hex build/openpuck-recovery/OpenPuck.ino.uf2
 
+      - name: Compile OpenPuck (Seeed XIAO nRF52840)
+        run: |
+          mkdir -p build/openpuck-xiao build/cache/openpuck-xiao
+          make build-xiao BUILD_PATH=build/cache/openpuck-xiao OUTPUT_DIR=build/openpuck-xiao
+
+      - name: Generate UF2 (XIAO standard)
+        run: ./gen_uf2.sh build/openpuck-xiao/OpenPuck.ino.hex build/openpuck-xiao/OpenPuck.ino.uf2
+
+      - name: Compile XIAO recovery build
+        run: |
+          mkdir -p build/openpuck-xiao-recovery build/cache/openpuck-xiao-recovery
+          make build-xiao-recovery BUILD_PATH=build/cache/openpuck-xiao-recovery OUTPUT_DIR=build/openpuck-xiao-recovery
+
+      - name: Generate UF2 (XIAO recovery)
+        run: ./gen_uf2.sh build/openpuck-xiao-recovery/OpenPuck.ino.hex build/openpuck-xiao-recovery/OpenPuck.ino.uf2
+
+      - name: Assert UF2 link addresses (Feather 0x26000, XIAO 0x27000)
+        # A cross-linked image bricks the target board until UF2-DFU recovery, so
+        # never publish a release asset linked at the wrong base.
+        run: |
+          python3 - <<'PY'
+          import struct, sys
+          checks = [("build/openpuck/OpenPuck.ino.uf2", 0x26000),
+                    ("build/openpuck-recovery/OpenPuck.ino.uf2", 0x26000),
+                    ("build/openpuck-xiao/OpenPuck.ino.uf2", 0x27000),
+                    ("build/openpuck-xiao-recovery/OpenPuck.ino.uf2", 0x27000)]
+          bad = []
+          for path, want in checks:
+              got = struct.unpack_from('<I', open(path, 'rb').read(32), 12)[0]
+              print("%s: 0x%X (want 0x%X)" % (path, got, want))
+              if got != want:
+                  bad.append("%s is 0x%X" % (path, got))
+          if bad:
+              sys.exit("link-address mismatch: " + "; ".join(bad))
+          PY
+
       - name: Collect artifacts
         env:
           VERSION: ${{ steps.release_version.outputs.version }}
         run: |
           mkdir -p release_assets
 
-          find build/openpuck build/openpuck-recovery \
+          find build/openpuck build/openpuck-recovery build/openpuck-xiao build/openpuck-xiao-recovery \
             -maxdepth 1 -type f \
             \( -name '*.uf2' -o -name '*.hex' \) \
             -print | while read -r f; do
             # Keep only the extension; the arduino base name (OpenPuck.ino.*)
-            # is redundant once we prefix with OpenPuck-<version>-<flavor>.
+            # is redundant once we prefix with OpenPuck-<version>-<flavor>. The
+            # flavor encodes the board: plain = Pro Micro/Feather (0x26000),
+            # xiao-* = Seeed XIAO (0x27000). The panel picks per board.
             ext="${f##*.}"
             dir="$(basename "$(dirname "$f")")"
-            if [ "$dir" = "openpuck-recovery" ]; then
-              flavor="factory-reset"
-            else
-              flavor="standard"
-            fi
+            case "$dir" in
+              openpuck-recovery)      flavor="factory-reset" ;;
+              openpuck-xiao)          flavor="xiao-standard" ;;
+              openpuck-xiao-recovery) flavor="xiao-factory-reset" ;;
+              *)                      flavor="standard" ;;
+            esac
             cp "$f" "release_assets/OpenPuck-${VERSION}-${flavor}.${ext}"
           done
 
@@ -178,11 +217,18 @@ jobs:
 
             ### Files included:
 
-            - `OpenPuck-*-standard.*` — puck firmware (standard)
-            - `OpenPuck-*-factory-reset.*` — puck firmware (factory reset)
+            - `OpenPuck-*-standard.*` — puck firmware, Pro Micro / Feather nRF52840 (S140 v6, app @ 0x26000)
+            - `OpenPuck-*-factory-reset.*` — same, one-time factory-reset build
+            - `OpenPuck-*-xiao-standard.*` — puck firmware, **Seeed XIAO nRF52840** (S140 v7, app @ 0x27000)
+            - `OpenPuck-*-xiao-factory-reset.*` — same, one-time factory-reset build
             - `ReversePuckFirmware-*.*` — reverse-puck firmware (controller emulator)
             - `.uf2` files for drag-and-drop flashing (BOOT/UF2 drive)
             - `.hex` files for direct flashing workflows
+
+            ⚠️ **Match the image to your board.** The `-xiao-` images are only for the Seeed XIAO nRF52840; the
+            plain images are only for Pro Micro / Feather boards. Flashing the wrong one leaves the board
+            app-less until you re-enter UF2-DFU (double-tap RST) and flash the correct image — always
+            recoverable, never a hard brick.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -215,16 +261,19 @@ jobs:
               > "$MIRROR/README.md"
           fi
           cp release_assets/OpenPuck-"${VERSION}"-*.uf2 "$MIRROR"/
-          # manifest.json: name -> {panelUpdate}. panelUpdate = the image embeds the FWUP_TAG capability
-          # string (fw_update.cpp), i.e. a puck running it can be updated FROM the panel. The panel badges
-          # releases whose images can't ("no panel updates") before the user flashes one.
+          # manifest.json: name -> {panelUpdate, board}. panelUpdate = the image embeds the FWUP_TAG
+          # capability string (fw_update.cpp), i.e. a puck running it can be updated FROM the panel. board =
+          # which hardware the image is linked for ("xiao" = 0x27000, else "supermini"/Feather = 0x26000); the
+          # panel offers only the connected board's image. Assets with no board key predate XIAO and are
+          # supermini/Feather.
           ( cd "$MIRROR" && python3 - <<'PY'
           import json, os, glob
           m = {}
           if os.path.exists("manifest.json"):
               m = json.load(open("manifest.json"))
           for f in sorted(glob.glob("OpenPuck-*.uf2")):
-              m[f] = {"panelUpdate": b"OPK-FWUP-v1" in open(f, "rb").read()}
+              m[f] = {"panelUpdate": b"OPK-FWUP-v1" in open(f, "rb").read(),
+                      "board": "xiao" if "-xiao-" in f else "supermini"}
           json.dump(m, open("manifest.json", "w"), indent=1, sort_keys=True)
           PY
           )
