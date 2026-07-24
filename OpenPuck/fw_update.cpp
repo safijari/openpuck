@@ -15,7 +15,9 @@
 // bootloader, SoftDevice S140 v7.3.0) vs 0x26000 on Feather/SuperMini (S140 v6.1.1). This is a compile-time
 // fact -- each board's image is linked at its own origin -- and CANNOT be read at runtime: with the
 // SoftDevice present but never started, the MBR forwards interrupts via a RAM word and SCB->VTOR stays 0.
-// vectorsPlausible() keys off this base, so a build for one board rejects a staged image linked for the other.
+// vectorsPlausible() uses this base only as a lower bound on the staged reset vector -- it catches a
+// lower-linked image on a higher-based board (a Feather image on the XIAO), not the reverse; the panel's
+// per-board .uf2 check (blob board byte) is the actual cross-board gate.
 #if defined(ARDUINO_XIAO_NRF52840)
 #define FWUP_APP_BASE 0x27000UL
 #else

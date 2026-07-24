@@ -63,6 +63,7 @@ UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 # xiao goals below export ARDUINO_DIRECTORIES_USER so arduino-cli finds that
 # platform; it flows into the recursive $(MAKE) build and the upload.
 FQBN_XIAO ?= openpuck:nrf52:xiao_nrf52840
+XIAO_UPLOAD = arduino-cli upload -b $(FQBN_XIAO) -p "$(FLASH_PORT)" OpenPuck
 
 # ReversePuck (controller dongle, 28DE:1302) build flags. It has ONE HID interface (core default 2 is fine),
 # so it doesn't need CFG_TUD_HID; it DOES need the deeper vendor TX FIFO to hold the 0xAC paired-pucks list
@@ -178,13 +179,13 @@ build-xiao-recovery:
 ## Upload the most recent XIAO build. Usage: make flash-xiao <port>   (double-tap RST for DFU first).
 flash-xiao:
 	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make flash-xiao <port>   e.g. make flash-xiao COM7   (list ports: arduino-cli board list)"; exit 1; }
-	arduino-cli upload -b $(FQBN_XIAO) -p "$(FLASH_PORT)" OpenPuck
+	$(XIAO_UPLOAD)
 
 ## Build then upload the XIAO in one step. Usage: make deploy-xiao <port>
 deploy-xiao:
 	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make deploy-xiao <port>   e.g. make deploy-xiao COM7"; exit 1; }
 	$(MAKE) build-xiao BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR)
-	arduino-cli upload -b $(FQBN_XIAO) -p "$(FLASH_PORT)" OpenPuck
+	$(XIAO_UPLOAD)
 
 # Swallow the positional <port> arg so make doesn't error trying to build it as a target. Scoped to things
 # that look like a serial port (so a real typo like `make buld` still errors instead of silently no-op'ing).
