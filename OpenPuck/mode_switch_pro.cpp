@@ -535,7 +535,11 @@ static void switchProBuild(uint8_t slot, uint8_t out[63])
 	// The physical yaw of the SC is making the roll (or yaw if facing to wall like on switch) move to fast in switch mode.
 	// Reducing it to 80% sensitivity. Using int32 to fix a possible overflow during the multiplication.
 	groll = (int16_t)(((int32_t)groll * 4) / 5);
-	
+
+	// Other sensors were also a little off. Reducing to 90% sensitivity matches Switch Pro Controller and Steam mode.
+	gpitch = (int16_t)(((int32_t)gpitch * 9) / 10);
+	gyaw = (int16_t)(((int32_t)gyaw * 9) / 10);
+
 	for (int k = 0; k < 3; k++) {
 		int o = 12 + k * 12;
 		out[o + 0] = aX & 0xFF;
