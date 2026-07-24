@@ -51,6 +51,13 @@ void fwupAbort(
 uint32_t fwupNextOff(
 	void); // next expected chunk offset (returned in every ack for panel resync)
 
+// This board's app-region base: 0x26000 (S140 v6, Feather/SuperMini) or 0x27000
+// (S140 v7, XIAO). A staged image whose reset vector falls outside [base, app end)
+// is refused as FWUP_ERR_VECTOR, so an image linked for the other board can't be
+// applied. The panel reads this (blob board byte) to offer per-board release
+// assets and reject a cross-board .uf2 before it ever streams.
+uint32_t fwupAppBase(void);
+
 // Apply a committed staged update. Call FIRST in setup(): if a valid meta page is present this never returns
 // (copies staged->app from RAM and resets). Invalid/stale meta is erased and ignored.
 void fwupApplyIfArmed(void);

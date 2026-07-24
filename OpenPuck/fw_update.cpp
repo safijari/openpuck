@@ -50,6 +50,11 @@ struct FwupMeta {
 };
 static_assert(sizeof(FwupMeta) == 20, "FwupMeta layout");
 
+uint32_t fwupAppBase(void)
+{
+	return FWUP_APP_BASE;
+}
+
 // end of the flash the RUNNING image occupies: code/rodata (__etext) plus the .data init image loaded right
 // after it (.data is the last flash-loaded section in the core's linker script). Staging must stay above it.
 extern "C" {

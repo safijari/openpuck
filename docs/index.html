@@ -1078,6 +1078,9 @@ function applyBlob(p){
   { const la=(p.length>179?p[179]:0); $("#landAll87").textContent = la?"on":"off"; $("#landAll87").classList.toggle("active",!!la); }
   // board RGB mode-color LED toggle (blob v21, firmware p[195] -> JS p[193]; default on for older firmware)
   { const ml=(p.length>193?p[193]:1); $("#modeLed").textContent = ml?"on":"off"; $("#modeLed").classList.toggle("active",!!ml); }
+  // board id (blob v22, firmware p[196] -> JS p[194]; default legacy 0x26000 for older firmware). Selects the
+  // per-board release asset and the accepted local .uf2 base, so a cross-board image can't be flashed.
+  { const bb=(p.length>194?p[194]:0x26); curAppBase=(bb===0x27)?0x27000:0x26000; }
   // per-type button config (blob v10/v17): 4 types x 9 bytes. readBlob() strips the 2-byte [0xA5][len] header, so
   // the firmware's buffer index 75 lands at JS index 73 here.
   if(p.length>=73+TYPE_DEFS.length*9){
@@ -1701,11 +1704,15 @@ $("#connectBtn").onclick=connect;
 //   - the boot-time apply orders its writes so an interruption leaves the board app-less (UF2 bootloader
 //     mass-storage recovery), never a crash-looping half image.
 const UF2_MAGIC0=0x0A324655, UF2_MAGIC1=0x9E5D5157, UF2_MAGIC_END=0x0AB16F30, UF2_FAMILY=0xADA52840;
-const APP_BASE=0x26000, FWUP_MAX_IMG=0x60000; // nRF52840 app base; staging cap (fw_update.h FWUP_MAX_IMG)
+const APP_BASE=0x26000, FWUP_MAX_IMG=0x60000; // legacy nRF52840 app base (S140 v6); staging cap (fw_update.h FWUP_MAX_IMG)
+// The connected board's real app base, from the status blob's v22 board byte: 0x26000 on Pro Micro/Feather
+// (S140 v6), 0x27000 on the XIAO (S140 v7). Defaults to the legacy base for pre-v22 firmware. Gates which
+// release asset is offered and which local .uf2 is accepted, so a cross-board image can't be flashed.
+let curAppBase=APP_BASE;
 // Extract the contiguous application image from a .uf2 (gaps filled with 0xFF, length padded to a word).
 // Throws on anything that is not an nRF52840 app-region UF2 — the firmware re-checks everything, but a bad
 // file should fail at pick time, not after a reboot.
-function uf2ToImage(buf){
+function uf2ToImage(buf, expectedBase=APP_BASE){
   if(!buf.byteLength || buf.byteLength%512) throw new Error("not a UF2 (size is not a multiple of 512)");
   const dv=new DataView(buf), blocks=[]; let lo=Infinity, hi=0;
   for(let off=0; off<buf.byteLength; off+=512){
@@ -1719,7 +1726,7 @@ function uf2ToImage(buf){
     blocks.push({addr,len,off}); lo=Math.min(lo,addr); hi=Math.max(hi,addr+len);
   }
   if(!blocks.length) throw new Error("UF2 contains no flash data");
-  if(lo!==APP_BASE) throw new Error("image base 0x"+lo.toString(16)+" is not the app region (0x26000) — not an OpenPuck app UF2");
+  if(lo!==expectedBase) throw new Error("image base 0x"+lo.toString(16)+" is not this board's app region (0x"+expectedBase.toString(16)+"). Wrong board's UF2 — 0x26000 = Pro Micro/Feather, 0x27000 = XIAO; flashing the wrong one leaves the board app-less until UF2-DFU recovery.");
   if(hi-lo>FWUP_MAX_IMG) throw new Error("image is "+Math.round((hi-lo)/1024)+" KiB — over the 384 KiB staged-update cap; flash it via UF2 DFU + drag-and-drop");
   const img=new Uint8Array((hi-lo+3)&~3).fill(0xFF); // firmware stages whole words
   for(const b of blocks) img.set(new Uint8Array(buf,b.off+32,b.len), b.addr-lo);
@@ -1961,7 +1968,7 @@ async function runUpdate(title, confirmText, getImage){
 // ---- local-file source: drag-and-drop or file picker ----
 async function pickUf2(f){
   try{
-    const image=uf2ToImage(await f.arrayBuffer());
+    const image=uf2ToImage(await f.arrayBuffer(), curAppBase);
     selectedUf2={name:f.name, image, updatable:imagePanelUpdatable(image)};
     log("UF2 ready: "+f.name+" — app image "+Math.round(image.length/1024)+" KiB, CRC32 0x"+crc32(image).toString(16).padStart(8,"0"));
   }catch(err){
@@ -2047,12 +2054,20 @@ async function downloadAsset(asset){
   }
   const buf=new Uint8Array(got); let o=0;
   for(const p of parts){ buf.set(p,o); o+=p.length; }
-  return uf2ToImage(buf.buffer);
+  return uf2ToImage(buf.buffer, curAppBase);
 }
+// Pick the release asset for the CONNECTED board only. XIAO images are named
+// OpenPuck-<tag>-xiao-<kind>.uf2; Pro Micro/Feather use the plain
+// OpenPuck-<tag>-<kind>.uf2. The fallbacks stay board-scoped (the xiao infix is
+// required or forbidden) so a wrong-board image is never offered.
 function relAsset(rel,factory){
-  const suffix=factory ? "factory-reset" : "standard";
-  return rel.assets.find(a=>a.name==="OpenPuck-"+rel.tag_name+"-"+suffix+".uf2")
-      || rel.assets.find(a=>new RegExp("^OpenPuck-.*-"+suffix+"\\.uf2$").test(a.name)) || null;
+  const kind=factory ? "factory-reset" : "standard";
+  const xiao=curAppBase===0x27000;
+  const exact="OpenPuck-"+rel.tag_name+"-"+(xiao?"xiao-":"")+kind+".uf2";
+  return rel.assets.find(a=>a.name===exact)
+      || rel.assets.find(a=> xiao
+           ? new RegExp("^OpenPuck-.*-xiao-"+kind+"\\.uf2$").test(a.name)
+           : new RegExp("^OpenPuck-(?!.*-xiao-).*-"+kind+"\\.uf2$").test(a.name)) || null;
 }
 function flashRelease(rel,factory){
   const asset=relAsset(rel,factory);
