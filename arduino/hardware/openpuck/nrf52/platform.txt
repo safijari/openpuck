@@ -1,0 +1,22 @@
+# OpenPuck vendored Arduino platform.
+#
+# The board(s) in boards.txt reference the installed Adafruit nRF52 core
+# (build.core=adafruit:nRF5), inheriting all of its compilers, recipes and
+# bundled libraries (TinyUSB, InternalFileSystem, ...). The ONLY thing that
+# differs from a stock Adafruit build is the application link origin: the Seeed
+# XIAO's UF2 bootloader ships SoftDevice S140 v7.3.0 and hands off to the app at
+# 0x27000, where Adafruit's Feather/SuperMini boards (S140 v6.1.1) use 0x26000.
+# OpenPuck never starts the SoftDevice, but the bootloader jumps to that fixed
+# address, so the app must be linked there (see the board's build.ldscript).
+
+name=OpenPuck nRF52 Boards (Adafruit core)
+version=1.0.0
+
+# MANDATORY for the core reference to work (Arduino CLI >= 1.0.4). Without it,
+# {runtime.platform.path} resolves to THIS (near-empty) vendored folder, and
+# every inherited Adafruit path built from it breaks: the TinyUSB include
+# (-I{runtime.platform.path}/libraries/Adafruit_TinyUSB_Arduino/src/arduino),
+# the bundled adafruit-nrfutil upload tool, the bootloader files. Setting this
+# repoints {runtime.platform.path} at the referenced Adafruit platform, where
+# those files actually live.
+runtime.use_core_platform_path_for_runtime_platform_path=true
