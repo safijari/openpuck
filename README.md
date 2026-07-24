@@ -63,7 +63,7 @@ See [build instructions document](./docs/BUILD_AND_DEPLOY.md) for  details on ho
 
 ### Supported boards
 
-OpenPuck runs on nRF52840 "Pro Micro" boards (the common SuperMini clones and the Adafruit Feather nRF52840) and on the **Seeed XIAO nRF52840** (including the Sense), which is easy to get in the EU (e.g. [on Amazon.de](https://www.amazon.de/dp/B09T9VVQG7)). Grab the UF2 that matches your board from the releases:
+OpenPuck runs on nRF52840 "Pro Micro" boards (the common SuperMini clones and the Adafruit Feather nRF52840) and on the **[Seeed XIAO nRF52840](https://www.amazon.de/dp/B09T9VVQG7)** (including the Sense). Grab the UF2 that matches your board from the releases:
 
 - Pro Micro / SuperMini / Feather → `OpenPuck-<version>-standard.uf2`
 - Seeed XIAO nRF52840 → `OpenPuck-<version>-xiao-standard.uf2`
