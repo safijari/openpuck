@@ -23,6 +23,8 @@
   /* ReversePuck dongle: hide every puck-only Controller card, keep just the paired-pucks card (this leaves
      the debugonly/lizard inline visibility rules untouched, so switching back to a puck restores them). */
   body.dongle #tabMain > .cards > .card:not(#pairedCard){display:none !important}
+  /* PicoPuck (Pico W / Pico 2 W): a Bluetooth puck. Show only its controllers card. */
+  body.picopuck #tabMain > .cards > .card:not(#picopuckCard){display:none !important}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 14px}
   .row{display:flex;align-items:center;gap:14px;margin:12px 0;flex-wrap:wrap}
   .row label{flex:0 0 150px;color:var(--fg)}
@@ -135,6 +137,19 @@
       </div>
       <div id="pairedList"><p class="note">Reading paired pucks…</p></div>
       <p class="note" style="margin-top:8px">This is a <strong>ReversePuck</strong> controller dongle (28DE:1302). It emulates a Steam Controller to whichever puck it's paired with. Pair new pucks with <code>scpair.py</code>; use the <em>Firmware update</em> tab to flash a new dongle build.</p>
+    </div>
+    <div class="card wide" id="picopuckCard" style="display:none">
+      <h2>Bluetooth controllers</h2>
+      <div class="row" style="gap:10px;align-items:center;margin-bottom:4px">
+        <span class="pill" id="ppBoard">PicoPuck</span>
+        <span class="note" id="ppState" style="flex:1">—</span>
+        <button id="ppScanBtn">Scan</button>
+        <button id="ppBootBtn" title="Reboot into the UF2 bootloader to flash new firmware">Update firmware</button>
+      </div>
+      <div id="ppSlots"></div>
+      <h3 style="font-size:12px;color:var(--mut);margin:14px 0 6px">Discovered</h3>
+      <div id="ppScanList"><p class="note">Press <em>Scan</em> to look for controllers in pairing mode.</p></div>
+      <p class="note" style="margin-top:8px">This is a <strong>PicoPuck</strong> (Pico W / Pico 2 W). It connects to controllers over Bluetooth and presents them to Steam as a normal puck. Put a controller in pairing mode, press <em>Scan</em>, then pair it into one of the four slots. Use the <em>Firmware update</em> tab (reboot to bootloader) to flash a new build.</p>
     </div>
     <div class="card">
       <h2>Version</h2>
@@ -376,6 +391,10 @@ let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false, backupBu
 // lizard / config, just a paired-pucks list (0xAC) plus the identical firmware-update + DFU ops. When true,
 // the panel shows the controller UI (manage paired pucks + flash) and skips every puck-only poll.
 let isDongle=false;
+// A PicoPuck (Pico W / Pico 2 W, 28DE:1304 with bcdDevice 0x03xx) is a Bluetooth
+// puck. It speaks its own small protocol (0xA5 status ver 1 + a scan/pair set),
+// distinct from the nRF puck's blob, so the panel routes it to its own branch.
+let isPicoPuck=false;
 let lastP=null; // most recent status-blob payload (config source for Export)
 // Stability test: armed = active across reconnects; stabStart = ms of the current run; stabLastRun = last
 // completed run {secs} (ended by a reset). Kept in-page so it survives the device reset (not a page refresh).
@@ -715,7 +734,9 @@ async function openDevice(d){
     await dev.claimInterface(ifNum);
     await dev.controlTransferOut({requestType:"class", recipient:"interface", request:0x22, value:0x01, index:ifNum});
     isDongle = (dev.productId === 0x1302); // ReversePuck controller dongle vs a puck (0x1304 / real)
-    const kind = isDongle ? "ReversePuck" : "puck";
+    // PicoPuck shares the puck PID but bumps bcdDevice to 0x03xx (nRF puck = 0x02xx).
+    isPicoPuck = (dev.productId === 0x1304 && dev.deviceVersionMajor === 3);
+    const kind = isDongle ? "ReversePuck" : isPicoPuck ? "PicoPuck" : "puck";
     $("#connState").textContent="connected"; $("#connState").className="pill up";
     $("#connState").title = dev.serialNumber ? (kind+" serial "+dev.serialNumber) : "";
     $("#connectBtn").textContent="Reconnect";
@@ -724,7 +745,7 @@ async function openDevice(d){
     log(`connected — ${kind} ${dev.serialNumber||"?"} (VID ${dev.vendorId.toString(16)} PID ${dev.productId.toString(16)} iface ${ifNum})`);
     // resume a stability test across the reset: re-arm the firmware buzz and start timing the next run
     // (puck-only: the dongle has no stability-test / haptic path)
-    if(stabArmed && !isDongle){ await send([0x0F,1]); stabStart=Date.now(); log("stability test resumed — timing next run"); }
+    if(stabArmed && !isDongle && !isPicoPuck){ await send([0x0F,1]); stabStart=Date.now(); log("stability test resumed — timing next run"); }
     updateStabUI();
     // The lizard-map dump (0x11 -> 0xAA) is loaded LAZILY, gated on the firmware advertising v16+ (see
     // applyBlob). Older firmware (every pre-lizard build, including the v15 updater builds) silently drops
@@ -733,7 +754,7 @@ async function openDevice(d){
     lizardLoaded=false;
     startPolling();
     // GitHub releases are PUCK firmware; skip the fetch for a dongle (it flashes via the local-file card).
-    if(!isDongle) loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
+    if(!isDongle && !isPicoPuck) loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
     return true;
   }catch(e){ log("connect failed: "+e.message); dev=null; return false; }
 }
@@ -1064,6 +1085,7 @@ async function refresh(){
   // that would silently kill all future polls and read as a fake "heartbeat lost".
   try{
     if(isDongle){ await send([0x01]); const p=await readFrame(0xAC, 3, 256); if(p) applyDongleStatus(p); }
+    else if(isPicoPuck){ await send([0x01]); const p=await readFrame(0xA5, 3, 256); if(p) applyPicoPuckStatus(p); }
     else { await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
   }
   catch(e){ log("refresh err: "+e.message); }
@@ -1114,6 +1136,99 @@ function renderPaired(bonds, flags){
   }
 }
 
+// ---- PicoPuck: Bluetooth controllers (0xA5 status ver 1, 0xA6 scan list) ----
+// Status payload (header stripped): [ver][board][rsvd][build12][scanActive][nSlot]
+//   then nSlot * 26B slot recs: [state][kind][battery][rssi][addr6][name16].
+// state: 0 empty, 1 bonded, 2 connected. kind: 0 none,1 SC2,2 BLE pad,3 Classic pad.
+const PP_KIND=["—","Steam Controller 2","Bluetooth gamepad","Classic gamepad"];
+const PP_ADDRT=["Classic","BLE","BLE"];
+function ppHex(a){ return [...a].map(x=>x.toString(16).padStart(2,"0")).join(":"); }
+function ppName(a){ const s=new TextDecoder("latin1").decode(new Uint8Array(a)); return s.replace(/[^\x20-\x7e]/g,"").trim(); }
+function applyPicoPuckStatus(p){
+  window._lastBlobTs=Date.now(); // heartbeat (mirrors applyBlob/applyDongleStatus)
+  if(pendingHang) pendingHang=null;
+  const board=p[1], scanActive=p[15], nSlot=p[16]||4;
+  $("#ppBoard").textContent = board===2 ? "Pico 2 W" : "Pico W";
+  // Diagnostics tail after the slot records: [advSeen lo][hi][flags].
+  const dg=17+nSlot*26;
+  let diag="";
+  if(p.length>=dg+6){
+    const adv=p[dg]|(p[dg+1]<<8), fl=p[dg+2], hs=p[dg+3], hev=p[dg+4]|(p[dg+5]<<8);
+    const HS=["off","initialising","working","halting","sleeping"];
+    diag = ` · ${adv} adv · ${(fl&1)?"scan on":"scan off"}`
+      + ` · hci=${HS[hs]||hs}(evts ${hev})`
+      + `${(fl&8)?"":" · INIT FAIL"}${(fl&16)?"":" · no power-on"}${(fl&2)?"":" · NOT READY"}${(fl&4)?" · connecting":""}`;
+  } else if(p.length>=dg+3){
+    const adv=p[dg]|(p[dg+1]<<8), fl=p[dg+2];
+    diag = ` · ${adv} adv · ${(fl&1)?"scan on":"scan off"}${(fl&2)?"":" · NOT READY"}`;
+  }
+  $("#ppState").textContent = (scanActive ? "scanning for controllers…" : "idle") + diag;
+  $("#ppScanBtn").textContent = scanActive ? "Stop" : "Scan";
+  const slots=[];
+  for(let i=0;i<nSlot;i++){
+    const q=17+i*26; if(q+26>p.length) break;
+    slots.push({state:p[q],kind:p[q+1],battery:p[q+2],rssi:(p[q+3]<<24>>24),
+      addr:p.slice(q+4,q+10),name:ppName(p.slice(q+10,q+26))});
+  }
+  renderPicoPuckSlots(slots);
+  if(scanActive) ppRequestScanList();
+}
+function renderPicoPuckSlots(slots){
+  const el=$("#ppSlots"); if(!el) return;
+  el.innerHTML="";
+  slots.forEach((s,i)=>{
+    const row=document.createElement("div"); row.className="row"; row.style.cssText="align-items:center;gap:10px;margin:6px 0";
+    const live=s.state===2;
+    const badge=live?'<span class="pill up" style="flex:0 0 auto">live</span>'
+      :s.state===1?'<span class="pill" style="flex:0 0 auto">bonded</span>'
+      :'<span class="pill" style="flex:0 0 auto">empty</span>';
+    const title=s.state? (s.name||PP_KIND[s.kind]||"controller") : "(empty)";
+    const meta=s.state? `${PP_KIND[s.kind]||"?"} · ${ppHex(s.addr)}`+(live?` · batt ${s.battery}% · ${s.rssi} dBm`:"") : `slot ${i}`;
+    row.innerHTML=`${badge}<div style="flex:1"><div style="font-weight:600">${title}</div>`
+      +`<div class="note" style="font-family:ui-monospace,Menlo,monospace">${meta}</div></div>`;
+    if(s.state){
+      const rm=document.createElement("button"); rm.textContent="Forget"; rm.className="danger"; rm.style.flex="0 0 auto";
+      rm.onclick=async()=>{ if(!confirm(`Forget "${title}"?`)) return; await send([0x06, ...s.addr, 1]); log("forgot slot "+i); };
+      row.appendChild(rm);
+    }
+    el.appendChild(row);
+  });
+}
+async function ppRequestScanList(){
+  try{ await send([0x04]); const p=await readFrame(0xA6, 1, 256); if(p) renderPicoPuckScan(p); }catch(e){}
+}
+function renderPicoPuckScan(p){
+  const el=$("#ppScanList"); if(!el) return;
+  const count=p[0], ents=[];
+  for(let i=0;i<count;i++){
+    const q=1+i*25; if(q+25>p.length) break;
+    ents.push({kind:p[q],addrType:p[q+1],rssi:(p[q+2]<<24>>24),
+      addr:p.slice(q+3,q+9),name:ppName(p.slice(q+9,q+25))});
+  }
+  if(!ents.length){ el.innerHTML='<p class="note">No controllers found yet — make sure the controller is in Bluetooth pairing mode.</p>'; return; }
+  el.innerHTML="";
+  for(const e of ents){
+    const row=document.createElement("div"); row.className="row"; row.style.cssText="align-items:center;gap:10px;margin:6px 0";
+    row.innerHTML=`<div style="flex:1"><div style="font-weight:600">${e.name||PP_KIND[e.kind]||"controller"}</div>`
+      +`<div class="note" style="font-family:ui-monospace,Menlo,monospace">${PP_KIND[e.kind]||"?"} · ${PP_ADDRT[e.addrType]||"?"} · ${ppHex(e.addr)} · ${e.rssi} dBm</div></div>`;
+    const pair=document.createElement("button"); pair.textContent="Pair"; pair.style.flex="0 0 auto";
+    pair.onclick=async()=>{ await send([0x05, ...e.addr, e.addrType]); log("pairing "+ppHex(e.addr)); };
+    row.appendChild(pair); el.appendChild(row);
+  }
+}
+function ppInitCard(){
+  const btn=$("#ppScanBtn"); if(!btn||btn._wired) return; btn._wired=true;
+  btn.onclick=async()=>{
+    if(btn.textContent==="Stop"){ await send([0x03]); }
+    else { await send([0x02, 30]); await ppRequestScanList(); }
+  };
+  const boot=$("#ppBootBtn");
+  if(boot) boot.onclick=async()=>{
+    if(!confirm("Reboot the PicoPuck into its UF2 bootloader?\n\nIt will appear as a USB drive; drag the new picopuck_*.uf2 onto it.")) return;
+    await send([0x0B, 0x42, 0x4C]); log("rebooting to bootloader…");
+  };
+}
+
 // Toggle the UI between the full puck panel and the reduced ReversePuck (controller dongle) panel. Called on
 // every (re)connect so switching a puck<->dongle in one session lands on the right layout.
 function applyDeviceProfile(){
@@ -1122,6 +1237,10 @@ function applyDeviceProfile(){
   // reconnect restores them without clobbering the debugonly/lizard inline visibility rules.
   document.body.classList.toggle("dongle", d);
   const paired=$("#pairedCard"); if(paired) paired.style.display = d ? "" : "none";
+  // PicoPuck: same idea — hide the nRF puck cards, show only the Bluetooth-controllers card.
+  document.body.classList.toggle("picopuck", isPicoPuck);
+  const ppc=$("#picopuckCard"); if(ppc) ppc.style.display = isPicoPuck ? "" : "none";
+  if(isPicoPuck){ ppInitCard(); const ut=$('#mainTabs .slot-tab[data-tab="tabUpdate"]'); if(ut) ut.style.display=""; }
   // top-bar buttons: factory-erase is a puck-only op (0x0A); the dongle keeps DFU + (debug) wipe-board
   const fe=$("#factoryErase"); if(fe) fe.style.display = d ? "none" : "";
   // the GitHub "Update from a release" list is puck firmware; a dongle flashes via the local-file drop card

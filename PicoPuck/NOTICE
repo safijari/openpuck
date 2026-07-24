@@ -1,0 +1,27 @@
+PicoPuck
+========
+
+PicoPuck is part of the OpenPuck project and is licensed under the
+GNU Affero General Public License v3.0 or later (see ../LICENSE).
+
+Third-party components
+----------------------
+
+Portions of the Bluetooth host, controller drivers, and HID descriptor
+parsing under PicoPuck/vendor/ are derived from joypad-os
+(https://github.com/RobertDaleSmith/joypad-os), Copyright (c) Robert Dale
+Smith and contributors, licensed under the Apache License, Version 2.0.
+The original license and copyright notices are retained in those files, and
+each local modification is marked with a "PICOPUCK:" comment. Apache-2.0
+material is included here under the terms permitting relicensing into a
+(A)GPL-3.0 combined work.
+
+BTstack is used via the Raspberry Pi Pico SDK. The bundled BTstack is
+distributed under BlueKitchen's license, which is non-commercial for general
+use but carries an additional grant (LICENSE.RP in the SDK) permitting use on
+Raspberry Pi RP2040 / RP2350 silicon. PicoPuck binaries are built for and
+intended to run only on Raspberry Pi Pico W / Pico 2 W hardware, within the
+scope of that grant.
+
+TinyUSB (MIT), the CYW43 driver, and the Pico SDK carry their own licenses as
+distributed with the SDK.

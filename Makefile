@@ -50,7 +50,7 @@ _PATH_FLAGS = $(if $(BUILD_PATH),--clean --build-path $(BUILD_PATH) --output-dir
 # (No auto-detect -- uploading to a guessed serial port risks writing to the wrong device. List with
 # `arduino-cli board list`.) FLASH_PORT = whatever goal isn't one of our real targets; the catch-all rule at
 # the bottom swallows it so make doesn't try to build the port path as a target.
-FLASH_PORT := $(filter-out format format-check check build build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy,$(MAKECMDGOALS))
+FLASH_PORT := $(filter-out format format-check check build build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy picopuck picopuck-pico2w picopuck-clean,$(MAKECMDGOALS))
 UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 
 # ReversePuck (controller dongle, 28DE:1302) build flags. It has ONE HID interface (core default 2 is fine),
@@ -59,7 +59,12 @@ UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 RP_USB_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
 RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 
-.PHONY: format format-check check build build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy
+.PHONY: format format-check check build build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy picopuck picopuck-pico2w picopuck-clean
+
+# --- PicoPuck (Pico W / Pico 2 W firmware; pico-sdk + CMake) -----------------
+# Requires PICO_SDK_PATH to point at a Pico SDK 2.x checkout with submodules.
+# UF2 lands in PicoPuck/build-<board>/picopuck_<board>.uf2.
+PICO_SDK_PATH ?=
 
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
 ## EXTRA_FLAGS / FQBN as make variables if needed.
@@ -84,6 +89,22 @@ reversepuck-deploy:
 	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make reversepuck-deploy <port>   e.g. make reversepuck-deploy /dev/cu.usbmodem1101"; exit 1; }
 	$(MAKE) reversepuck BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR)
 	$(RP_UPLOAD)
+
+## Build the PicoPuck firmware for the Pico W (RP2040). Needs PICO_SDK_PATH set.
+picopuck:
+	@[ -n "$(PICO_SDK_PATH)" ] || { echo "PICO_SDK_PATH must point at a Pico SDK 2.x checkout"; exit 1; }
+	cmake -S PicoPuck -B PicoPuck/build-pico_w -DPICO_BOARD=pico_w
+	cmake --build PicoPuck/build-pico_w -j
+
+## Build the PicoPuck firmware for the Pico 2 W (RP2350).
+picopuck-pico2w:
+	@[ -n "$(PICO_SDK_PATH)" ] || { echo "PICO_SDK_PATH must point at a Pico SDK 2.x checkout"; exit 1; }
+	cmake -S PicoPuck -B PicoPuck/build-pico2_w -DPICO_BOARD=pico2_w
+	cmake --build PicoPuck/build-pico2_w -j
+
+## Remove PicoPuck CMake build directories.
+picopuck-clean:
+	rm -rf PicoPuck/build-pico_w PicoPuck/build-pico2_w
 
 ## Upload the most recent build. Usage: make flash <port>   e.g.  make flash /dev/cu.usbmodem1101
 ## The board may need DFU/bootloader mode first (double-tap RST): puck (Steam/Lizard) mode drops the CDC port

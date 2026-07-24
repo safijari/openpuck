@@ -11,3 +11,6 @@ __pycache__/
 
 # generated build-provenance header (gen_version.sh); never commit
 OpenPuck/git_version.h
+
+# PicoPuck CMake build directories
+PicoPuck/build-*/

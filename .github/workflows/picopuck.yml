@@ -1,0 +1,64 @@
+name: PicoPuck
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - '[0-9]*.[0-9]*.[0-9]*'
+    paths:
+      - 'PicoPuck/**'
+      - '.github/workflows/picopuck.yml'
+  pull_request:
+    paths:
+      - 'PicoPuck/**'
+      - '.github/workflows/picopuck.yml'
+
+concurrency:
+  group: picopuck-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        board: [pico_w, pico2_w]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake gcc-arm-none-eabi libnewlib-arm-none-eabi build-essential
+
+      - name: Check out Pico SDK 2.x
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.2.0
+          path: pico-sdk
+          submodules: true
+
+      - name: Build PicoPuck (${{ matrix.board }})
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+        run: |
+          cmake -S PicoPuck -B PicoPuck/build-${{ matrix.board }} -DPICO_BOARD=${{ matrix.board }}
+          cmake --build PicoPuck/build-${{ matrix.board }} -j
+
+      - name: Upload UF2 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: picopuck_${{ matrix.board }}.uf2
+          retention-days: 7
+          if-no-files-found: error
+          path: PicoPuck/build-${{ matrix.board }}/picopuck_${{ matrix.board }}.uf2
