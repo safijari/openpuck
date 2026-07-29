@@ -164,12 +164,15 @@ static bool xi_xfer(uint8_t rhport, uint8_t ep, xfer_result_t res, uint32_t n)
 			if (n >= 5 && S.outBuf[0] == 0x00 &&
 			    S.outBuf[1] == 0x08) {
 				uint8_t big = S.outBuf[3], sml = S.outBuf[4];
-				uint16_t lo = (uint16_t)big * 257u;
-				uint16_t hi = (uint16_t)sml * 257u;
-				S.rumbleLow = lo;
-				S.rumbleHigh = hi;
-				S.rumbleMs = millis();
-				hapticSteamRumble(lo, hi, (uint8_t)s);
+				// skip tracking+relay when rumble is disabled for this type
+				if (g_rumble) {
+					uint16_t lo = (uint16_t)big * 257u;
+					uint16_t hi = (uint16_t)sml * 257u;
+					S.rumbleLow = lo;
+					S.rumbleHigh = hi;
+					S.rumbleMs = millis();
+					hapticSteamRumble(lo, hi, (uint8_t)s);
+				}
 			}
 			usbd_edpt_xfer(rhport, S.epOut, S.outBuf,
 				       sizeof S.outBuf);

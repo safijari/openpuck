@@ -1,9 +1,19 @@
 // Staged firmware update: WebUSB streams the new app image into unused upper app-region flash; a verified
 // meta-page commit arms it; the next boot applies it from RAM. See fw_update.h for the protocol and the
 // corruption-safety invariant every step here preserves.
+// *** Copied from OpenPuck/fw_update.cpp -- the nRF52840 flash map + staged-UF2 protocol are identical on
+// the controller dongle, so keep this byte-for-byte in step with the puck's copy. The ONLY divergence is
+// that the dongle has no fault_diag module: the loop-heartbeat that the puck fed via faultDiagBeat() during
+// the long full-image CRC is here a bare watchdog reload (fwupBeat), which is all that call site needs. ***
 #include "fw_update.h"
-#include "fault_diag.h"
 #include <Arduino.h>
+
+// Feed the hardware watchdog during the multi-hundred-ms flash CRC so the ~8 s WDT (armed in setup()) never
+// trips mid-verify. Replaces the puck's faultDiagBeat(); same effect for our purpose (no loop-stall reporter).
+static inline void fwupBeat(void)
+{
+	NRF_WDT->RR[0] = WDT_RR_RR_Reload;
+}
 #include <string.h>
 
 // nRF52840 flash map (Adafruit UF2 bootloader layout): MBR 0x0-0x1000, SoftDevice to 0x26000, app region
@@ -73,7 +83,7 @@ static uint32_t crc32Flash(uint32_t addr, uint32_t len)
 		crc = crc32Step(crc, (const volatile uint8_t *)addr, blk);
 		addr += blk;
 		len -= blk;
-		faultDiagBeat();
+		fwupBeat();
 	}
 	return ~crc;
 }

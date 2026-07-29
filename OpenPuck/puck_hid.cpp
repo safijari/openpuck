@@ -14,7 +14,37 @@
 #include <string.h>
 
 uint8_t g_fwdNewOnly = 1;
+// Content dedup for the Steam input forward: only forward a 0x45/0x42 report when its body EXCLUDING the
+// counter byte differs from the last one forwarded on that slot. The controller's counter (rep[1]) FREE-RUNS
+// -- it advances on every reply even with static input -- so the seq-based g_fwdNewOnly can't suppress true
+// repeats, and a poll rate above the controller's ~250 Hz sample rate forwards identical inputs with only the
+// counter bumped (host tester reads >250/s for a <=250 Hz controller). Content dedup is what the real puck
+// effectively does. On by default; console "CD" toggles for A/B.
+uint8_t g_fwdContentDedup = 1;
 SteamPuckController g_steamPuck;
+
+// millis() a power-off (0x9F) was last relayed to each slot; 0 = never. See puckNotePowerOff() / task().
+static volatile unsigned long g_powerOffMs[NSLOT] = { 0 };
+// Present a powered-off slot as DISCONNECTED to Steam for this long, to ride out the controller's post-off
+// F1 tail (measured ~<=1s of dying replies after the "off!" command) without bouncing the connection state.
+#define POWEROFF_HOLD_MS 2000u
+void puckNotePowerOff(uint8_t slot)
+{
+	if (slot >=
+	    NSLOT) { // 0xFF broadcast ("all off": host suspend, panel/test button)
+		for (int s = 0; s < NSLOT; s++)
+			if (g_slot[s].used)
+				g_powerOffMs[s] = millis();
+	} else {
+		g_powerOffMs[slot] = millis();
+	}
+}
+// True while `slot` is inside its post-power-off hold window (present it disconnected, ignore dying replies).
+static inline bool slotPoweringOff(int slot)
+{
+	return slot >= 0 && slot < NSLOT && g_powerOffMs[slot] &&
+	       (millis() - g_powerOffMs[slot] < POWEROFF_HOLD_MS);
+}
 
 // Cloned puck HID report descriptor: mouse(0x40)+keyboard(0x41)+vendor(FF00) with the 63-byte FEATURE
 // command reports on report id 1/2. Each of the 4 interfaces uses this.
@@ -200,6 +230,9 @@ static inline void hostStampAlive()
 // as a real click/keypress into the just-woken desktop. Set when task() sees the suspended->active transition.
 static unsigned long g_resumeMs = 0;
 #define POST_RESUME_MUTE_MS 1500u
+// How long to keep re-asserting the 0x79 DISCONNECT edge to Steam after a controller drops, so a single
+// lost report can't strand Steam in "connected" (see task()). Bounded to avoid forever-spamming disc.
+#define DISC_RESEND_MS 6000u
 
 // ===================== puck feature command channel =====================
 // `slot` is the interface index (interface N == bond slot N).
@@ -231,8 +264,9 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// path, so this OUTPUT form was still leaking through and clicking. OpenPuck doesn't need it.
 		bool dropOut81 =
 			(g_drop81 && g_usbMode == MODE_STEAM && rid == 0x81);
-		if (rid >= 0x80 && rid <= 0x86 && !dropOut81 && n >= 1 &&
-		    hapticRelaySlotOk(slot) && !lizardActive() && !muted) {
+		if (g_hapticRelay && rid >= 0x80 && rid <= 0x86 && !dropOut81 &&
+		    n >= 1 && hapticRelaySlotOk(slot) && !lizardActive() &&
+		    !muted) {
 			if (!haptic82Blocked(slot)) {
 				relayEnqueue(rid, b,
 					     (uint8_t)(n > RELAY_MAXP ?
@@ -315,10 +349,15 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		bool localAnswer = (cmd == 0x83 || cmd == 0x89 || cmd == 0xAE ||
 				    cmd == 0xA2 || cmd == 0xA3 || cmd == 0xAD ||
 				    cmd == 0xB4 || cmd == 0xED || cmd == 0xA4);
-		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop)
+		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop).
+		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
+		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
+		// smoothness. Config (0x87/0x88) and power-off (0x9F) still relay so nothing else regresses.
+		bool hapticCmd = (cmd >= 0x80 && cmd <= 0x86);
 		bool relayOk = hapticRelaySlotOk(slot) && !drop &&
 			       !localAnswer &&
-			       !(haptic82 && (lizardActive() || muted));
+			       !(haptic82 && (lizardActive() || muted)) &&
+			       !(hapticCmd && !g_hapticRelay);
 		if (relayOk && (!haptic82 || !haptic82Blocked(slot))) {
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
@@ -407,8 +446,11 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		hostStampAlive();
 		S.resp[0] = 0xB4;
 		S.resp[1] = 0x01;
+		// Report disconnected during the post-power-off hold so B4 agrees with the 0x79 disconnect (they used
+		// different windows -- 500ms here vs the 300ms conn/DOWN edge -- so right after a power-off Steam's B4
+		// probe answered "still connected" and contradicted the disconnect we just pushed).
 		S.resp[2] = (slot >= 0 && slot < NSLOT && !g_xbox &&
-			     g_slot[slot].used &&
+			     g_slot[slot].used && !slotPoweringOff(slot) &&
 			     (millis() - g_connReplyMs[slot] < 500)) ?
 				    0x02 :
 				    0x01;
@@ -713,7 +755,34 @@ void SteamPuckController::onReport45(int slot, const uint8_t *rep, bool fresh,
 		// forward the puck's raw pad coords untouched (Steam does its own interpolation/smoothing). Forward
 		// only FRESH reports: the real puck dedupes, so stale repeats make Steam's velocity/smoothing
 		// stair-step. g_fwdNewOnly toggles for A/B.
-		if ((fresh || !g_fwdNewOnly) && hid[slot].ready())
+		//
+		// Do NOT gate on hid[slot].ready() here: usbTxHid enqueues into a ring buffer (drop-oldest)
+		// that exists precisely to hold a report while the endpoint is briefly busy -- usbTxDrain
+		// sends it the instant the host next polls. Gating on ready() at enqueue time DROPPED every
+		// fresh report that landed while the endpoint was busy (~1 ms after each send), which at
+		// 300+ captured reports/s silently discarded ~a third of them (measured: RF new/s ~313 but
+		// host delivered ~180). Always enqueue; the ring paces delivery to the host without loss.
+		bool send = (fresh || !g_fwdNewOnly);
+		// Content dedup: the counter byte (rep[1]) free-runs, so drop a report whose body AFTER the
+		// counter is byte-identical to the last one forwarded on this slot -- a true repeat (same
+		// physical input, bumped counter), not a new sample. Caps delivery at the controller's real
+		// distinct-report rate instead of the (higher) poll rate. See g_fwdContentDedup above.
+		if (send && g_fwdContentDedup && blen >= 2) {
+			static uint8_t lastBody[NSLOT][53];
+			static uint8_t lastBodyLen[NSLOT] = { 0 };
+			uint8_t clen =
+				(uint8_t)(blen - 1); // bytes after the counter
+			if (clen > sizeof lastBody[0])
+				clen = sizeof lastBody[0];
+			if (lastBodyLen[slot] == clen &&
+			    memcmp(lastBody[slot], rep + 2, clen) == 0)
+				send = false; // identical input, only the counter moved
+			else {
+				lastBodyLen[slot] = clen;
+				memcpy(lastBody[slot], rep + 2, clen);
+			}
+		}
+		if (send)
 			usbTxHid(
 				&hid[slot], rid, rep + 1,
 				blen); // Steam/SDL Triton: input report 0x45 (old) / 0x42 (new fw)
@@ -845,16 +914,65 @@ void SteamPuckController::task()
 	// no periodic 0x79/0x7B while the host sleeps -- those sends can wake it too
 	if (USBDevice.suspended())
 		return;
+
+	// Lizard<->Steam handoff: release whatever the OUTGOING path was holding. lizardActive() is a pure
+	// runtime decision -- Steam opening/closing (its ~3s settings heartbeat starting/stopping) flips it with
+	// NO USB re-enumeration -- so a key/mouse-button held when Steam TAKES OVER, or a gamepad button held
+	// when Steam CLOSES, is otherwise never released and sticks on the host until a reconnect or power-cycle
+	// (the reported "stuck input after switching modes"). The link-drop neutral in rf_link only covers an RF
+	// outage, not this handoff. Fire a neutral through the path we're leaving on each edge. Placed after the
+	// suspend early-return: while suspended nothing can be sent, and a flip across a sleep is covered on
+	// resume (this edge fires once, plus the post-resume input mute). MODE_LIZARD never leaves lizard, so
+	// this is inert there.
+	{
+		static bool wasLizard = lizardActive();
+		bool nowLizard = lizardActive();
+		if (nowLizard != wasLizard) {
+			if (wasLizard) {
+				// leaving lizard -> release held desktop keyboard/mouse/consumer
+				rfLizardRelease(&hid[0], &hid[0], 0x40, 0x41);
+			} else {
+				// leaving gamepad-forward -> release held 0x45 buttons/sticks/triggers on every slot
+				static const uint8_t neutral45[45] = { 0 };
+				for (int s = 0; s < NSLOT; s++)
+					if (g_slot[s].used && hid[s].ready())
+						usbTxHid(&hid[s], 0x45,
+							 neutral45,
+							 sizeof neutral45);
+			}
+			wasLizard = nowLizard;
+		}
+	}
 	// Per-slot 0x79/0x7B: each connected slot reports its OWN edge and its OWN status. State arrays are
 	// per-slot so each controller's "connected" edge fires once and is re-sent only until Steam acks THAT
 	// slot. The real puck's per-slot edge-triggered 0x79 prevents re-triggering Steam's connect-chime loop.
 	static bool usbConn[NSLOT] = { 0 };
 	static unsigned long last79[NSLOT] = { 0 }, last7B[NSLOT] = { 0 },
-			     connEdgeMs[NSLOT] = { 0 }, last43[NSLOT] = { 0 };
+			     connEdgeMs[NSLOT] = { 0 },
+			     discEdgeMs[NSLOT] = { 0 }, last43[NSLOT] = { 0 },
+			     poHandled[NSLOT] = { 0 };
 	for (int s = 0; s < NSLOT; s++) {
 		if (!g_slot[s].used || !hid[s].ready())
 			continue;
-		bool conn = (millis() - g_connReplyMs[s] < 300);
+		// Power-off just relayed to this slot -> force ONE clean disconnect to Steam now, regardless of the
+		// prior edge state. The controller's noisy shutdown (it keeps streaming F1 for ~1s after "off!") can
+		// leave usbConn desynced from what Steam shows, so the ordinary conn!=usbConn edge sometimes never
+		// fired -> Steam kept the controller in its list (the "doesn't get removed" case). Anchor discEdgeMs
+		// too so the bounded resend covers a dropped packet.
+		if (g_powerOffMs[s] && g_powerOffMs[s] != poHandled[s]) {
+			poHandled[s] = g_powerOffMs[s];
+			uint8_t st = 0x01;
+			hapLogAdd(0xFB, 0x79, &st, 1); // ->host push (capture)
+			usbTxHid(&hid[s], 0x79, &st, 1);
+			usbConn[s] = false;
+			discEdgeMs[s] = millis();
+			last79[s] = millis();
+		}
+		// Hold the slot DISCONNECTED through the controller's post-power-off F1 tail (see slotPoweringOff);
+		// otherwise a stray dying reply bounces conn true -> a phantom 0x79=02 that Steam reads as a reconnect
+		// and answers by re-running its connect config (the "reappears for a split second").
+		bool conn = !slotPoweringOff(s) &&
+			    (millis() - g_connReplyMs[s] < 300);
 		// 0x79 connection state: on edge, then repeated every 750ms ONLY until Steam reacts (its first OUTPUT/
 		// settings write after the edge -- g_steamAliveMs). The real puck sends 0x79 ONCE, edge-triggered; an
 		// unconditional forever-resend re-triggers Steam's connect handling (connect chime) every 750ms before
@@ -863,10 +981,22 @@ void SteamPuckController::task()
 		bool steamAcked = g_steamAliveMs &&
 				  (int32_t)(g_steamAliveMs - connEdgeMs[s]) >=
 					  0;
+		// The DISCONNECT edge (0x79=01) also needs resending: it used to be sent exactly ONCE, so a single
+		// dropped report left Steam believing the controller was still connected indefinitely -- observed as
+		// "WebUSB panel shows the slot DOWN (g_connReplyMs stale) while Steam still lists it connected, and the
+		// controller light is solid (it re-adopted the beacon) but no input flows." Resend disc every 750ms but
+		// BOUNDED to DISC_RESEND_MS so a lost packet converges without the forever-spam the "real puck sends
+		// 0x79 once" note warns against.
+		bool discResend = !conn &&
+				  (millis() - discEdgeMs[s] < DISC_RESEND_MS);
 		if (conn != usbConn[s] ||
-		    (conn && !steamAcked && millis() - last79[s] >= 750)) {
+		    (conn && !steamAcked && millis() - last79[s] >= 750) ||
+		    (discResend && millis() - last79[s] >= 750)) {
 			if (conn && !usbConn[s])
 				connEdgeMs[s] = millis();
+			if (!conn &&
+			    usbConn[s]) // connect->disc edge: anchor the resend window
+				discEdgeMs[s] = millis();
 			uint8_t st = conn ? 0x02 : 0x01;
 			hapLogAdd(0xFB, 0x79, &st, 1); // ->host push (capture)
 			usbTxHid(&hid[s], 0x79, &st, 1);

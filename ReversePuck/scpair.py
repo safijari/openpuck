@@ -25,6 +25,7 @@ import os
 import struct
 import sys
 import time
+from pathlib import Path
 
 # ---- Linux ioctl numbers for hidraw (asm-generic _IOC) ----
 _IOC_NONE, _IOC_WRITE, _IOC_READ = 0, 1, 2
@@ -108,11 +109,12 @@ def _first_usage_page(fd):
 
 
 class HidDev:
-    def __init__(self, node, vid, pid, serial):
+    def __init__(self, node, vid, pid, serial, vendor_str = "Valve"):
         self.node = node
         self.vid = vid
         self.pid = pid
         self.serial = serial
+        self.vendor_str = vendor_str
         self.fd = os.open(node, os.O_RDWR)
         self.usage_page = _first_usage_page(self.fd)
 
@@ -163,8 +165,34 @@ def enumerate_devices():
         vid, pid, serial = _sysfs_ids(node)
         if vid != VALVE_VID:
             continue
+
+        # Check if this hidraw object is actually a puck slot, or if it's a OpenPuck Wake mouse or similar
+        dxi = node.replace('/dev/', '')
+        base = Path(f"/sys/class/hidraw/{dxi}/device")
+        iface_dir = base.resolve().parent
+
+        bInterfaceClass = int((iface_dir / "bInterfaceClass").read_text().strip(), 16)
+        bInterfaceSubClass = int((iface_dir / "bInterfaceSubClass").read_text().strip(), 16)
+        bInterfaceProtocol = int((iface_dir / "bInterfaceProtocol").read_text().strip(), 16)
+
+        # A real puck slot has these values:
+        if (bInterfaceClass != 3 or bInterfaceSubClass != 0 or bInterfaceProtocol != 0):
+            # If these don't match, this is not a Puck slot, but some other random HID interface.
+            continue
+
+        # If we're here, this is a Puck. Let's detect and display if it's a Valve Puck or an OpenPuck.
+        # OpenPuck can be detected by the OpenPuck mouse wake interface. 
+
+        devnode = iface_dir.parent
+        device_vendor = "Valve"
+
+        for subnode in glob.glob(str(devnode) + "/" + devnode.name + ":*/interface"):
+            txt = Path(subnode).read_text().strip()
+            if "OpenPuck" in txt:
+                device_vendor = "OpenPuck"
+
         try:
-            dev = HidDev(node, vid, pid, serial)
+            dev = HidDev(node, vid, pid, serial, device_vendor)
         except PermissionError:
             print("permission denied on %s (run with sudo or install the udev rule)" % node, file=sys.stderr)
             continue
@@ -198,7 +226,7 @@ def read_slots(puck_list):
     for dev in sorted(puck_list, key=nodesort):
         if last_dev is not None and dev.serial != last_dev.serial:
             # This is a new puck, append the old puck and all its slots to the list.
-            pucks.append({"serial": last_dev.serial, "slots": slots})
+            pucks.append({"serial": last_dev.serial, "slots": slots, "vendor": last_dev.vendor_str})
             slots = []
             idx = 0
         try:
@@ -214,7 +242,7 @@ def read_slots(puck_list):
         last_dev = dev
         idx = idx + 1
 
-    pucks.append({"serial": dev.serial, "slots": slots})
+    pucks.append({"serial": dev.serial, "slots": slots, "vendor": dev.vendor_str})
     return pucks
 
 
@@ -371,21 +399,65 @@ def write_controller_slot(slot=0, puck_serial=None, pkey=None):
         ctrl.set_feature(1, 0x95, bytes([0x52, 0xAF, 0x27, 0xA4]))
         print("paired. controller rebooting into wireless — move the puck to your host.")
 
+def get_controller_pairings():
+    devs = enumerate_devices()
+    ctrls = sorted(devs["ctrl"], key=nodesort)
 
+    if not ctrls:
+        return []
+
+    controllers = []
+
+    for c in ctrls:
+        slots = []
+        i = 0
+
+        for bond_str in [b"esb/bond\x00", b"esb/bond_2\x00"]:
+            c.set_feature(1, 0xED, bond_str)
+            bond = c.get_feature(1)
+
+            if bond[0] == 0x01 and bond[1] == 0xed and bond[2] > 0:
+                bond_len = bond[2]
+                bond_key = bond[3:3+8]
+                bond_name = bond[11:11+(bond_len-8)]
+                slots.append({"idx": i, "used": True, "key": bond_key.hex(), "serial": bond_name.decode("latin1", "replace")})
+            else: 
+                slots.append({"idx": i, "used": False})
+
+            i = i + 1
+
+        controllers.append({"serial": c.read_serial(1), "slots": slots})
+
+    return controllers
 
 
 def cmd_list():
     devs = enumerate_devices()
     pucks = sorted(devs["puck"], key=nodesort)
     ctrls = sorted(devs["ctrl"], key=nodesort)
-    print("controllers:", [(d.node, "%04X" % d.pid, d.read_serial(1)) for d in ctrls] or "(none)")
+
+    if ctrls:
+        cs = get_controller_pairings()
+
+        for c in cs:
+            print(f"Controller: {c['serial']}")
+
+            for s in c['slots']:
+                if s['used']:
+                    print("  slot %d: %s (key %s)" % (s["idx"], s["serial"], s["key"]))
+                else:
+                    print("  slot %d: Unused" % (s["idx"]))
+    else:
+        print("No controller connected.")
+
+
 
     if pucks:
         ps = read_slots(pucks)
         for puck in ps:
             slots = puck['slots']
 
-            print(f"Puck: {puck['serial']}")
+            print(f"Puck: {puck['serial']} ({puck['vendor']})")
 
             for s in slots: 
                 if s["used"]:
@@ -393,7 +465,7 @@ def cmd_list():
                 else: 
                     print("  slot %d: Empty" % (s["idx"]))
     else:
-        print("puck: (none)")
+        print("No Puck connected.")
 
 
 def steam_key_check(key):

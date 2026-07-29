@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenPuck Config</title>
 <style>
-  :root{ --bg:#11131a; --card:#1b1f2b; --fg:#e7ecf3; --mut:#8a93a6; --acc:#5bd6a0; --acc2:#5b9bd6; --bad:#d65b6e; }
+  :root{ --bg:#11131a; --card:#1b1f2b; --fg:#e7ecf3; --mut:#8a93a6; --acc:#5bd6a0; --acc2:#5b9bd6; --bad:#d65b6e; --warn:#e3b341; }
   *{box-sizing:border-box}
   body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
   h1{font-size:20px;margin:0 0 4px}
@@ -20,6 +20,9 @@
   .wrap{max-width:980px;margin:0 auto;padding:20px}
   /* cards stack in one column; width comes from the wider wrap + grids/rows filling it horizontally */
   .card{background:var(--card);border:1px solid #272d3d;border-radius:12px;padding:16px 18px;margin:0 0 16px}
+  /* ReversePuck dongle: hide every puck-only Controller card, keep just the paired-pucks card (this leaves
+     the debugonly/lizard inline visibility rules untouched, so switching back to a puck restores them). */
+  body.dongle #tabMain > .cards > .card:not(#pairedCard){display:none !important}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 14px}
   .row{display:flex;align-items:center;gap:14px;margin:12px 0;flex-wrap:wrap}
   .row label{flex:0 0 150px;color:var(--fg)}
@@ -30,6 +33,8 @@
   button:hover{border-color:var(--acc2)}
   button.primary{background:var(--acc2);border-color:var(--acc2);color:#06121f;font-weight:600}
   button.active{background:var(--acc);border-color:var(--acc);color:#062018;font-weight:600}
+  button.beta{background:#2d2613;border-color:#80651c;color:#ffd875;font-weight:600}
+  button.beta.active{background:var(--warn);border-color:var(--warn);color:#1d1604}
   button.danger{background:#3a1420;border-color:#7a2233;color:#ff9bb0;font-weight:600}
   button.danger:hover{border-color:#ff9bb0}
   button:disabled{opacity:.4;cursor:default}
@@ -43,6 +48,12 @@
   .stat .k{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em}
   .stat .v{font-size:18px;margin-top:2px}
   .modes{display:flex;gap:10px;flex-wrap:wrap}
+  /* back4 chords: face buttons in the left column, D-pad in the right; auto-fit collapses to one column on a
+     narrow viewport, and also when the D-pad column is hidden on pre-v18 firmware (display:none drops the item) */
+  .chord-cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:0 24px}
+  .chord-cols .row{margin:10px 0}
+  .chord-cols .row label{flex:0 0 108px}
+  .colhead{color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin:2px 0 0}
   .note{color:var(--mut);font-size:12px;margin-top:10px}
   #log{font:12px ui-monospace,Menlo,monospace;color:var(--mut);white-space:pre-wrap;margin-top:8px;max-height:140px;overflow:auto}
   .hide{display:none}
@@ -64,6 +75,8 @@
   /* ---- top-level tabs (Controller / Firmware update) ---- */
   #mainTabs{margin:0 0 16px}
   #mainTabs .slot-tab{font-size:13px;padding:7px 18px}
+  #mainTabs .slot-tab.beta-gated{background:#31270e;border-color:#8a6b1e;color:#ffd875}
+  #mainTabs .slot-tab.beta-gated:hover{border-color:var(--warn);color:#ffe7a0}
 
   /* ---- firmware update tab ---- */
   .dropzone{border:2px dashed #36405a;border-radius:12px;padding:26px 18px;text-align:center;cursor:pointer;
@@ -102,10 +115,12 @@
   <button id="connectBtn" class="primary">Connect</button>
   <span id="updAvail" class="pill hide" title="A newer OpenPuck release is available — click to open the Firmware update tab">…</span>
   <span class="spacer"></span>
+  <button id="betaBtn" class="beta" title="Show beta features warning and enable beta UI">Beta</button>
   <button id="debugCdc" title="Reboot ONCE with the CDC serial console enabled (WebUSB goes away for that boot); auto-reverts on the next boot">Debug CDC</button>
   <button id="dfuSerial" title="Reboot into serial DFU (adafruit-nrfutil), then replug">Serial DFU</button>
   <button id="dfuUf2" title="Reboot into the UF2 mass-storage bootloader; drop a .uf2 on the drive">UF2 DFU</button>
   <button id="factoryErase" class="danger" title="Wipe ALL bonds + settings and reboot to defaults. You must re-pair. Cannot be undone.">⚠ Factory erase</button>
+  <button id="wipeBoard" class="danger debugonly" title="ERASE THE ENTIRE BOARD: firmware + all settings + bonds. The board reboots app-less and mounts as the UF2 drive on every boot until you re-flash OpenPuck. Debug only. Cannot be undone.">☢ Wipe board</button>
 </div>
 <div class="wrap">
   <p class="sub">First connect uses the Chrome/Edge device picker; reconnects are automatic. If the picker is empty, quit any app holding the device or replug.</p>
@@ -118,6 +133,25 @@
 
     <div id="tabMain">
     <div class="cards">
+    <div class="card wide" id="pairedCard" style="display:none">
+      <h2>Paired pucks</h2>
+      <div class="row" style="gap:10px;align-items:center;margin-bottom:4px">
+        <span class="pill" id="pairedLink">—</span>
+        <span class="note" id="pairedFwd" style="flex:1">—</span>
+      </div>
+      <div id="pairedList"><p class="note">Reading paired pucks…</p></div>
+      <p class="note" style="margin-top:8px">This is a <strong>ReversePuck</strong> controller dongle (28DE:1302). It emulates a Steam Controller to whichever puck it's paired with. Pair new pucks with <code>scpair.py</code>; use the <em>Firmware update</em> tab to flash a new dongle build.</p>
+    </div>
+    <div class="card">
+      <h2>Version</h2>
+      <div class="statgrid">
+        <div class="stat"><div class="k">Firmware build</div><div class="v" id="stVersionBuild">—</div></div>
+        <div class="stat"><div class="k">Status protocol</div><div class="v" id="stVersionProto">—</div></div>
+        <div class="stat"><div class="k">Panel update</div><div class="v" id="stVersionUpdate">—</div></div>
+      </div>
+      <p class="note">This section reflects the connected puck. Reconnect after flashing or changing modes to verify what is currently running.</p>
+    </div>
+
     <div class="card">
       <h2>USB mode</h2>
       <div class="modes" style="flex-wrap:wrap">
@@ -138,11 +172,27 @@
     </div>
 
     <div class="card">
-      <h2>Back4 + face button chords</h2>
-      <p class="note" style="margin-top:0">Hold all four back paddles (L4+R4+L5+R5) plus a face button to switch mode without the WebUI. <strong>A is always Steam.</strong> B / X / Y are configurable below (defaults: B=Lizard, X=Xbox, Y=Switch HORIPAD).</p>
-      <div class="row"><label>B + back4 →</label><select class="chord" data-i="0"></select></div>
-      <div class="row"><label>X + back4 →</label><select class="chord" data-i="1"></select></div>
-      <div class="row"><label>Y + back4 →</label><select class="chord" data-i="2"></select></div>
+      <h2>Back4 chords (face + D-pad)</h2>
+      <p class="note" style="margin-top:0">Hold all four back paddles (L4+R4+L5+R5) plus a face button or D-pad direction to switch mode without the WebUI. <strong>A is always Steam</strong> — that is the way back out of any mode. B / X / Y and all four D-pad directions are configurable below (defaults: B=Lizard, X=Xbox, Y=Switch Pro).</p>
+      <div class="chord-cols">
+        <div>
+          <div class="colhead">Face buttons</div>
+          <div class="row"><label>back4 + B</label><select class="chord" data-i="0"></select></div>
+          <div class="row"><label>back4 + X</label><select class="chord" data-i="1"></select></div>
+          <div class="row"><label>back4 + Y</label><select class="chord" data-i="2"></select></div>
+        </div>
+        <!-- D-pad chords (firmware >= v18). Unlike the face selects these offer the game/clean modes too: those
+             modes have no WebUSB interface, so a chord is the only way IN, and back4+A is always the way out.
+             Older firmware has no D-pad chords at all -> the whole column hides (see #dpadChords in applyBlob). -->
+        <div id="dpadChords" class="hide">
+          <div class="colhead">D-pad</div>
+          <div class="row"><label>back4 + Left</label><select class="chordD" data-i="0"></select></div>
+          <div class="row"><label>back4 + Up</label><select class="chordD" data-i="1"></select></div>
+          <div class="row"><label>back4 + Right</label><select class="chordD" data-i="2"></select></div>
+          <div class="row"><label>back4 + Down</label><select class="chordD" data-i="3"></select></div>
+        </div>
+      </div>
+      <p id="dpadOld" class="note hide">This puck's firmware predates the D-pad chords — update it to configure them.</p>
     </div>
 
     <div class="card wide">
@@ -206,17 +256,14 @@
     </div>
 
     <div class="card">
-      <h2>Rumble</h2>
-      <div class="row"><label>Strength</label><input type="range" id="rumble" min="0" max="255" step="5"><span class="val" id="rumbleV"></span></div>
-      <p class="note">Scales rumble amplitude across all modes (100% = native, 200% = double, 0% = off).</p>
-    </div>
-
-    <div class="card">
       <h2>Switch Pro motion</h2>
-      <div class="row"><label>Report rate</label><select id="swRate"></select></div>
-      <p class="note" style="margin:0 0 6px">Full rate (~250 Hz, default) is lowest-latency. 120 Hz is low-latency and drift-free. 66 Hz is a genuine-cadence compatibility fallback — drop to it only if your console rejects the faster rates.</p>
-      <div class="row"><label>Gyro scale</label><select id="swGyro"></select></div>
-      <p class="note">Gyro sensitivity multiplier for Switch Pro mode (1.0× = unchanged).</p>
+      <!-- Gyro mapping (firmware >= v19). Older firmware always uses the corrected mapping and has no field
+           to set -> the whole block hides (see #swGyroMapBlock in applyBlob). -->
+      <div id="swGyroMapBlock">
+        <div class="row"><label>Gyro mapping</label><select id="swGyroMap"></select></div>
+        <p class="note">Corrected (default) trims the gyro so Switch Pro mode matches a genuine Pro Controller and Steam mode (roll ×0.8, pitch/yaw ×0.9). Legacy sends the raw axes untrimmed — the pre-fix behavior, if you preferred the faster feel or tuned your in-game sensitivity around it.</p>
+      </div>
+      <p id="swGyroOld" class="note hide">This puck's firmware predates the gyro-mapping setting — update it to configure it.</p>
     </div>
 
     <div class="card wide">
@@ -313,7 +360,7 @@
         </div>
       </div>
 
-      <div class="card fwupcard">
+      <div class="card fwupcard" id="relCard">
         <h2>Update from a release</h2>
         <div class="row" style="margin-top:0">
           <span class="note" style="flex:1;margin:0">Official builds from <a href="https://github.com/safijari/openpuck/releases" target="_blank" rel="noopener" style="color:var(--acc2)">github.com/safijari/openpuck/releases</a> &nbsp;·&nbsp; installed: <b id="updInstalled" style="color:var(--acc)">—</b></span>
@@ -342,8 +389,14 @@
 
 <script>
 const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)"];
-const CHORD_FIELD = [17, 18, 19];
+const CHORD_FIELD = [17, 18, 19];          // back4 + B/X/Y
+const CHORD_DPAD_FIELD = [34, 35, 36, 37]; // back4 + D-pad left/up/right/down (firmware protocol >= 18)
+const CHORD_DPAD_DEF = [9, 8, 7, 2];       // firmware defaults: PS3, DS4 game, PS5 game, Switch HORIPAD
 let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false, backupBusy=false;
+// A ReversePuck CONTROLLER dongle (28DE:1302) speaks a REDUCED subset of this protocol: no status blob /
+// lizard / config, just a paired-pucks list (0xAC) plus the identical firmware-update + DFU ops. When true,
+// the panel shows the controller UI (manage paired pucks + flash) and skips every puck-only poll.
+let isDongle=false;
 let lastP=null; // most recent status-blob payload (config source for Export)
 // Stability test: armed = active across reconnects; stabStart = ms of the current run; stabLastRun = last
 // completed run {secs} (ended by a reset). Kept in-page so it survives the device reset (not a page refresh).
@@ -397,12 +450,69 @@ const $ = s=>document.querySelector(s);
 // -- only the UI is hidden, so adding ?debug=true after an unattended incident still shows the history.
 const DEBUG_UI = new URLSearchParams(location.search).get("debug")==="true";
 if(!DEBUG_UI) for(const el of document.querySelectorAll(".debugonly")) el.style.display="none";
-// Firmware-update tab gate: only visible with ?beta=true in the URL.
+// Firmware-update tab gate: beta enables tested-but-not-yet-default surfaces.
 const BETA_UI = new URLSearchParams(location.search).get("beta")==="true";
-if(!BETA_UI){
-  $('#mainTabs .slot-tab[data-tab="tabUpdate"]').style.display="none";
-  $("#updAvail").style.display="none";
+$("#betaBtn").textContent = BETA_UI ? "Beta on" : "Beta";
+$("#betaBtn").classList.toggle("active", BETA_UI);
+$("#betaBtn").title = BETA_UI
+  ? "Show beta-disable confirmation and return to the standard UI"
+  : "Show beta warning and enable beta UI";
+$('#mainTabs .slot-tab[data-tab="tabUpdate"]').classList.toggle("beta-gated", !BETA_UI);
+function escHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 }
+function betaPopup({title, body, okText="OK", cancelText="Cancel"}){
+  return new Promise(resolve=>{
+    let done=false;
+    const shade=document.createElement("div");
+    shade.style.cssText="position:fixed;inset:0;z-index:90;background:rgba(8,10,16,.55);display:flex;align-items:center;justify-content:center;padding:18px";
+    shade.innerHTML = '<div style="background:var(--card);border:1px solid #80651c;border-radius:12px;padding:20px 22px;width:min(440px,94vw);box-shadow:0 18px 60px rgba(0,0,0,.45)">'
+      +'<h3 style="margin:0 0 10px;font-size:16px">'+escHtml(title)+'</h3>'
+      +body.map(p=>'<p class="note" style="margin:8px 0">'+escHtml(p)+'</p>').join("")
+      +'<div class="row" style="justify-content:flex-end;margin:18px 0 0">'
+      +'<button data-beta-cancel>'+escHtml(cancelText)+'</button>'
+      +'<button class="beta active" data-beta-ok>'+escHtml(okText)+'</button>'
+      +'</div></div>';
+    const finish=ok=>{
+      if(done) return;
+      done=true;
+      shade.remove();
+      resolve(!!ok);
+    };
+    shade.querySelector("[data-beta-cancel]").onclick=()=>finish(false);
+    shade.querySelector("[data-beta-ok]").onclick=()=>finish(true);
+    shade.onclick=e=>{ if(e.target===shade) finish(false); };
+    shade.onkeydown=e=>{ if(e.key==="Escape") finish(false); };
+    document.body.appendChild(shade);
+    shade.tabIndex=-1;
+    shade.focus();
+  });
+}
+$("#betaBtn").onclick=async()=>{
+  const u=new URL(location.href);
+  if(BETA_UI){
+    const ok=await betaPopup({
+      title:"Disable beta mode?",
+      body:["Beta-only tabs and controls will be gated again after the page reloads.",
+        "Let any firmware or config operation already in progress finish before leaving beta mode."],
+      okText:"Disable beta"
+    });
+    if(!ok) return;
+    u.searchParams.delete("beta");
+    location.href=u.toString();
+    return;
+  }
+  const ok=await betaPopup({
+    title:"Enable beta mode?",
+    body:["Beta features are still being tested.",
+      "They may not work correctly, can disconnect the panel or puck, and may write invalid or difficult-to-recover configs.",
+      "Export a backup first if the puck is already paired and configured."],
+    okText:"Enable beta"
+  });
+  if(!ok) return;
+  u.searchParams.set("beta","true");
+  location.href=u.toString();
+};
 function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,2000); }
 
 // ---- Loop-state trail (persistent) ----
@@ -428,8 +538,8 @@ $("#trailClear").onclick=()=>{ loopTrail=[]; try{ localStorage.removeItem(TRAIL_
 renderTrail();
 
 // Per-emulated-type config (must match firmware ET_* order: Xbox=0, Switch=1, DS4=2, DS5=3). Each type lists
-// only the remap targets that exist on that controller. Field id sent to firmware = 40 + et*8 + k
-// (k: 0..3 back paddles, 4 QAM, 5 A/B-swap, 6 trackpad-haptics, 7 LED brightness). Blob v10 reads them back at p[73 + et*8 + ...].
+// only the remap targets that exist on that controller. Field id sent to firmware = 40 + et*9 + k
+// (k: 0..3 back paddles, 4 QAM, 5 A/B-swap, 6 trackpad-haptics, 7 LED brightness, 8 rumble). Blob v17 reads them back at p[73 + et*9 + ...].
 const DPAD = {12:"D-pad Up",13:"D-pad Down",14:"D-pad Left",15:"D-pad Right"};
 const TYPE_DEFS = [
   {key:"XBOX", name:"Xbox", labels:{1:"A",2:"B",3:"X",4:"Y",5:"LB",6:"RB",7:"L3",8:"R3",9:"Back",10:"Start",11:"Guide",19:"LT",20:"RT",...DPAD}},
@@ -481,7 +591,7 @@ let lizardBindings = [];   // [{outType, od:[7], trig, hold}]
 let lizardBusy = false;
 let lizardLoaded = false;  // one-shot: the lizard map is fetched lazily, only once the connected puck proves it speaks v16+
 const BACK_LABELS = ["L4 (back upper-left)","R4 (back upper-right)","L5 (back lower-left)","R5 (back lower-right)"];
-const typeEls = []; // one entry per TYPE_DEFS: {sec, tab, activeDot, back[], qam, abSwap, pad, led, ledV}
+const typeEls = []; // one entry per TYPE_DEFS: {sec, tab, activeDot, back[], qam, abSwap, pad, led, ledV, rumble}
 function mkSelect(def, includeNone){
   const sel=document.createElement("select");
   if(includeNone){ const o=document.createElement("option"); o.value=0; o.textContent="— none —"; sel.appendChild(o); }
@@ -509,30 +619,33 @@ function setTab(et){
     tab.onclick=()=>setTab(et); bar.appendChild(tab);
     // panel
     const sec=document.createElement("div"); sec.style.cssText="background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:12px 14px;display:none";
-    const rec={sec,tab,activeDot:tab.querySelector(".active-dot"),back:[],qam:null,abSwap:null,pad:null,led:null,ledV:null};
-    // A/B swap + trackpad haptics toggles
+    const rec={sec,tab,activeDot:tab.querySelector(".active-dot"),back:[],qam:null,abSwap:null,pad:null,led:null,ledV:null,rumble:null};
+    // A/B swap + trackpad haptics + rumble toggles
     const tog=document.createElement("div"); tog.className="row";
     tog.innerHTML='<label>A/B + X/Y swap</label>';
     const ab=document.createElement("button"); ab.textContent="off"; tog.appendChild(ab);
     const padLbl=document.createElement("label"); padLbl.textContent="Trackpad haptics"; padLbl.style.marginLeft="14px"; tog.appendChild(padLbl);
     const pad=document.createElement("button"); pad.textContent="on"; tog.appendChild(pad);
+    const rumbleLbl=document.createElement("label"); rumbleLbl.textContent="Rumble"; rumbleLbl.style.marginLeft="14px"; tog.appendChild(rumbleLbl);
+    const rumble=document.createElement("button"); rumble.textContent="on"; tog.appendChild(rumble);
     sec.appendChild(tog);
-    rec.abSwap=ab; rec.pad=pad;
-    ab.onclick=()=>{ const on=ab.classList.contains("active"); setField(40+et*8+5, on?0:1); };
-    pad.onclick=()=>{ const on=pad.classList.contains("active"); setField(40+et*8+6, on?0:1); };
+    rec.abSwap=ab; rec.pad=pad; rec.rumble=rumble;
+    ab.onclick=()=>{ const on=ab.classList.contains("active"); setField(40+et*9+5, on?0:1); };
+    pad.onclick=()=>{ const on=pad.classList.contains("active"); setField(40+et*9+6, on?0:1); };
+    rumble.onclick=()=>{ const on=rumble.classList.contains("active"); setField(40+et*9+8, on?0:1); };
     // back paddles
     for(let i=0;i<4;i++){
       const row=document.createElement("div"); row.className="row";
       const lab=document.createElement("label"); lab.textContent=BACK_LABELS[i]; row.appendChild(lab);
       const sel=mkSelect(def,true); row.appendChild(sel); sec.appendChild(row);
-      sel.addEventListener("change",()=>setField(40+et*8+i, +sel.value));
+      sel.addEventListener("change",()=>setField(40+et*9+i, +sel.value));
       rec.back.push(sel);
     }
     // QAM
     { const row=document.createElement("div"); row.className="row";
       const lab=document.createElement("label"); lab.textContent="QAM (3 dots)"; row.appendChild(lab);
       const sel=mkSelect(def,false); row.appendChild(sel); sec.appendChild(row);
-      sel.addEventListener("change",()=>setField(40+et*8+4, +sel.value));
+      sel.addEventListener("change",()=>setField(40+et*9+4, +sel.value));
       rec.qam=sel; }
     // LED brightness
     { const row=document.createElement("div"); row.className="row";
@@ -541,7 +654,7 @@ function setTab(et){
       const vspan=document.createElement("span"); vspan.className="val"; row.appendChild(vspan);
       function fmtLed(v){ return (+v===0)?"Auto":v+"%"; }
       sl.addEventListener("input",()=>{ vspan.textContent=fmtLed(sl.value); });
-      sl.addEventListener("change",()=>setField(40+et*8+7, +sl.value));
+      sl.addEventListener("change",()=>setField(40+et*9+7, +sl.value));
       sec.appendChild(row);
       rec.led=sl; rec.ledV=vspan; }
     host.appendChild(sec); typeEls.push(rec);
@@ -552,12 +665,14 @@ for(const sel of document.querySelectorAll("select.chord")){
   MODE_NAMES.forEach((n,i)=>{ if(i===7||i===8) return;
     const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
 }
-{ const sel=document.getElementById("swRate");
-  for(const [lbl,v] of [["Full rate (~250 Hz, default)",2],["120 Hz",1],["66 Hz (compatibility)",0]]){
-    const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
+// D-pad chords offer EVERY mode, including the game/clean ones the face selects skip: those modes drop WebUSB,
+// so a chord is the only way into them, and back4+A still gets you back to Steam.
+for(const sel of document.querySelectorAll("select.chordD")){
+  MODE_NAMES.forEach((n,i)=>{
+    const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
 }
-{ const sel=document.getElementById("swGyro");
-  for(const [lbl,v] of [["0.5×",5],["1.0×",10],["1.5×",15],["2.0×",20],["2.5×",25],["3.0×",30]]){
+{ const sel=document.getElementById("swGyroMap");
+  for(const [lbl,v] of [["Corrected (default)",0],["Legacy (untrimmed)",1]]){
     const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
 }
 
@@ -622,13 +737,17 @@ async function openDevice(d){
     ifNum=found.ifNum; epIn=found.epIn; epOut=found.epOut;
     await dev.claimInterface(ifNum);
     await dev.controlTransferOut({requestType:"class", recipient:"interface", request:0x22, value:0x01, index:ifNum});
+    isDongle = (dev.productId === 0x1302); // ReversePuck controller dongle vs a puck (0x1304 / real)
+    const kind = isDongle ? "ReversePuck" : "puck";
     $("#connState").textContent="connected"; $("#connState").className="pill up";
-    $("#connState").title = dev.serialNumber ? ("puck serial "+dev.serialNumber) : "";
+    $("#connState").title = dev.serialNumber ? (kind+" serial "+dev.serialNumber) : "";
     $("#connectBtn").textContent="Reconnect";
     $("#panel").classList.remove("hide");
-    log(`connected — puck ${dev.serialNumber||"?"} (VID ${dev.vendorId.toString(16)} iface ${ifNum})`);
+    applyDeviceProfile(); // show the controller UI + hide puck-only cards (or vice-versa)
+    log(`connected — ${kind} ${dev.serialNumber||"?"} (VID ${dev.vendorId.toString(16)} PID ${dev.productId.toString(16)} iface ${ifNum})`);
     // resume a stability test across the reset: re-arm the firmware buzz and start timing the next run
-    if(stabArmed){ await send([0x0F,1]); stabStart=Date.now(); log("stability test resumed — timing next run"); }
+    // (puck-only: the dongle has no stability-test / haptic path)
+    if(stabArmed && !isDongle){ await send([0x0F,1]); stabStart=Date.now(); log("stability test resumed — timing next run"); }
     updateStabUI();
     // The lizard-map dump (0x11 -> 0xAA) is loaded LAZILY, gated on the firmware advertising v16+ (see
     // applyBlob). Older firmware (every pre-lizard build, including the v15 updater builds) silently drops
@@ -636,7 +755,8 @@ async function openDevice(d){
     // firmware-update gate depends on. So we never send 0x11 until a status blob proves the puck speaks v16.
     lizardLoaded=false;
     startPolling();
-    loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
+    // GitHub releases are PUCK firmware; skip the fetch for a dongle (it flashes via the local-file card).
+    if(!isDongle) loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
     return true;
   }catch(e){ log("connect failed: "+e.message); dev=null; return false; }
 }
@@ -694,10 +814,11 @@ async function send(bytes){
 }
 // Read one framed reply and return its payload (with the 2-byte [marker][len] header stripped). The blob and
 // the bond-export dump share the same framing, distinguished by the marker byte (0xA5 status, 0xA7 bonds).
-async function readFrame(marker, minLen){
+async function readFrame(marker, minLen, readLen){
   try{
     // largest frame (status blob) spans multiple USB-FS packets; read generously to capture it in one call.
-    const r = await dev.transferIn(epIn, 192);
+    // readLen is overridable: the dongle's 0xAC paired-pucks list reaches 213 B (8 pucks) and needs 256.
+    const r = await dev.transferIn(epIn, readLen||256);
     if(r.status!=="ok"||r.data.byteLength<2) return null;
     const d=new Uint8Array(r.data.buffer);
     // Live wedge reporter (0xA9): emitted from the firmware's SOF callback (usbd task) while loop() is stalled --
@@ -728,6 +849,9 @@ function applyBlob(p){
   const slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
   const chord=(p.length>25)?[p[23],p[24],p[25]]:[3,1,4];
+  // D-pad chords land at the tail of the v18 payload (firmware p[182..185] = payload p[180..183]).
+  const dpadCap=(p[0]>=18 && p.length>183);
+  const chordD=dpadCap?[p[180],p[181],p[182],p[183]]:CHORD_DPAD_DEF;
   const polls=(p.length>27?(p[26]|(p[27]<<8)):0);
   const loopUs=(p.length>29?(p[28]|(p[29]<<8)):0);
   const worstIdx=(p.length>30?p[30]:0), worstUs=(p.length>32?(p[31]|(p[32]<<8)):0);
@@ -742,9 +866,11 @@ function applyBlob(p){
   // the built-in default behavior, so the editor is shown only when the device is in Lizard mode.
   $("#lizardCard").style.display = (mode===3 && p[0]>=16)?"":"none";
   const battery=(p.length>36?p[36]:0);
-  const rumbleScale=(p.length>51?p[51]:200);
-  const swProRate=(p.length>52?p[52]:2);
-  const swGyro10=(p.length>53?p[53]:10);
+  // Switch Pro gyro mapping (protocol v19, firmware p[186] = payload p[184]). Older firmware has no such
+  // setting at all -> the select hides (see #swGyroMap below). p[51..53] are the reserved bytes that used to
+  // carry rumble strength / Switch report rate / Switch gyro scale, all removed settings.
+  const gyroMapCap=(p[0]>=19 && p.length>184);
+  const swGyroLegacy=gyroMapCap?p[184]:0;
   const rssi=(p.length>37?p[37]:0);
 
   // per-slot link status (protocol v8, p.length >= 73)
@@ -789,12 +915,12 @@ function applyBlob(p){
     for (let s=0; s<4; s++) { if (!bondedSet.has(s)) g_slotData[s] = null; }
     // clamp active slot to a valid bonded slot
     if (!g_slotData[g_activeSlot]) g_activeSlot = bondedSlots[0] || 0;
-    // v13: per-slot link stats (fw p[141..176] -> js index 139..174): each controller's own
+    // v13: per-slot link stats (fw p[145..180] -> js index 143..178): each controller's own
     // polls/delivered/new/crc/noRx/relay, so the tabs no longer show every controller merged into one number
-    if (p.length >= 175) {
+    if (p.length >= 179) {
       for (let s=0; s<4; s++) {
         if (!g_slotData[s]) continue;
-        const b = 139 + s*9;
+        const b = 143 + s*9;
         g_slotData[s].stats = { polls: p[b]|(p[b+1]<<8), f1: p[b+2]|(p[b+3]<<8),
                                 newps: p[b+4]|(p[b+5]<<8), crc: p[b+6], norx: p[b+7], relay: p[b+8] };
       }
@@ -814,29 +940,29 @@ function applyBlob(p){
   // Poll TX + RF-fail counts: shown ALWAYS (even when the link reads down) so a wedge is diagnosable --
   // polls>0 here while Delivered is "—" means the puck is still polling but getting no usable replies.
   $("#stPolls").textContent = polls+" /s";
-  { const crc=(p.length>113?p[113]:0), norx=(p.length>114?p[114]:0), heal=(p.length>115?p[115]:0);
-    const rf=(p.length>126?(p[125]|(p[126]<<8)):0);
+  { const crc=(p.length>117?p[117]:0), norx=(p.length>118?p[118]:0), heal=(p.length>119?p[119]:0);
+    const rf=(p.length>130?(p[129]|(p[130]<<8)):0);
     $("#stRfFail").innerHTML = crc+" · "+norx+" · "+heal + (rf?' · <span class="pill dn">ring '+rf+'</span>':"");
     // ring fault = we caught+recovered a relay-ring corruption that would otherwise be an invisible IRQ-off
     // watchdog hang. Log each new one (persists across the device reset + panel reconnect).
     if(rf>(window._ringFault||0)) log("⚠ RING FAULT #"+rf+" recovered — caught a relay-ring desync/corruption (would have hung loop with IRQs off)");
     window._ringFault=rf; }
   // v12: relay-frame rate + clock fingerprint (browser index = firmware index − 2)
-  { const relay=(p.length>117?(p[116]|(p[117]<<8)):null);
+  { const relay=(p.length>121?(p[120]|(p[121]<<8)):null);
     $("#stRelay").textContent = relay==null ? "—" : (relay+" /s"); }
-  if(p.length>121){
+  if(p.length>125){
     const LF=["stopped","RC","xtal","synth"], HF=["RC","?","xtal","?"];
-    const lf=p[118], hf=p[119], upm=(p[120]|(p[121]<<8));
+    const lf=p[122], hf=p[123], upm=(p[124]|(p[125]<<8));
     const lfBad=(lf!==2), hfBad=(hf!==2), upmBad=(upm && (upm<985||upm>1015));
     const tag=(t,bad)=> bad ? '<span class="pill dn">'+t+'</span>' : t;
     $("#stClock").innerHTML = tag(LF[lf]||lf, lfBad)+" / "+tag(HF[hf]||hf, hfBad);
     $("#stUsPerMs").innerHTML = upm ? tag(""+upm, upmBad) : "—";
   }
-  // v12: LIVE loop heartbeat — curStage (firmware p[125]) + ms-since-beat (p[126], 40ms units). Updates even
+  // v12: LIVE loop heartbeat — curStage (firmware p[129]) + ms-since-beat (p[130], 40ms units). Updates even
   // while loop() is wedged (blob is pushed from the SOF interrupt), so a hang shows "STALLED @ <stage>" live.
-  if(p.length>124){
+  if(p.length>128){
     const STAGE=["webusb","ctrl.task","serial","rfdiag","rflink","haptic","led","usbmount","usbtx"];
-    const cur=p[123], stallMs=p[124]*40, name=(STAGE[cur]||("stage "+cur));
+    const cur=p[127], stallMs=p[128]*40, name=(STAGE[cur]||("stage "+cur));
     if(stallMs>=200){
       $("#stLoopState").innerHTML='<span class="pill dn">STALLED @ '+name+' '+stallMs+'ms</span>';
       if(!window._stallEpisode) trailAdd("STALLED @ "+name+" ("+stallMs+"ms, soft wedge — usbd still alive)");
@@ -853,8 +979,8 @@ function applyBlob(p){
     }
   }
   // v12: least-ever free stack on the usbd task (words). Low = overflow risk (multi-controller haptic-relay
-  // hang hypothesis). Firmware p[137] -> browser p[135]. Red under 24 words (~96B), amber under 48.
-  if(p.length>136){ const usbdW=(p[135]|(p[136]<<8));
+  // hang hypothesis). Firmware p[141] -> browser p[139]. Red under 24 words (~96B), amber under 48.
+  if(p.length>140){ const usbdW=(p[139]|(p[140]<<8));
     $("#stUsbdStack").innerHTML = usbdW<24 ? ('<span class="pill dn">'+usbdW+'</span>')
       : (usbdW<48 ? ('<span class="pill" style="background:#3a3216;color:#e5c76b">'+usbdW+'</span>') : (""+usbdW));
   }
@@ -867,19 +993,19 @@ function applyBlob(p){
   const RR_NAMES = ["unknown","power-on","pin/replug","watchdog (hang)","CPU lockup",
                     "HARDFAULT","reboot","soft reset","wake-from-off"];
   const RR_FAULT = new Set([3,4,5]); // watchdog / lockup / hardfault = a real crash worth reporting (#72)
-  if (p.length > 109) {
-    const code = p[105];
-    const raw = ((p[106]|(p[107]<<8)|(p[108]<<16)|(p[109]<<24))>>>0);
+  if (p.length > 113) {
+    const code = p[109];
+    const raw = ((p[110]|(p[111]<<8)|(p[112]<<16)|(p[113]<<24))>>>0);
     const name = RR_NAMES[code] || ("code "+code);
     // v12: which loop stage was stuck when the last watchdog/lockup hang fired (0xFF = last boot wasn't a hang)
     const STAGE_NAMES = ["webusb","ctrl.task","serial","rfdiag","rflink","haptic","led","usbmount","usbtx"];
-    const hangStage = (p.length>122 ? p[122] : 0xFF);
+    const hangStage = (p.length>126 ? p[126] : 0xFF);
     let label = name;
     if (hangStage!==0xFF) label += " @ "+(STAGE_NAMES[hangStage]||("stage "+hangStage));
     $("#stReset").innerHTML = RR_FAULT.has(code) ? ('<span class="pill dn">'+label+'</span>') : label;
-    // v12: PC/LR captured by the WDT pre-reset ISR (browser idx = firmware−2: hangPC@127, hangLR@131)
-    const hpc=(p.length>130?((p[127]|(p[128]<<8)|(p[129]<<16)|(p[130]<<24))>>>0):0);
-    const hlr=(p.length>134?((p[131]|(p[132]<<8)|(p[133]<<16)|(p[134]<<24))>>>0):0);
+    // v12: PC/LR captured by the WDT pre-reset ISR (browser idx = firmware−2: hangPC@131, hangLR@135)
+    const hpc=(p.length>134?((p[131]|(p[132]<<8)|(p[133]<<16)|(p[134]<<24))>>>0):0);
+    const hlr=(p.length>138?((p[135]|(p[136]<<8)|(p[137]<<16)|(p[138]<<24))>>>0):0);
     const hx=v=>"0x"+v.toString(16).padStart(8,"0");
     const el = $("#resetHist");
     if (el) el.textContent = "RESETREAS=0x"+raw.toString(16).padStart(8,"0")
@@ -889,7 +1015,7 @@ function applyBlob(p){
     if (hpc && hpc!==window._hangPC){ window._hangPC=hpc; log("⚑ HANG PC="+hx(hpc)+" LR="+hx(hlr)+" — send me this; I'll map it to the stuck function"); }
     // append the queued reset to the running hang log, now that we have this boot's reason/PC/stack
     if (pendingHang){
-      const usbdW2=(p.length>136?(p[135]|(p[136]<<8)):0);
+      const usbdW2=(p.length>140?(p[139]|(p[140]<<8)):0);
       hangLog.unshift({ time:new Date(pendingHang.t).toLocaleTimeString(), uptime:pendingHang.uptimeSecs,
         reason:name, stage:(hangStage!==0xFF)?(STAGE_NAMES[hangStage]||("stage"+hangStage)):"",
         pc:hpc?hx(hpc):"", lr:hlr?hx(hlr):"", usbd:usbdW2 });
@@ -921,23 +1047,25 @@ function applyBlob(p){
     ? (buildId + (gitDirty ? ' <span class="pill dn">dirty</span>' : ' <span class="pill up">clean</span>'))
     : "—";
   $("#updInstalled").textContent = buildId || "—"; // mirrored on the Firmware-update tab
+  updateVersionUI();
   updateFwGate(); // (re)evaluate the firmware-tab gate on every blob — version is at p[0]
   checkUpdateNotice(); // needs BOTH the installed version (this blob) and relCache (fetched on connect)
-  setSlider("mDiv",mDiv); setSlider("mFric",mFric); setSlider("rumble",rumbleScale);
+  setSlider("mDiv",mDiv); setSlider("mFric",mFric);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
-  // land-all-0x87 experiment toggle (blob v14, firmware p[177] -> JS p[175])
-  { const la=(p.length>175?p[175]:0); $("#landAll87").textContent = la?"on":"off"; $("#landAll87").classList.toggle("active",!!la); }
-  // per-type button config (blob v10): 4 types x 8 bytes. readBlob() strips the 2-byte [0xA5][len] header, so
+  // land-all-0x87 experiment toggle (blob v14/v17, firmware p[181] -> JS p[179])
+  { const la=(p.length>179?p[179]:0); $("#landAll87").textContent = la?"on":"off"; $("#landAll87").classList.toggle("active",!!la); }
+  // per-type button config (blob v10/v17): 4 types x 9 bytes. readBlob() strips the 2-byte [0xA5][len] header, so
   // the firmware's buffer index 75 lands at JS index 73 here.
-  if(p.length>=73+TYPE_DEFS.length*8){
+  if(p.length>=73+TYPE_DEFS.length*9){
     const activeEt=etypeForMode(mode);
     typeEls.forEach((rec,et)=>{
-      const q=73+et*8;
-      const back=[p[q],p[q+1],p[q+2],p[q+3]], qam=p[q+4], ab=p[q+5], pad=p[q+6], led=p[q+7];
+      const q=73+et*9;
+      const back=[p[q],p[q+1],p[q+2],p[q+3]], qam=p[q+4], ab=p[q+5], pad=p[q+6], led=p[q+7], rum=p[q+8];
       rec.back.forEach((sel,i)=>{ if(document.activeElement!==sel) sel.value=back[i]; });
       if(document.activeElement!==rec.qam) rec.qam.value=qam;
       rec.abSwap.textContent=ab?"on":"off"; rec.abSwap.classList.toggle("active",!!ab);
       rec.pad.textContent=pad?"on":"off"; rec.pad.classList.toggle("active",!!pad);
+      rec.rumble.textContent=rum?"on":"off"; rec.rumble.classList.toggle("active",!!rum);
       if(document.activeElement!==rec.led){ rec.led.value=led; rec.ledV.textContent=(led===0)?"Auto":led+"%"; }
       // dot marks the type matching the current puck mode
       rec.activeDot.style.display = (et===activeEt) ? "" : "none";
@@ -950,11 +1078,16 @@ function applyBlob(p){
     const amag=Math.round(Math.sqrt(ax*ax+ay*ay+az*az));
     $("#stImu").textContent = `a=(${ax}, ${ay}, ${az})  |a|=${amag}`;
   }
-  { const sel=$("#swRate"); if(document.activeElement!==sel) sel.value=swProRate; }
-  { const sel=$("#swGyro"); if(document.activeElement!==sel) sel.value=swGyro10; }
+  { const sel=$("#swGyroMap");
+    $("#swGyroMapBlock").classList.toggle("hide", !gyroMapCap);
+    $("#swGyroOld").classList.toggle("hide", gyroMapCap);
+    if(gyroMapCap && document.activeElement!==sel) sel.value=swGyroLegacy; }
   for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
+  $("#dpadChords").classList.toggle("hide", !dpadCap);
+  $("#dpadOld").classList.toggle("hide", dpadCap);
+  if(dpadCap) for(const sel of document.querySelectorAll("select.chordD")){ if(document.activeElement!==sel) sel.value=chordD[+sel.dataset.i]; }
 }
-function fmtSlider(id,v){ return id==="rumble" ? v+"%" : id==="hapBlockS" ? v+" s" : ""+v; }
+function fmtSlider(id,v){ return id==="hapBlockS" ? v+" s" : ""+v; }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
 
 let inflight=false;
@@ -962,9 +1095,75 @@ async function refresh(){
   if(!dev||inflight||capturing||backupBusy||flightBusy||lizardBusy) return; inflight=true;
   // try/finally: an exception anywhere in here (applyBlob included) must never leave inflight latched true --
   // that would silently kill all future polls and read as a fake "heartbeat lost".
-  try{ await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
+  try{
+    if(isDongle){ await send([0x01]); const p=await readFrame(0xAC, 3, 256); if(p) applyDongleStatus(p); }
+    else { await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
+  }
   catch(e){ log("refresh err: "+e.message); }
   finally{ inflight=false; }
+}
+
+// ---- ReversePuck controller dongle: paired-pucks list (0xAC frame) ----
+// Payload (readFrame strips the [0xAC][len] header): [ver][flags][count] + per bond 26B:
+//   [slot][alive][puuid4][iuuid4][serial16]. flags bit0=forwarding a Deck, bit1=an RF link is up.
+function applyDongleStatus(p){
+  window._lastBlobTs=Date.now(); // heartbeat + waitReconnect success signal (mirrors applyBlob)
+  if(pendingHang){ // a reconnect after a reboot: close out the hang-log row we opened on disconnect
+    pendingHang=null;
+  }
+  const flags=p[1], count=p[2], bonds=[];
+  for(let i=0;i<count;i++){
+    const q=3+i*26; if(q+26>p.length) break;
+    const dec=new TextDecoder("latin1");
+    let serial=dec.decode(new Uint8Array(p.slice(q+10,q+26)));
+    const z=serial.indexOf(" "); if(z>=0) serial=serial.slice(0,z);
+    serial=serial.replace(/[^\x20-\x7e]/g,"").trim(); // strip NUL padding / stray non-printables
+    bonds.push({slot:p[q], alive:!!p[q+1],
+      puuid:p.slice(q+2,q+6), iuuid:p.slice(q+6,q+10), serial});
+  }
+  renderPaired(bonds, flags);
+}
+function renderPaired(bonds, flags){
+  const list=$("#pairedList"); if(!list) return;
+  $("#pairedFwd").textContent = (flags&1) ? "forwarding a Steam Deck" : "idle";
+  $("#pairedLink").textContent = (flags&2) ? "RF link up" : "no RF link";
+  $("#pairedLink").className = "pill "+((flags&2)?"up":"dn");
+  if(!bonds.length){ list.innerHTML='<p class="note">No pucks paired yet. Pair one with <code>scpair.py</code> (see ReversePuck/README.md), then it appears here.</p>'; return; }
+  const hex=a=>[...a].map(x=>x.toString(16).padStart(2,"0")).join("");
+  list.innerHTML="";
+  for(const b of bonds){
+    const row=document.createElement("div"); row.className="row"; row.style.cssText="align-items:center;gap:10px;margin:6px 0";
+    const badge=b.alive?'<span class="pill up" style="flex:0 0 auto">live</span>':'<span class="pill" style="flex:0 0 auto">offline</span>';
+    row.innerHTML=`${badge}<div style="flex:1"><div style="font-weight:600">${b.serial||"(unnamed puck)"}</div>`
+      +`<div class="note" style="font-family:ui-monospace,Menlo,monospace">slot ${b.slot} · puuid ${hex(b.puuid)} · iuuid ${hex(b.iuuid)}</div></div>`;
+    const rm=document.createElement("button"); rm.textContent="Remove"; rm.className="danger"; rm.style.flex="0 0 auto";
+    rm.title="Un-bond this puck from the ReversePuck. You'll need to re-pair to use it again.";
+    rm.onclick=async()=>{
+      if(!confirm(`Remove paired puck "${b.serial||"slot "+b.slot}"?\n\nThe ReversePuck forgets this pairing; re-pair with scpair.py to use it again.`)) return;
+      await send([0x30, b.slot & 0xff]); log("removed paired puck slot "+b.slot);
+      // the firmware replies with a fresh 0xAC after the remove; the next poll (or this read) refreshes the list
+    };
+    row.appendChild(rm); list.appendChild(row);
+  }
+}
+
+// Toggle the UI between the full puck panel and the reduced ReversePuck (controller dongle) panel. Called on
+// every (re)connect so switching a puck<->dongle in one session lands on the right layout.
+function applyDeviceProfile(){
+  const d=isDongle;
+  // body.dongle drives the CSS that hides the puck-only Controller cards; toggling the class back on a puck
+  // reconnect restores them without clobbering the debugonly/lizard inline visibility rules.
+  document.body.classList.toggle("dongle", d);
+  const paired=$("#pairedCard"); if(paired) paired.style.display = d ? "" : "none";
+  // top-bar buttons: factory-erase is a puck-only op (0x0A); the dongle keeps DFU + (debug) wipe-board
+  const fe=$("#factoryErase"); if(fe) fe.style.display = d ? "none" : "";
+  // the GitHub "Update from a release" list is puck firmware; a dongle flashes via the local-file drop card
+  const rc=$("#relCard"); if(rc) rc.style.display = d ? "none" : "";
+  const ua=$("#updAvail"); if(ua && d) ua.classList.add("hide");
+  // flashing the dongle is a primary use, so reveal the Firmware-update tab for it even without ?beta=true
+  // (which otherwise gates the tab for pucks).
+  if(d){ const ut=$('#mainTabs .slot-tab[data-tab="tabUpdate"]'); if(ut) ut.style.display=""; }
+  updateFwGate(); // the dongle always supports panel updates
 }
 
 // ---- Backup / clone ----
@@ -978,10 +1177,14 @@ function buildBackup(p, bp){
   for(let s=0;s<4;s++){ const rec=bp.slice(2+s*24, 2+s*24+24);
     bonds.push({slot:s, used:!!((mask>>s)&1), rec:hexEnc(rec)}); }
   const types=[];
-  for(let et=0; et<TYPE_DEFS.length; et++){ const q=73+et*8;
-    types.push({back:[p[q],p[q+1],p[q+2],p[q+3]], qam:p[q+4], abSwap:p[q+5], pad:p[q+6], led:p[q+7]}); }
-  const cfg={ mode:p[1], mDiv:p[2], mFric:p[3], persistMode:p[22], chord:[p[23],p[24],p[25]],
-              rumble:p[51], swProRate:p[52], swGyro10:p[53], types };
+  for(let et=0; et<TYPE_DEFS.length; et++){ const q=73+et*9;
+    types.push({back:[p[q],p[q+1],p[q+2],p[q+3]], qam:p[q+4], abSwap:p[q+5], pad:p[q+6], led:p[q+7], rumble:p[q+8]}); }
+  const cfg={ mode:p[1], mDiv:p[2], mFric:p[3], persistMode:p[22], chord:[p[23],p[24],p[25]], types };
+  // D-pad chords only exist from protocol v18, the Switch gyro mapping from v19; omit the keys entirely on
+  // older pucks so a restore doesn't replay defaults over a newer puck's real settings. (Backups from before
+  // those settings existed carry rumble/swProRate/swGyro10 keys instead — now-removed settings, ignored.)
+  if(p[0]>=18 && p.length>183) cfg.chordD=[p[180],p[181],p[182],p[183]];
+  if(p[0]>=19 && p.length>184) cfg.swGyroLegacy=p[184];
   // version 2: include the lizard map so it survives a backup/restore cycle.
   // Guard on !lizardBusy to avoid a race with the one-shot lazy load (lizardExchange sets
   // lizardBusy while the initial 0x11 fetch is in flight); if the load is still pending the
@@ -1028,11 +1231,13 @@ async function importBackup(file){
   // driven while the import replays every setting onto the puck, then closes on Done / on error.
   modalOpen("Restore backup");
   const c=obj.config;
-  // Pre-count every write so the bar tracks real progress: settings (9 base fields), per-type config
-  // (8 each), the lizard bindings, 4 bond slots, and the final commit.
+  // Pre-count every write so the bar tracks real progress: settings (6 base fields, + 4 D-pad chords and the
+  // Switch gyro mapping when the backup carries them), per-type config (9 each), the lizard bindings, 4 bond
+  // slots, and the final commit.
   const typeN=Array.isArray(c.types)?Math.min(c.types.length,4):0;
   const lizardN=(Array.isArray(c.lizardMap) && lizardCapable())?Math.min(c.lizardMap.length,LZ_MAX):0;
-  const total=9 + typeN*8 + lizardN + 4 + 1;
+  const baseN=6 + (Array.isArray(c.chordD)?4:0) + (c.swGyroLegacy!==undefined?1:0);
+  const total=baseN + typeN*9 + lizardN + 4 + 1;
   let step=0, stage="";
   const tick=()=>modalStage(stage, Math.min(99,Math.floor(step*100/total)));
   try{
@@ -1054,18 +1259,23 @@ async function importBackup(file){
     const sf=async(f,v)=>{ await w([0x02, f, (v|0)&0xff]); };
     // replay every setting (each persists; none reboot). mode is applied by the 0x0E commit below.
     stage="Restoring settings"; tick();
-    await sf(1,c.mDiv); await sf(2,c.mFric); await sf(22,c.rumble); await sf(16,c.persistMode?1:0);
+    await sf(1,c.mDiv); await sf(2,c.mFric); await sf(16,c.persistMode?1:0);
     await sf(17,c.chord[0]); await sf(18,c.chord[1]); await sf(19,c.chord[2]);
-    await sf(23,c.swProRate); await sf(24,c.swGyro10);
+    // absent in backups taken before the D-pad chords existed (or from a pre-v18 puck) -- skip, don't default
+    if(Array.isArray(c.chordD)) for(let i=0;i<4;i++) await sf(CHORD_DPAD_FIELD[i], c.chordD[i]);
+    // Switch Pro gyro mapping (v19+ backups only). Backups also carry rumble/swProRate/swGyro10 from the
+    // removed settings; those fields no longer exist on the puck, so they are not replayed.
+    if(c.swGyroLegacy!==undefined) await sf(38, c.swGyroLegacy?1:0);
     // c.types is absent in some very old backups created before per-type paddle/haptic config
     // was added to the panel export; guard so a missing field never crashes the import mid-flight.
     if(typeN){
       for(let et=0; et<typeN; et++){ const t=c.types[et];
-        for(let k=0;k<4;k++) await sf(40+et*8+k, t.back[k]);
-        await sf(40+et*8+4, t.qam); await sf(40+et*8+5, t.abSwap?1:0);
-        await sf(40+et*8+6, t.pad?1:0); await sf(40+et*8+7, t.led); }
-      log("settings replayed ("+(9+typeN*8)+" fields)");
-    } else { log("settings replayed (9 fields — no per-type config in this backup)"); }
+        for(let k=0;k<4;k++) await sf(40+et*9+k, t.back[k]);
+        await sf(40+et*9+4, t.qam); await sf(40+et*9+5, t.abSwap?1:0);
+        await sf(40+et*9+6, t.pad?1:0); await sf(40+et*9+7, t.led);
+        await sf(40+et*9+8, t.rumble!==undefined?t.rumble:1); }
+      log("settings replayed ("+(baseN+typeN*9)+" fields)");
+    } else { log("settings replayed ("+baseN+" fields — no per-type config in this backup)"); }
     // restore the lizard map if the backup includes it (version 2+) and the puck speaks v16+.
     // pre-lizard-map backups simply lack c.lizardMap; skip silently so they still import cleanly.
     if(lizardN){
@@ -1611,6 +1821,7 @@ function verTriple(s){
 }
 function checkUpdateNotice(){
   const el=$("#updAvail");
+  if(!BETA_UI){ el.classList.add("hide"); return; }
   const inst=verTriple(blobBuildId(lastP));
   const rel=(relCache||[]).find(r=>!r.prerelease && relAsset(r,false));
   const latest=rel ? verTriple(rel.tag_name) : null;
@@ -1626,7 +1837,7 @@ $("#updAvail").onclick=()=>{ document.querySelector('#mainTabs .slot-tab[data-ta
 // update tab to be usable. Too old => banner explains + both cards go inert until a capable build is flashed
 // the manual way once.
 function updateFwGate(){
-  const ok = !!(lastP && lastP[0]>=15);
+  const ok = isDongle || !!(lastP && lastP[0]>=15);
   $("#updGate").classList.toggle("hide", ok);
   if(!ok) $("#updGateMsg").textContent =
     "This puck is running "+(blobBuildId(lastP)||"an unknown build")+" (status v"+(lastP?lastP[0]:"?")
@@ -1634,6 +1845,15 @@ function updateFwGate(){
     +"gets you back: click “UF2 DFU” in the top bar, then drag a panel-update-capable .uf2 onto the UF2BOOT "
     +"drive it mounts. Every update after that happens right here.";
   for(const c of document.querySelectorAll(".fwupcard")) c.classList.toggle("gated", !ok);
+}
+function updateVersionUI(){
+  const build=blobBuildId(lastP), proto=lastP ? lastP[0] : 0;
+  const dirty=lastP && lastP.length>38 ? lastP[38] : 0;
+  $("#stVersionBuild").innerHTML = build
+    ? (build + (dirty ? ' <span class="pill dn">dirty</span>' : ' <span class="pill up">clean</span>'))
+    : "—";
+  $("#stVersionProto").textContent = proto ? ("v"+proto) : "—";
+  $("#stVersionUpdate").textContent = proto >= 15 ? "supported" : (proto ? "manual UF2 only" : "—");
 }
 // after the apply-reboot: resolved once the puck is back.
 // Returns true if the panel auto-reconnected and received a fresh status blob (desktop), "appeared"
@@ -1661,8 +1881,9 @@ async function waitReconnect(t0,ms){
 // applied, reconnect observed. getImage runs INSIDE the modal so release downloads show progress there.
 async function runUpdate(title, confirmText, getImage){
   if(dfuBusy) return;
-  if(!dev){ log("connect to the puck first — the update travels over this WebUSB connection"); return; }
-  if(!lastP || lastP[0]<15){
+  if(!dev){ log("connect to the device first — the update travels over this WebUSB connection"); return; }
+  // The dongle always speaks the update ops; only gate a PUCK on its status-blob version.
+  if(!isDongle && (!lastP || lastP[0]<15)){
     log("this puck's firmware ("+(blobBuildId(lastP)||"?")+", status v"+(lastP?lastP[0]:"?")+") predates panel updates (needs v15+) — flash a panel-update-capable build once via UF2 DFU + drag-and-drop, then this works");
     return;
   }
@@ -1871,7 +2092,22 @@ $("#relRefresh").onclick=()=>loadReleases(true);
 
 // ---- top-level tabs ----
 for(const t of document.querySelectorAll("#mainTabs .slot-tab")){
-  t.onclick=()=>{
+  t.onclick=async()=>{
+    if(t.dataset.tab==="tabUpdate" && !BETA_UI){
+      const ok=await betaPopup({
+        title:"Firmware update is beta",
+        body:["Firmware update is still being tested and may not work correctly.",
+          "A bad image or interrupted recovery path can leave you needing UF2 DFU to recover.",
+          "Enable beta mode before using this feature."],
+        okText:"Enable beta"
+      });
+      if(ok){
+        const u=new URL(location.href);
+        u.searchParams.set("beta","true");
+        location.href=u.toString();
+      }
+      return;
+    }
     for(const x of document.querySelectorAll("#mainTabs .slot-tab")) x.classList.toggle("active",x===t);
     $("#tabMain").classList.toggle("hide", t.dataset.tab!=="tabMain");
     $("#tabUpdate").classList.toggle("hide", t.dataset.tab!=="tabUpdate");
@@ -1931,24 +2167,37 @@ $("#factoryErase").onclick=async()=>{
   await send([0x0A,0x45,0x52,0x53]);
   log("FACTORY ERASE sent — copycat is reformatting and rebooting to defaults. Re-pair the controller, then reconnect.");
 };
+// Debug-only: full board wipe. Erases the firmware itself (not just settings), leaving the board app-less so
+// it mounts as the UF2 bootloader drive on every boot until OpenPuck is flashed again. Sends 0x25 + "WIPE".
+$("#wipeBoard").onclick=async()=>{
+  if(!dev){ log("not connected"); return; }
+  if(!confirm("WIPE THE ENTIRE BOARD?\n\nThis is NOT a factory reset. It erases:\n  • the OpenPuck FIRMWARE itself\n  • every setting (mode, chords, back paddles, sensitivity)\n  • the paired-controller bond\n\nThe board reboots with NO firmware and mounts as the UF2 bootloader drive. It will do so on EVERY boot until you flash OpenPuck (a .uf2) back onto it. This panel will disconnect and NOT reconnect until then.\n\nThis CANNOT be undone from software.")) return;
+  if(!confirm("Are you absolutely sure?\n\nThe board will be blank. The ONLY way back is to drag a .uf2 firmware file onto the UF2 drive it mounts as.")) return;
+  const typed=prompt('Final confirmation — type  WIPE  (all caps) to erase the whole board:');
+  if(typed!=="WIPE"){ log("board wipe cancelled (confirmation text did not match)"); return; }
+  await send([0x25,0x57,0x49,0x50,0x45]);
+  log("FULL BOARD WIPE sent — the board is erasing firmware + all data (~15–20 s), then reboots as a blank UF2 drive. Flash OpenPuck (.uf2) to restore it.");
+};
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
 $("#landAll87").onclick=async()=>{ const on=$("#landAll87").classList.contains("active"); await setField(29, on?0:1); log("land-all-0x87 "+(on?"disabled":"enabled")); };
 // Connection tuning: post-connect haptic block on (field 27) + seconds (field 28). (poll RX window is fixed.)
-for(const id of ["mDiv","mFric","rumble"]){
-  const field={mDiv:1,mFric:2,rumble:22}[id];
+for(const id of ["mDiv","mFric"]){
+  const field={mDiv:1,mFric:2}[id];
   $("#"+id).addEventListener("input", ()=>{ $("#"+id+"V").textContent=fmtSlider(id,$("#"+id).value); });
   $("#"+id).addEventListener("change", ()=>setField(field, +$("#"+id).value));
 }
 // per-type back/QAM/A-B-swap/haptics handlers are wired in buildTypeCfgs()
-$("#swRate").addEventListener("change", ()=>setField(23, +$("#swRate").value));
-$("#swGyro").addEventListener("change", ()=>setField(24, +$("#swGyro").value));
+$("#swGyroMap").addEventListener("change", ()=>setField(38, +$("#swGyroMap").value));
 for(const sel of document.querySelectorAll("select.chord")){
   sel.addEventListener("change", ()=>setField(CHORD_FIELD[+sel.dataset.i], +sel.value));
+}
+for(const sel of document.querySelectorAll("select.chordD")){
+  sel.addEventListener("change", ()=>setField(CHORD_DPAD_FIELD[+sel.dataset.i], +sel.value));
 }
 for(const b of document.querySelectorAll(".modebtn")){
   b.onclick=()=>{ const m=+b.dataset.mode;
     const clean=(m===7||m===8||m===9);
-    const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold back-paddle 4 + A to return to Steam mode.":"");
+    const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold all four back paddles (L4+R4+L5+R5) + A to return to Steam mode. The back4+D-pad chords are how you get back INTO these modes without the panel — check their assignments in the chords card first.":"");
     if(confirm(msg)){ send([0x03, m]); log("mode switch requested — device will reboot"); } };
 }
 updateUf2UI();

@@ -176,7 +176,8 @@ uint32_t psButtonsFromSteam(uint32_t raw)
 		b |= tritonFromCode(g_qamMap);
 	}
 	if ((b & CHORD_BACK4) == CHORD_BACK4)
-		b &= ~(uint32_t)(TB_A | TB_B | TB_X | TB_Y);
+		b &= ~(uint32_t)(TB_A | TB_B | TB_X | TB_Y | TB_DUP | TB_DDN |
+				 TB_DLF | TB_DRT);
 	if (b & TB_L4)
 		psOrBackCode(&b, g_back[0]);
 	if (b & TB_R4)

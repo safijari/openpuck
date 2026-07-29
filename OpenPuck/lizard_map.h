@@ -39,8 +39,10 @@
 #define LZ_GYRO_BTN 3u
 
 // ---- virtual stick-deflection trigger bits (usable in trigMask / holdMask) ----
-// The SC2 controller never sets bits 28..31 in its 0x45 report; rfLizard ORs these in after
-// reading the physical button word so bindings can fire on stick deflection.
+// These reuse bits 28..31 of the button word, which the SC2 *does* use in its 0x45 report (bit 28 =
+// right grip touch, bit 29 = left grip touch; PROTOCOL.md §8). To avoid grip-touch firing these,
+// lizardButtons() masks the controller's top 4 bits off before OR-ing in the deflection flags below,
+// so in MODE_LIZARD these bits mean ONLY stick deflection (grips are not a bindable lizard input).
 #define LZ_BTN_LSTICK_RT 0x10000000u // lx >  12000
 #define LZ_BTN_LSTICK_LF 0x20000000u // lx < -12000
 #define LZ_BTN_LSTICK_DN 0x40000000u // ly < -12000

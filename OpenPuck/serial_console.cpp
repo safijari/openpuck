@@ -7,6 +7,7 @@
 #include "config.h"
 #include "puck_hid.h" // g_cmdCapture (feature-command capture toggle)
 #include "fault_diag.h"
+#include "usb_mount.h" // modeSwitchReboot()
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <stdlib.h>
@@ -40,6 +41,42 @@ void serialConsolePoll()
 				Serial.printf(
 					"# land amp/haptic 0x87 config %s\n",
 					g_landAmp ? "ON" : "off");
+			} else if (!strcmp(line, "CD")) {
+				// A/B: content dedup on the Steam input forward (drop reports whose body minus the
+				// free-running counter is unchanged) -- caps delivered rate at the controller's real
+				// distinct-report rate instead of the poll rate.
+				g_fwdContentDedup = !g_fwdContentDedup;
+				Serial.printf("# content dedup %s\n",
+					      g_fwdContentDedup ? "ON" : "off");
+			} else if (!strcmp(line, "SS")) {
+				// on-demand smoothness snapshot: print the last-second cached rates in ONE line, NOW,
+				// instead of waiting for the guarded 1 Hz "# stat" (which the I45/FC flood starves during
+				// a drag). new/s = the FRESH-delivered rate (what Steam receives); noRx = RF packet loss.
+				Serial.printf(
+					"# SS pollrate=%luHz polls=%u/s F1=%u/s new=%u/s crc=%u noRx=%u slot%d\n",
+					(unsigned long)(1000000UL / g_pollUs),
+					g_pollsps, g_f1ps, g_newps, g_crcps,
+					g_norxps, g_curSlot);
+			} else if (!strncmp(line, "PR", 2) &&
+				   (line[2] >= '0' && line[2] <= '9')) {
+				// live poll-rate sweep: "PR<hz>" sets the RF poll cadence (session-only, not persisted).
+				// Clamped 100..1000 Hz. Watch the delivered report rate / feel to find the sweet spot.
+				long hz = atol(line + 2);
+				if (hz < 100)
+					hz = 100;
+				else if (hz > 1000)
+					hz = 1000;
+				g_pollUs = (uint32_t)(1000000L / hz);
+				Serial.printf(
+					"# poll rate -> %ld Hz (%lu us)\n", hz,
+					(unsigned long)g_pollUs);
+			} else if (!strcmp(line, "HR")) {
+				// A/B: disable the puck->controller haptic relay (Steam 0x80-0x86 rumble/pad feedback)
+				// to isolate whether relaying Steam's trackpad texture haptics degrades drag smoothness.
+				g_hapticRelay = !g_hapticRelay;
+				Serial.printf(
+					"# haptic relay (Steam 0x80-0x86) %s\n",
+					g_hapticRelay ? "ON" : "off");
 			} else if (!strcmp(line, "S81")) {
 				// A/B: drop Steam's relayed 0x81 CLEAR_DIGITAL_MAPPINGS (the connect amp-clicker)
 				g_drop81 = !g_drop81;
@@ -149,10 +186,8 @@ void serialConsolePoll()
 							"# switch mode %u (reboot)\n",
 							m);
 						delay(20);
-						saveMode(m);
-						delay(40);
-						faultDiagArmIntentionalReset();
-						NVIC_SystemReset();
+						// clean detach + reboot (releases held input on the outgoing device)
+						modeSwitchReboot(m);
 					}
 				}
 			} else if (line[0] == 'c') {

@@ -2,7 +2,7 @@
 
 nRF52840 / Adafruit Arduino core / TinyUSB. The device impersonates a Valve Steam
 Controller 2 "puck" over USB and talks to SC2 controllers over a bare-metal nRF52
-RADIO (ESB-style, **no SoftDevice**) protocol. Built with `-DCFG_TUD_HID=4`.
+RADIO (ESB-style, **no SoftDevice**) protocol. Built with `-DCFG_TUD_HID=6`.
 
 > This map describes what the **code actually does**. Source comments in this repo
 > are known to be misleading and were ignored.
@@ -69,14 +69,17 @@ re-add wake mouse + `g_active->mountSlots(k)` + WebUSB in locked instance order,
 ## 2. Configuration & identity
 
 ### `config.cpp` / `config.h` — persisted settings (loop task)
-- **Owns**: `g_usbMode`, `g_xbox`, `g_chordBtn[3]`, `g_persistMode`, `g_bootMode`,
+- **Owns**: `g_usbMode`, `g_xbox`, `g_chordBtn[3]`, `g_chordDpad[4]`, `g_persistMode`, `g_bootMode`,
   `g_debugCdcThisBoot`, `g_mDiv`, `g_mFric`, `g_type[ET_COUNT]` (per-emulated-type
   button config), `g_etype`, live mirrors `g_abSwap`/`g_back[4]`/`g_qamMap`/
-  `g_padHaptics`/`g_ledBright`, `g_rumbleScale`, `g_swProRate`, `g_swGyroScale10`,
-  and the constant `g_pollUs = 4000` (250 Hz, **fixed**).
-- `struct Cfg` is serialized to `/cfg.bin` (LittleFS), magic `0xCD`. `rxWin10`,
-  `hapticBlockOn`, `hapticBlockS` and the per-type table travel with it; `rsvd0` is the
-  one-shot debug-CDC arm.
+  `g_padHaptics`/`g_ledBright`, and the constant `g_pollUs = 4000` (250 Hz, **fixed**).
+  (`g_swGyroLegacy` is declared here but lives in `mode_switch_pro.cpp`/`swprocfg.bin`.)
+- `struct Cfg` is serialized to `/cfg.bin` (LittleFS), magic `0xCF`. `rxWin10`,
+  `lizKeep`, `landAll87` and the per-type table travel with it; `rsvd0` is the
+  one-shot debug-CDC arm and `rsvd1` the ex-rumble-strength slot (both kept so the
+  on-flash layout is unchanged). New fields are **appended to the tail** (`chordDpad[4]`) —
+  `loadCfg()` prefills `0xFF` and accepts a file short by only the tail (`CFG_LEN_MIN`),
+  so an upgrade keeps every existing setting and unwritten tail bytes fall back to defaults.
 - `loadCfg()` resolves the boot mode policy: one-shot `bootMode` wins once then clears;
   else `persistMode ? last mode : STEAM(0)`. Calls `applyActiveType()`.
 - `saveCfg`, `saveMode`, `armDebugCdcNextBoot`, `factoryErase` (LittleFS `format()`),
@@ -148,7 +151,7 @@ The "dongle" role. All driven synchronously from `rfLinkTask()` in `loop()`.
   samples RSSI, updates `g_connReplyMs`/`g_linkRssi`, calls `hapticOnReconnect` on a
   gap, and **decodes the 0x45 input report into `g_in[g_curSlot]`** (buttons, sticks,
   triggers, trackpads, IMU). Also handles: Steam-button short-press remote wakeup,
-  Steam+Y 2 s power-off chord, back-4 mode-switch chord (`saveMode` + `NVIC_SystemReset`),
+  Steam+Y 2 s power-off chord, back-4 mode-switch chord (face + D-pad, `saveMode` + `NVIC_SystemReset`),
   and status reports 0x43 (battery → `g_battery`/`g_batteryState`) / 0x44 → dispatched
   via `g_active->onAuxReport`.
 - **`g_curSlot`** — the slot the poll loop is currently driving. Set by `rfConnStep`
@@ -307,7 +310,8 @@ JC_SETCB[s])`).
   + `sendReport(0x30, p, 63)`.
 - **Buffers**: `JC_REPLEN = 63` (all input/reply reports are 63 payload bytes);
   reply ring `g_jcQ[NSLOT][8]` of `{rid, data[63]}`; `g_userCal[NSLOT][0x100]`;
-  `g_spiStickCal[18]`; `g_jcMac[NSLOT][6]`; config files `b[3]`.
+  `g_spiStickCal[18]`; `g_jcMac[NSLOT][6]`; config file `b[2]` (`swprocfg.bin` v2 =
+  `[ver][g_swGyroLegacy]`; the report rate is fixed at `USB_STREAM_MS`).
 - **Cross-task shared data**:
   - Reply ring `g_jcQ` / `g_jcQh` / `g_jcQt` — SPSC (usbd produces, loop consumes);
     head/tail `volatile`, ring body **not** volatile.
@@ -376,7 +380,7 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
 - `g_testHaptic`, `g_hapticStop` (`volatile`), `g_hapticBlockOn`, `g_hapticBlockMs`,
   `g_hapticBlockUntil[NSLOT]`, `g_relayOp`, `g_relaySub`.
 - `hapticSendShutdown()` — bursts 0x9F "off!" (`{6f 66 66 21}`) ×3 broadcast.
-- `hapticSteamRumble(low, high, slot)` — builds a 9-byte 0x80 report (×`g_rumbleScale`),
+- `hapticSteamRumble(low, high, slot)` — builds a 9-byte 0x80 report (×`RUMBLE_SCALE_PCT`),
   `relayEnqueue(0x80, p, 9, slot)`; **called from usbd (mode rumble callbacks) and loop**.
   Per-slot stuck-rumble tracking `g_rumble80On/Ms[NSLOT]`.
 - `haptic82Blocked`/`hapticLinkUp`/`hapticRelaySlotOk` — link-up + block gates (read

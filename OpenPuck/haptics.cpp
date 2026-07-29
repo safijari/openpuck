@@ -39,6 +39,13 @@ uint8_t g_landAll87 = 0;
 // amplifier is configured and haptics play as clean ticks instead of a default-amp buzz. On by default;
 // console "AMP" toggles for A/B. See the land01 whitelist in rfConnFlushRelay.
 uint8_t g_landAmp = 1;
+// Master enable for the puck->controller haptic RELAY (Steam OUTPUT reports 0x80-0x86, incl. the trackpad
+// texture-feedback stream Steam pushes WHILE you drag). Each relayed frame is an extra TX that precedes the
+// E3 poll and steals its reply window, and the controller must stop to process it -- both can depress the
+// input rate exactly during a drag. On by default; console "HR" toggles it so the drag-smoothness cost of
+// haptics can be isolated on hardware (drag with it OFF vs ON). OFF only affects Steam-driven rumble/pad
+// feedback; it does NOT touch settings/config (0x87) or power-off (0x9F) relays.
+bool g_hapticRelay = true;
 // Per-slot reconnect block. 0 = idle; non-zero = drop haptics aimed at this slot until millis() catches up.
 unsigned long g_hapticBlockUntil[NSLOT] = { 0 };
 
@@ -57,6 +64,11 @@ void hapticSendShutdown(uint8_t slot)
 	faultDiagTrace(FR_OFF, slot);
 	for (uint8_t i = 0; i < HAPTIC_SHUTDOWN_SHOTS; i++)
 		relayEnqueue(0x9F, OFF, sizeof OFF, slot);
+	// Tell the puck presentation layer to show this slot (or all, for 0xFF broadcast) cleanly DISCONNECTED to
+	// Steam and hold it there through the controller's post-off F1 tail -- otherwise the dying replies bounce
+	// the connection state (phantom reconnect / never-removed). Covers every power-off path (Steam 0x9F, the
+	// Steam+Y chord, the panel button, host suspend) since they all funnel through here.
+	puckNotePowerOff(slot);
 }
 
 // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
@@ -71,6 +83,11 @@ static unsigned long g_rumble80Ms[NSLOT] = { 0 };
 // Steam/Triton rumble is latched on until an explicit zero report; tracked per-slot so each controller's
 // stuck-rumble watchdog is independent
 static bool g_rumble80On[NSLOT] = { false, false, false, false };
+
+// A rumble STOP is relayed as this many copies over successive poll cycles (see hapticSteamRumble): the relay
+// is NO-ACK, and a lost final stop leaves the controller latched rumbling. 3 gives temporal diversity a
+// single-frame RF loss can't wipe out without meaningfully changing steady-state traffic.
+#define RUMBLE_STOP_REPS 3
 
 // ---- relay rings: one per bond slot. Multi-producer (USB ISR + loop-context console/xinput), one consumer
 // per slot (rfConnFlushRelay on that slot's poll turn). Producers serialize under PRIMASK.
@@ -305,14 +322,18 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 {
 	if (slot >= NSLOT)
 		return false;
-	// user rumble-strength scale (percent; 200 = double). Clamp to 16-bit.
-	if (g_rumbleScale != 100) {
-		uint32_t l = (uint32_t)lowFreq * g_rumbleScale / 100,
-			 h = (uint32_t)highFreq * g_rumbleScale / 100;
+	// Fixed rumble strength: the decoded amplitude doubled, which is what the (now removed) adjustable
+	// rumble-strength setting shipped as its default. Clamp to 16-bit.
+	{
+		uint32_t l = (uint32_t)lowFreq * RUMBLE_SCALE_PCT / 100,
+			 h = (uint32_t)highFreq * RUMBLE_SCALE_PCT / 100;
 		lowFreq = (l > 0xFFFF) ? 0xFFFF : (uint16_t)l;
 		highFreq = (h > 0xFFFF) ? 0xFFFF : (uint16_t)h;
 	}
 	bool on = lowFreq || highFreq;
+	// per-type rumble disable: drop ON commands; zero/stop still pass to clear any queued relay
+	if (on && !g_rumble)
+		return false;
 	// Per-slot settle gate (the per-slot reconnect block + link-up check). 0x82 haptics in Steam mode use the
 	// same gate; for XInput, the host only sends a stream while a controller is connected, so this also doubles
 	// as "no controller here, no relay".
@@ -337,7 +358,22 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 	p[6] = (uint8_t)(highFreq & 0xFF);
 	p[7] = (uint8_t)(highFreq >> 8);
 	p[8] = 0;
-	if (!relayEnqueue(0x80, p, sizeof p, slot))
+	// The RF relay is NO-ACK -- any single frame can be lost. For an ON that's self-healing: a continuous
+	// stream of rumble commands follows during play, so a dropped frame is corrected microseconds later. A
+	// STOP is the dangerous one: if the host's FINAL zero (game/stream quit) -- or the watchdog's stop below
+	// -- is the last frame on the wire and it's lost, the controller stays latched rumbling with nothing left
+	// to correct it (the reported "constant rumble that didn't stop after closing GFN", cleared only by a
+	// replug). And once we optimistically mark g_rumble80On=false, the watchdog can't rescue it either. So
+	// relay a STOP as a short BURST: rfConnFlushRelay drains one ring entry per poll cycle, so N copies go out
+	// on successive cycles (~4ms apart) -- temporal diversity that a single-frame RF loss can't wipe out.
+	// Bursting only the on->off transition leaves steady-state (repeated-ON / repeated-OFF) traffic unchanged.
+	bool stopping = !on && g_rumble80On[slot];
+	uint8_t reps = stopping ? RUMBLE_STOP_REPS : 1;
+	bool queued = false;
+	for (uint8_t i = 0; i < reps; i++)
+		if (relayEnqueue(0x80, p, sizeof p, slot))
+			queued = true;
+	if (!queued)
 		return false;
 	g_rumble80Ms[slot] = millis();
 	g_rumble80On[slot] = on;
@@ -500,12 +536,24 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			}
 			// slot was already consumed under the critical section above.
 			// s1 carries a PID distinct from the GET poll (caller cycles it) so the controller's ESB
-			// dedup never treats the GET as a retransmit of this relay. 80us RX: relay is NO-ACK.
-			rfConnTx(ch, s1, p, plen,
-				 80); // one relay per poll cycle
+			// dedup never treats the GET as a retransmit of this relay.
+			//
+			// HARVEST the relay's reply as INPUT. Like any frame we send, the controller auto-ACKs a
+			// relay with its current input in the ACK payload (~90us later, per the RE poll->ACK
+			// capture). The old 80us window closed BEFORE that reply arrived, so every relay's input was
+			// discarded -- and yet HW A/B showed the delivered input rate RISING when haptics relay
+			// (an extra frame/cycle during a trackpad drag), because each frame makes the controller
+			// refresh its ACK payload and the following E3 poll caught the fresher value. Reading the
+			// reply directly turns each relay into a SECOND input sample per cycle: rfConnTx runs the
+			// full F1 decode (seq-dedup guards double-forward), so a drag streaming haptics now collects
+			// ~2x the samples, closing the gap to the real puck. A present reply returns early (~90us);
+			// only a genuine no-reply pays the bounded 400us window, so airtime stays in budget.
+			rfConnTx(
+				ch, s1, p, plen,
+				400); // one relay per poll cycle -- reply harvested as input
 		}
 	}
-	return have; // true = a relay frame went out this cycle (steals a reply window from the E3 poll)
+	return have; // true = a relay frame went out this cycle (its reply is harvested as input, above)
 }
 
 // Haptic-subsystem re-init: the captured sequence Steam sends when it (re)takes control (0x81 reset + 0x87

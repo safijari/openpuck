@@ -16,8 +16,31 @@
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
-UV="$(command -v uv || true)"
-[ -n "$UV" ] || UV="$HOME/.local/bin/uv"
-[ -x "$UV" ] || { echo "uv not found. Install it: https://docs.astral.sh/uv/  (curl -LsSf https://astral.sh/uv/install.sh | sh)"; exit 1; }
+find_uv() {
+	local uv
+	uv="$(command -v uv || true)"
+	[ -n "$uv" ] || { [ -x "$HOME/.local/bin/uv" ] && uv="$HOME/.local/bin/uv"; }
+	[ -x "$uv" ] && { printf '%s' "$uv"; return 0; }
+	return 1
+}
+
+UV="$(find_uv || true)"
+if [ -z "$UV" ]; then
+	# Bootstrap uv on first run. SteamOS' rootfs is read-only, but the official installer drops a
+	# self-contained binary under ~/.local/bin (writable), so nothing touches the system.
+	echo "uv not found — installing it (one-time) via https://astral.sh/uv …"
+	if command -v curl >/dev/null 2>&1; then
+		curl -LsSf https://astral.sh/uv/install.sh | sh
+	elif command -v wget >/dev/null 2>&1; then
+		wget -qO- https://astral.sh/uv/install.sh | sh
+	else
+		echo "Cannot bootstrap uv: neither curl nor wget is available." >&2
+		echo "Install uv manually: https://docs.astral.sh/uv/" >&2
+		exit 1
+	fi
+	UV="$(find_uv || true)"
+	[ -n "$UV" ] || { echo "uv install completed but the binary was not found on PATH or in ~/.local/bin." >&2; exit 1; }
+	echo "uv installed: $UV"
+fi
 
 exec "$UV" run --with pyserial --with pygame --with pyusb python openctrl.py "$@"

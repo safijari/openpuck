@@ -96,6 +96,14 @@ extern uint8_t g_usbMode; // loaded from flash at boot
 extern bool g_xbox;
 extern uint8_t g_chordBtn[3]; // back4+B/X/Y -> these modes (A always STEAM)
 
+// back4+D-pad -> these modes, indexed CHD_LEFT/UP/RIGHT/DOWN. Same deal as g_chordBtn: configurable from the
+// panel, defaults reach the console modes that have no config interface (so a controller-only route in exists).
+#define CHD_LEFT 0
+#define CHD_UP 1
+#define CHD_RIGHT 2
+#define CHD_DOWN 3
+extern uint8_t g_chordDpad[4];
+
 // Mode persistence policy: by DEFAULT every fresh power-on/reconnect lands in STEAM mode (0). An explicit
 // mode switch still works for the session via a ONE-SHOT bootMode (honored once, then cleared). g_persistMode
 // instead remembers the last selected mode across reboots.
@@ -118,6 +126,7 @@ extern int g_mDiv, g_mFric; // xbox/lizard mouse sensitivity divisor / friction%
 // (0..15 standard, 16=PS Touch Click, 17=PS5 Mute, 18=Switch Capture/Screenshot). qamMap = QAM (3 dots)
 // physical button -> same code space (0 = default/unmapped). abSwap = swap A/B and X/Y (Nintendo layout).
 // padHaptics = 1 keeps the controller's autonomous trackpad haptics, 0 disables them for this type.
+// rumble = 1 enables host rumble relay (default), 0 silences it for this type.
 // ledBright = LED brightness sent to the controller on connect: 0 = no override (controller default),
 // 1-100 = brightness %. Steam sets brightness each session; emulated modes never do, so the controller
 // comes up at full brightness. Setting a value here preserves the preferred brightness across mode switches.
@@ -127,6 +136,7 @@ struct TypeCfg {
 	uint8_t abSwap;
 	uint8_t padHaptics;
 	uint8_t ledBright;
+	uint8_t rumble;
 };
 extern TypeCfg g_type[ET_COUNT];
 extern uint8_t
@@ -139,24 +149,27 @@ extern uint8_t g_back[4];
 extern uint8_t g_qamMap;
 extern uint8_t
 	g_padHaptics; // 1 = trackpad haptics on (default), 0 = disabled for the active type
+// 1 = host rumble relay on (default), 0 = silenced for the active emulated type
+extern uint8_t g_rumble;
 // LED brightness for the active emulated type (0 = no override, 1-100 = brightness %)
 extern uint8_t g_ledBright;
 
 // Copy g_type[g_etype] into the live mirrors above (safe defaults when g_etype == ET_NONE).
 void applyActiveType();
-// rumble strength, percent of decoded amplitude (100 = 1x, 200 = 2x default), all modes
-extern uint8_t g_rumbleScale;
-// Switch Pro motion settings. Persisted in their OWN flash file (mode_switch_pro.cpp), NOT in Cfg -- so changing
-// them never resets the rest of the config. Set from the WebUSB panel.
-// Switch Pro report cadence: 0 = 66Hz (15ms, compat), 1 = 120Hz (8ms, DEFAULT), 2 = full (~250Hz)
-extern uint8_t g_swProRate;
-// Switch Pro gyro sensitivity x10 (10 = 1.0x default; 5/15/20/25/30 = 0.5..3.0x)
-extern uint8_t g_swGyroScale10;
+// Switch Pro motion setting. Persisted in its OWN flash file (mode_switch_pro.cpp), NOT in Cfg -- so changing
+// it never resets the rest of the config. Set from the WebUSB panel.
+// Switch Pro gyro mapping: 0 = corrected (default, PR #189 sensitivity trim), 1 = legacy (raw, pre-#189)
+extern uint8_t g_swGyroLegacy;
 
-// persist g_swProRate + g_swGyroScale10 to their flash file
+// persist g_swGyroLegacy to its flash file
 void swProSaveCfg();
 
-// 250 Hz -- matches SC2 input report rate (1000000/250 = 4000 us)
+// RF poll cadence: 250 Hz (4000 us) -- matches the real Valve puck's rate. The controller does NOT stream
+// on its own; the puck POLLS (short frame) and the controller auto-ACKs one input frame per poll (RE air
+// capture, nrf-sniffer HANDOFF.md), and it stuffs fresh IMU into every report, so the DELIVERED report
+// rate simply equals the poll rate. The real puck polls ~230-250 Hz, so we match it here. (The genuine
+// smoothness bug was never the rate -- it was onReport45 dropping ~1/3 of captured reports via a bogus
+// hid.ready() gate; see puck_hid.cpp. Poll rate is live-tunable via console "PR<hz>" for sweeps.)
 #define POLL_US_DEFAULT 4000u
 // host-side HID stream cadence for translated modes (~250 Hz)
 #define USB_STREAM_MS 4u
@@ -164,8 +177,10 @@ void swProSaveCfg();
 // (host idle power-management) resumes in <1s and must not trigger a self-inflicted power-off -> the
 // resulting disconnect/reconnect churn looked like random controller drops. Real host sleep persists.
 #define SUSPEND_OFF_MS 4000u
-// RF poll cadence (us). FIXED -- not configurable (see loadCfg).
-extern const uint32_t g_pollUs;
+// RF poll cadence (us). Defaults to POLL_US_DEFAULT; live-adjustable via the console "PR<hz>" command
+// (session-only -- NOT persisted; loadCfg always forces the default on boot) so the sweet spot can be
+// swept on hardware while watching the delivered report rate.
+extern uint32_t g_pollUs;
 
 // loop-timing diagnostics (defined in OpenPuck.ino) -- surfaced in the WebUSB status blob to find what caps
 // the poll rate: avg loop period, slowest section index, and that section's avg us/iteration.

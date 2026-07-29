@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -31,7 +31,7 @@ jobs:
         uses: arduino/setup-arduino-cli@v2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
@@ -89,13 +89,7 @@ jobs:
       - name: Compile OpenPuck
         run: |
           mkdir -p build/openpuck build/cache/openpuck
-          arduino-cli compile \
-            -b adafruit:nrf52:feather52840 \
-            --clean \
-            --build-path build/cache/openpuck \
-            --output-dir build/openpuck \
-            --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=4 -DCFG_TUD_TASK_QUEUE_SZ=64 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" \
-            OpenPuck
+          make build BUILD_PATH=build/cache/openpuck OUTPUT_DIR=build/openpuck
 
       - name: Compile MDBT50Q-CX-40
         run: make build-raytac
@@ -109,13 +103,7 @@ jobs:
       - name: Compile ReversePuckFirmware
         run: |
           mkdir -p build/reversepuck build/cache/reversepuck
-          arduino-cli compile \
-            -b adafruit:nrf52:feather52840 \
-            --clean \
-            --build-path build/cache/reversepuck \
-            --output-dir build/reversepuck \
-            --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb}" \
-            ReversePuckFirmware
+          make reversepuck BUILD_PATH=build/cache/reversepuck OUTPUT_DIR=build/reversepuck
 
       - name: Generate UF2 (ReversePuckFirmware)
         run: ./gen_uf2.sh build/reversepuck/ReversePuckFirmware.ino.hex build/reversepuck/ReversePuckFirmware.ino.uf2
@@ -125,7 +113,7 @@ jobs:
           find build/openpuck build/reversepuck -maxdepth 1 -type f -print | sort
 
       - name: Upload OpenPuck UF2 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: OpenPuck-${{ steps.build_version.outputs.artifact_version }}-standard.uf2
           retention-days: 7
@@ -133,7 +121,7 @@ jobs:
           path: build/openpuck/OpenPuck.ino.uf2
 
       - name: Upload OpenPuck HEX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: OpenPuck-${{ steps.build_version.outputs.artifact_version }}-standard.hex
           retention-days: 7
@@ -141,7 +129,7 @@ jobs:
           path: build/openpuck/OpenPuck.ino.hex
 
       - name: Upload ReversePuckFirmware UF2 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ReversePuckFirmware-${{ steps.build_version.outputs.artifact_version }}.uf2
           retention-days: 7
@@ -149,7 +137,7 @@ jobs:
           path: build/reversepuck/ReversePuckFirmware.ino.uf2
 
       - name: Upload ReversePuckFirmware HEX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ReversePuckFirmware-${{ steps.build_version.outputs.artifact_version }}.hex
           retention-days: 7

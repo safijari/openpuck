@@ -386,6 +386,10 @@ Messages:
   - `0x14`: commit the edited lizard map to flash (device echoes `0xAA`)
   - `0x15`: reset the lizard map to built-in defaults (device echoes `0xAA`)
   - `0x20`–`0x24`: staged firmware update (begin/data/end/reboot/abort), acked with `0xAB` frames
+  - `0x25 0x57 0x49 0x50 0x45`: **full board wipe** (`"WIPE"` magic, debug panel only). Erases the app
+    region + LittleFS (settings + bonds) + bootloader-settings page and reboots app-less, so the board mounts
+    as the UF2 bootloader drive on **every** boot until firmware is flashed again. Unlike `0x0A` (factory
+    reset, which keeps the firmware), this leaves no trace of OpenPuck. Irreversible without re-flashing.
 - Device to host:
   - `0xA5 <len> <payload>`: status blob
   - `0xA7 <len> <payload>`: bond export (§10.1)
@@ -465,7 +469,7 @@ Bonds are written one slot at a time so no command exceeds a single USB-FS packe
 acked with a status blob so the host's read-after-write keeps the OUT pipe flowing. The panel sends all four
 `0x0D` slot writes plus every config field via `0x02`, then a single `0x0E` to persist and reboot — so the
 reboot regenerates the session addresses from the new UUIDs and the restored puck reproduces both the pairings
-and all settings. Other settings (mouse, rumble, chords, per-type button maps, Switch Pro motion) ride in the
+and all settings. Other settings (mouse, chords, per-type button maps, Switch Pro gyro mapping) ride in the
 backup file as plain `0x02` field values, not in the bond commands.
 
 ## 11. Timing notes

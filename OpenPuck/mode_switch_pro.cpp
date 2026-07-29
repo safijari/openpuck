@@ -4,6 +4,7 @@
 #include "config.h"
 #include "haptics.h"
 #include "bonds.h"
+#include "rf_link.h"
 #include "usb_mount.h"
 #include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
@@ -11,28 +12,28 @@
 #include <InternalFileSystem.h>
 #include <Arduino.h>
 #include <string.h>
+#include <math.h>
 using namespace Adafruit_LittleFS_Namespace;
 
 SwitchProController g_switchPro;
 
-// Switch full-report (0x30) cadence. The console integrates the 3 IMU samples per report assuming ~5 ms/sample
-// (3 samples / 15 ms genuine); too high a rate over-integrates the gyro. 120 Hz is drift-free and lower-latency
-// (default); 66 Hz is the genuine compat fallback; "full" is the 4 ms PC rate (lowest latency).
-#define SW_PRO_REPORT_MS 15u // 66 Hz
-#define SW_PRO_REPORT_MS_120 8u // ~120 Hz
+// Switch full-report (0x30) cadence: the 4 ms PC rate (lowest latency). The console integrates the 3 IMU samples
+// per report by sample COUNT at a fixed ~5 ms/sample, so slower cadences were once offered as drift fallbacks;
+// they are gone -- full rate is what everything ships with.
 // SC2 accel is +/-2g (16384/g); /4 -> the genuine Pro +/-8g (4096/g) the Switch cal expects
 #define SW_ACCEL_DIV 4
 
-uint8_t g_swProRate =
-	2; // 0 = 66Hz, 1 = 120Hz, 2 = full (~250Hz / USB_STREAM_MS, default)
-uint8_t g_swGyroScale10 = 10; // gyro sensitivity x10 (10 = 1.0x)
+// 0 = corrected gyro mapping (default, PR #189: roll x0.8, pitch/yaw x0.9 -- matches a genuine Pro Controller and
+// Steam mode); 1 = legacy mapping, the raw pre-#189 axes with no trim.
+uint8_t g_swGyroLegacy = 0;
 
-// Persist the two Switch Pro motion settings in their own tiny file so they never trigger a global-Cfg reset.
+// Persist the Switch Pro motion setting in its own tiny file so it never triggers a global-Cfg reset.
 #define SWPRO_CFG_FILE "/swprocfg.bin"
 void swProSaveCfg()
 {
-	uint8_t b[3] = { 0x01, g_swProRate,
-			 g_swGyroScale10 }; // [ver][rate 0/1/2][gyroScale x10]
+	// ver 0x02 = [ver][gyroLegacy]. ver 0x01 was [ver][rate][gyroScale x10]; both knobs are gone, so such a
+	// file is simply ignored on load (defaults win) rather than migrated.
+	uint8_t b[2] = { 0x02, g_swGyroLegacy };
 	InternalFS.remove(SWPRO_CFG_FILE);
 	File f(InternalFS);
 	if (f.open(SWPRO_CFG_FILE, FILE_O_WRITE)) {
@@ -43,30 +44,12 @@ void swProSaveCfg()
 static void swProLoadCfg()
 {
 	File f(InternalFS);
-	uint8_t b[3];
+	uint8_t b[2];
 	if (f.open(SWPRO_CFG_FILE, FILE_O_READ)) {
-		if (f.read(b, 3) == 3 && b[0] == 0x01) {
-			// 0=66Hz, 1=120Hz, 2=full; bad value -> default full
-			g_swProRate = (b[1] <= 2) ? b[1] : 2;
-			g_swGyroScale10 =
-				(b[2] >= 5 && b[2] <= 30) ?
-					b[2] :
-					10; // sane bounds (0.5x..3.0x)
-		}
+		if (f.read(b, 2) == 2 && b[0] == 0x02)
+			g_swGyroLegacy = b[1] ? 1 : 0;
 		f.close();
 	}
-}
-// Scale a gyro axis by g_swGyroScale10/10, clamped to int16 (3x can saturate at high rates -- expected).
-static int16_t gscale(int16_t v)
-{
-	if (g_swGyroScale10 == 10)
-		return v;
-	int32_t s = (int32_t)v * (int32_t)g_swGyroScale10 / 10;
-	if (s > 32767)
-		s = 32767;
-	else if (s < -32768)
-		s = -32768;
-	return (int16_t)s;
 }
 
 static const uint8_t SWPRO_HID_DESC[] = {
@@ -181,16 +164,194 @@ static inline uint8_t jcBondOf(uint8_t usbSlot)
 	int b = (usbSlot < NSLOT) ? g_usbToBond[usbSlot] : -1;
 	return (b >= 0) ? (uint8_t)b : usbSlot;
 }
-static uint16_t jcRumbleAmp(const uint8_t r[4])
+// --- Switch HD-rumble amplitude decoder.
+//
+// When we emulate a Pro Controller, the console streams us its HD-rumble output
+// every frame. A genuine controller drives dual-band linear actuators from it;
+// OpenPuck drives the SC2's single motor, so all we need is a scalar amplitude.
+// This decodes the on-wire rumble format down to that amplitude.
+//
+// Format (from the public Switch controller protocol, cross-checked against
+// SDL's zlib-licensed hidapi_switch rumble encoder and community RE notes):
+// each motor carries 4 bytes = one little-endian 32-bit word whose top two bits
+// pick how many amplitude/frequency updates are packed and at what width:
+//   mode 0 : no change  -- hold the running amplitude
+//   mode 1 : a single 5-bit or 7-bit update, or a 7-bit + two 5-bit burst
+//   mode 2 : two 5-bit updates, or a 7-bit + 5-bit followed by a 5-bit update
+//   mode 3 : three 5-bit updates
+// A 7-bit field is an ABSOLUTE amplitude on the documented log2 curve. A 5-bit
+// field is a compact command that either substitutes a preset level or nudges
+// the amplitude by a small step -- so the decoder carries per-motor state across
+// frames. Frequency fields exist but do nothing for an ERM, so we step past them
+// and keep only amplitude.
+//
+// The naive "read fixed bytes as amplitude" decode we shipped before ignored the
+// mode bits, so any game using the packed modes (Fire Emblem: Three Houses,
+// Crash Bandicoot, ...) decoded to spurious nonzero amplitude -> random idle/menu
+// buzzing. Handling every mode is what fixes that.
+//
+// Amplitude is carried in log2-linear 1/32 fixed-point over [-8.0, 0.0] -> the
+// integer range [-256, 0], and mapped to a 16-bit motor level via a boot-built
+// exp2 table so no floating point runs in the USB ISR. The curve constants below
+// are protocol facts (any correct decoder lands on the same numbers).
+enum { HDR_AMP_MIN = -256, HDR_AMP_OFF = -256 }; // -8.0 log2 units == silent
+
+// Absolute 7-bit amplitude code -> 1/32 log2 units. The documented curve is
+// piecewise linear with progressively finer steps toward full scale (slopes
+// 1/4, 1/16, 1/32); code 0 is silence.
+static inline int16_t hdrAmp7(uint8_t code)
 {
-	// Nintendo packs a high band (r[0],r[1]) and low band (r[2],r[3]) of frequency+amplitude. We only need a
-	// magnitude for the Steam motor, so pull the two amplitude fields: HF amp = r[1]>>1, LF amp = r[3]&0x3F.
-	// Every canonical idle/neutral frame (00 01 40 40, 00 00 01 40, all-zero) decodes to 0 this way, so a steady
-	// idle rumble stream maps to "off" instead of latching the motor on. No forced floor: 0 amplitude -> 0.
-	uint8_t hf = r[1] >> 1; // high-band amplitude (neutral 0x01 -> 0)
-	uint8_t lf = r[3] & 0x3F; // low-band amplitude  (neutral 0x40 -> 0)
-	uint8_t a = hf > lf ? hf : lf; // 0..0x7F
-	return (uint16_t)a << 9; // scale to ~16-bit motor speed
+	if (code == 0)
+		return HDR_AMP_MIN;
+	if (code < 16)
+		return (int16_t)(8 * (int)code - 248); // slope 1/4
+	if (code < 32)
+		return (int16_t)(2 * (int)code - 158); // slope 1/16
+	return (int16_t)((int)code - 127); // slope 1/32
+}
+// Apply a compact 5-bit command to the running amplitude (1/32 log2 units):
+//   0        -> silence
+//   1..11    -> substitute an absolute preset: 0, -0.5, -1.0, ... -5.0
+//   17..22   -> step up   (+0.125 for 17-19, +0.03125 for 20-22)
+//   26..31   -> step down (-0.03125 for 26-28, -0.125 for 29-31)
+//   other    -> amplitude unchanged (the code only carries a frequency command)
+static inline int16_t hdrAmp5(uint8_t code, int16_t cur)
+{
+	if (code == 0)
+		return HDR_AMP_OFF;
+	if (code <= 11)
+		return (int16_t)(-16 * (int)(code - 1)); // presets 0..-5.0
+	int step = 0;
+	if (code >= 17 && code <= 19)
+		step = 4;
+	else if (code >= 20 && code <= 22)
+		step = 1;
+	else if (code >= 26 && code <= 28)
+		step = -1;
+	else if (code >= 29 && code <= 31)
+		step = -4;
+	int v = (int)cur + step;
+	return v < HDR_AMP_MIN ? HDR_AMP_MIN : (v > 0 ? 0 : (int16_t)v);
+}
+// exp2(units/32) scaled to a 16-bit motor level, built once at boot. The two
+// lowest steps are treated as silent (the curve floors out there), matching how
+// the neutral/idle frame -- which decodes to minimum amplitude -- reads as off.
+static uint16_t g_hdrLevel[257];
+static void hdrBuildLevels()
+{
+	for (int u = HDR_AMP_MIN; u <= 0; u++) {
+		float lin = (float)u / 32.0f;
+		float amp = (lin >= -7.9375f) ? exp2f(lin) : 0.0f;
+		if (amp > 1.0f)
+			amp = 1.0f;
+		uint32_t v = (uint32_t)(amp * 65535.0f + 0.5f);
+		g_hdrLevel[u - HDR_AMP_MIN] = (v > 0xFFFF) ? 0xFFFF :
+							     (uint16_t)v;
+	}
+}
+// Per-slot, per-motor (0 = left, 1 = right) running band amplitudes. The packed
+// 5-bit commands are relative, so this state must persist between frames.
+struct HdrBands {
+	int16_t lo; // low-band amplitude, 1/32 log2 units
+	int16_t hi; // high-band amplitude, 1/32 log2 units
+};
+static HdrBands g_hdrState[NSLOT][2];
+static inline void hdrReset(uint8_t slot)
+{
+	g_hdrState[slot][0].lo = g_hdrState[slot][0].hi = HDR_AMP_OFF;
+	g_hdrState[slot][1].lo = g_hdrState[slot][1].hi = HDR_AMP_OFF;
+}
+// Pull a bit-field out of the 32-bit rumble word.
+static inline uint8_t hdrField(uint32_t w, uint8_t shift, uint8_t width)
+{
+	return (uint8_t)((w >> shift) & ((1u << width) - 1u));
+}
+// Decode one motor's 4 rumble bytes, advancing its state, and return the PEAK
+// motor level over the frame's updates (max across both bands and all samples).
+// Peak rather than final-sample keeps short pulses that a multi-update frame
+// packs together, while every idle/neutral frame still resolves to 0.
+static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4])
+{
+	HdrBands &s = g_hdrState[slot][motor];
+	uint32_t w = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+		     ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+	uint16_t peak = 0;
+#define HDR_SAMPLE()                                          \
+	do {                                                  \
+		uint16_t la = g_hdrLevel[s.lo - HDR_AMP_MIN]; \
+		uint16_t ha = g_hdrLevel[s.hi - HDR_AMP_MIN]; \
+		uint16_t lv = la > ha ? la : ha;              \
+		if (lv > peak)                                \
+			peak = lv;                            \
+	} while (0)
+
+	switch (hdrField(w, 30, 2)) {
+	case 0: // hold
+		HDR_SAMPLE();
+		break;
+	case 1:
+		if ((w & 0xFFFFF) == 0) { // single 5-bit update
+			s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+			HDR_SAMPLE();
+		} else if ((w & 0x3) == 0) { // single 7-bit absolute
+			s.lo = hdrAmp7(hdrField(w, 23, 7));
+			s.hi = hdrAmp7(hdrField(w, 9, 7));
+			HDR_SAMPLE();
+		} else { // 7-bit for one band + two 5-bit updates
+			bool wantHi = (w & 1) != 0;
+			bool isFreq = ((w >> 2) & 1) != 0;
+			if (!isFreq) { // else the 7-bit is a frequency: ignore
+				if (wantHi)
+					s.hi = hdrAmp7(hdrField(w, 23, 7));
+				else
+					s.lo = hdrAmp7(hdrField(w, 23, 7));
+			}
+			HDR_SAMPLE();
+			s.lo = hdrAmp5(hdrField(w, 18, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 13, 5), s.hi);
+			HDR_SAMPLE();
+			s.lo = hdrAmp5(hdrField(w, 8, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 3, 5), s.hi);
+			HDR_SAMPLE();
+		}
+		break;
+	case 2:
+		if ((w & 0x3FF) == 0) { // two 5-bit updates
+			s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+			HDR_SAMPLE();
+			s.lo = hdrAmp5(hdrField(w, 15, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 10, 5), s.hi);
+			HDR_SAMPLE();
+		} else { // 7-bit + 5-bit, then a 5-bit update
+			if (w & 1) {
+				s.hi = hdrAmp7(hdrField(w, 23, 7));
+				s.lo = hdrAmp5(hdrField(w, 18, 5), s.lo);
+			} else {
+				s.lo = hdrAmp7(hdrField(w, 23, 7));
+				s.hi = hdrAmp5(hdrField(w, 18, 5), s.hi);
+			}
+			HDR_SAMPLE();
+			s.lo = hdrAmp5(hdrField(w, 13, 5), s.lo);
+			s.hi = hdrAmp5(hdrField(w, 8, 5), s.hi);
+			HDR_SAMPLE();
+		}
+		break;
+	case 3: // three 5-bit updates
+		s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+		s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+		HDR_SAMPLE();
+		s.lo = hdrAmp5(hdrField(w, 15, 5), s.lo);
+		s.hi = hdrAmp5(hdrField(w, 10, 5), s.hi);
+		HDR_SAMPLE();
+		s.lo = hdrAmp5(hdrField(w, 5, 5), s.lo);
+		s.hi = hdrAmp5(hdrField(w, 0, 5), s.hi);
+		HDR_SAMPLE();
+		break;
+	}
+#undef HDR_SAMPLE
+	return peak;
 }
 // Per-slot: each Pro Controller has its own rumble stream, so the "last" relay tracking must be per-slot.
 static uint16_t g_jcLastLo[NSLOT] = { 0 };
@@ -199,7 +360,7 @@ static void jcRumble(uint8_t slot, const uint8_t *p, uint16_t pn)
 {
 	if (pn < 9)
 		return; // [timer][left rumble x4][right rumble x4]
-	uint16_t lo = jcRumbleAmp(p + 1), hi = jcRumbleAmp(p + 5);
+	uint16_t lo = hdrDecode(slot, 0, p + 1), hi = hdrDecode(slot, 1, p + 5);
 	// only relay on change: the Switch streams rumble every frame; re-sending
 	// unchanged values would flood the RF relay and loop the motor
 	if (lo == g_jcLastLo[slot] && hi == g_jcLastHi[slot])
@@ -222,6 +383,31 @@ static void jcPackStick(uint8_t s[3], int16_t x, int16_t y)
 	s[1] = (uint8_t)(((Y & 0x0F) << 4) | ((X >> 8) & 0x0F));
 	s[2] = (uint8_t)((Y >> 4) & 0xFF);
 }
+
+// The Switch battery/connection byte (bat_con) is NOT a 0..8 value in the high nibble. Per hid-nintendo it is:
+//   bits[7:5] = battery capacity (0=empty .. 4=full), bit4 = charging, bit0 = host_powered (USB-powered).
+// A genuine pad therefore only ever emits the EVEN high-nibble levels 8/6/4/2/0 (full/medium/low/critical/empty)
+// -- the odd bit (bit4) is reserved for the charging flag. The old code packed a 0..8 value straight into the
+// high nibble, so any ODD level (1,3,5,7) set bit4 and the console showed the pad as "charging". Here we round
+// the percentage onto the genuine 5-level scale and return the ready-to-place EVEN nibble {0,2,4,6,8}.
+static uint8_t jcBatteryNibble(uint8_t bond)
+{
+	if (bond >= NSLOT)
+		return 0;
+	uint8_t pct = g_battery[bond];
+	uint8_t cap; // genuine 0..4 capacity
+	if (pct >= 70)
+		cap = 4; // full
+	else if (pct >= 50)
+		cap = 3; // medium
+	else if (pct >= 30)
+		cap = 2; // low
+	else if (pct >= 10)
+		cap = 1; // critical
+	else
+		cap = 0; // empty
+	return (uint8_t)(cap << 1); // -> 0,2,4,6,8 (even; leaves bit4 clear)
+}
 // Standard input-report prefix [0..11] (timer, battery/conn, 3 button bytes, both packed sticks, vibrator),
 // shared by the streamed 0x30 report and the 0x21 subcommand-reply reports the host reads during init.
 static void jcInputPrefix(uint8_t slot, uint8_t *out)
@@ -232,7 +418,8 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 	// QAM (3 dots) remap -> applied via codeToJc below like a back paddle (so Capture(18)/any target work).
 	bool qam = g_qamMap && (b & TB_QAM);
 	if ((b & CHORD_BACK4) == CHORD_BACK4)
-		b &= ~(uint32_t)(TB_A | TB_B | TB_X | TB_Y);
+		b &= ~(uint32_t)(TB_A | TB_B | TB_X | TB_Y | TB_DUP | TB_DDN |
+				 TB_DLF | TB_DRT);
 	uint32_t fA = g_abSwap ? JC_BTN_B : JC_BTN_A,
 		 fB = g_abSwap ? JC_BTN_A : JC_BTN_B;
 	uint32_t fX = g_abSwap ? JC_BTN_Y : JC_BTN_X,
@@ -284,16 +471,16 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 		jc |= codeToJc(g_qamMap, fA, fB, fX, fY);
 	out[0] = g_jcTimer[slot]++;
 
-	// battery full+charging (hi nibble 0x9), connection_info=1 (lo nibble): a wired/charging Pro Controller.
-	// A real Switch reads this to show the pad as connected; Steam/hid-nintendo accept it too.
-	out[1] = 0x91;
+	// bat_con byte: [7:5]=capacity, bit4=charging, bit0=host_powered (see jcBatteryNibble). The controllers are
+	// wireless (battery powered) from the console's view, so host_powered=0 -- setting it pins the pad the console
+	// treats as the wired/primary device in the charging state (the first-enumerated pad showing "charging, 100%").
+	// The charging flag reflects the controller's REAL EChargeState (2=charging); wireless pads report discharging
+	// (1) so it stays clear, but a pad genuinely on a charger will show the bolt correctly.
+	uint8_t chg = (bond < NSLOT && g_batteryState[bond] == 2) ? 0x10 : 0x00;
+	out[1] = (uint8_t)((jcBatteryNibble(bond) << 4) | chg);
 	out[2] = (uint8_t)(jc);
 	out[3] = (uint8_t)(jc >> 8);
 	out[4] = (uint8_t)(jc >> 16);
-
-	// charging_grip bit (button "common" byte, bit7): genuine Pro Controller always sets it on USB; real
-	// Switch uses it to recognise a wired controller. Not a button, so hid-nintendo ignores it.
-	out[3] |= 0x80;
 	jcPackStick(out + 5, g_in[bond].lx, g_in[bond].ly);
 	jcPackStick(out + 8, g_in[bond].rx, g_in[bond].ry);
 	// rumble_input_report echo: genuine pad emits 0x09..0x0C; some Switch firmware expects this nonzero.
@@ -322,10 +509,20 @@ static void switchProBuild(uint8_t slot, uint8_t out[63])
 	int16_t aY = (int16_t)((-(int16_t)g_in[bond].ax) / SW_ACCEL_DIV);
 	int16_t aZ = (int16_t)(g_in[bond].az / SW_ACCEL_DIV);
 
-	// gyro outputs scaled by the user sensitivity factor
-	int16_t groll = gscale((int16_t)g_in[bond].gy);
-	int16_t gpitch = gscale((int16_t)(-(int16_t)g_in[bond].gx));
-	int16_t gyaw = gscale((int16_t)g_in[bond].gz);
+	int16_t groll = (int16_t)g_in[bond].gy;
+	int16_t gpitch = (int16_t)(-(int16_t)g_in[bond].gx);
+	int16_t gyaw = (int16_t)g_in[bond].gz;
+
+	// Sensitivity trim (PR #189), skipped in legacy mode (g_swGyroLegacy, panel-selectable):
+	//  - the physical yaw of the SC made the roll (or yaw, if facing a wall like on the Switch) move too fast in
+	//    Switch mode -> 80%. int32 for the multiply so it cannot overflow.
+	//  - pitch/yaw were also a little off -> 90% matches a genuine Switch Pro Controller and Steam mode.
+	if (!g_swGyroLegacy) {
+		groll = (int16_t)(((int32_t)groll * 4) / 5);
+		gpitch = (int16_t)(((int32_t)gpitch * 9) / 10);
+		gyaw = (int16_t)(((int32_t)gyaw * 9) / 10);
+	}
+
 	for (int k = 0; k < 3; k++) {
 		int o = 12 + k * 12;
 		out[o + 0] = aX & 0xFF;
@@ -722,6 +919,9 @@ void SwitchProController::usbIdentity()
 void SwitchProController::beginPool()
 {
 	jcBuildStickCal();
+	hdrBuildLevels();
+	for (uint8_t s = 0; s < NSLOT; s++)
+		hdrReset(s);
 	loadUserCal();
 	swProLoadCfg();
 	initJcMacs();
@@ -742,6 +942,10 @@ void SwitchProController::mountSlots(uint8_t k)
 		// don't stream 0x30 before the (new) host has re-selected report mode.
 		g_swProReportMode[u] = 0;
 		g_jcQh[u] = g_jcQt[u] = 0;
+		// reset the rumble decoder + relay dedup so a stale amplitude from a
+		// prior session can't carry across the reconnect
+		hdrReset(u);
+		g_jcLastLo[u] = g_jcLastHi[u] = 0;
 		USBDevice.addInterface(g_swPro[u]);
 	}
 }
@@ -769,15 +973,7 @@ void SwitchProController::task()
 		// not until the host has finished init + selected 0x30
 		if (g_swProReportMode[s] != 0x30)
 			continue;
-		// The Switch integrates the report's 3 IMU samples by SAMPLE COUNT at a fixed ~5 ms/sample (it ignores
-		// the timer byte and assumes a 3-samples-per-15ms genuine cadence). Streaming faster (e.g. 250 Hz x 3
-		// = 750 samples/s) over-credits gyro rotation ~3.75x, so residual bias accumulates into the slow
-		// orientation lean that builds over minutes and resets on replug. 15 ms matches the genuine push,
-		// making integration 1:1.
-		uint32_t interval = (g_swProRate == 2) ? USB_STREAM_MS :
-				    (g_swProRate == 1) ? SW_PRO_REPORT_MS_120 :
-							 SW_PRO_REPORT_MS;
-		if (millis() - g_swProLastMs[s] < interval)
+		if (millis() - g_swProLastMs[s] < USB_STREAM_MS)
 			continue;
 		g_swProLastMs[s] = millis();
 		uint8_t p[63];

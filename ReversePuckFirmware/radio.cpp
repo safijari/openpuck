@@ -86,8 +86,14 @@ void rfConfig(uint8_t ch)
 	NRF_RADIO->EVENTS_DISABLED = 0;
 	NRF_RADIO->MODE = ((uint32_t)g_mode << RADIO_MODE_MODE_Pos);
 	NRF_RADIO->FREQUENCY = ch;
+	// +8dBm = the nRF52840's max TX power (was 0dBm). Mirrors OpenPuck/radio.cpp: the link margin is thin on
+	// the Pro Micro's PCB-trace antenna (RSSI ~20dB below a real Valve unit) and 2.4GHz is crowded, so our F1
+	// replies at 0dBm were being missed by the puck -> the reply gaps that read as intermittent disconnects
+	// (and, past the puck's RF_STALL_MS, trip its radio power-cycle self-heal = churn). The puck already
+	// transmits its polls/beacons at +8dBm; matching it on our reply side closes the asymmetry. USB-powered,
+	// so the higher current draw is free.
 	NRF_RADIO->TXPOWER =
-		(RADIO_TXPOWER_TXPOWER_0dBm << RADIO_TXPOWER_TXPOWER_Pos);
+		(RADIO_TXPOWER_TXPOWER_Pos8dBm << RADIO_TXPOWER_TXPOWER_Pos);
 #if defined(RADIO_MODECNF0_RU_Fast)
 	NRF_RADIO->MODECNF0 = (RADIO_MODECNF0_RU_Fast << RADIO_MODECNF0_RU_Pos);
 #endif

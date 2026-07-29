@@ -17,6 +17,10 @@
 // Forward report 0x45 only when the seq advanced (dedupe like the real puck); sending stale
 // repeats makes Steam's trackpad smoothing stair-step. (WebUSB field 14)
 extern uint8_t g_fwdNewOnly;
+// Content dedup: forward a 0x45/0x42 report only when its body EXCLUDING the free-running counter byte
+// changed, so the delivered rate tracks the controller's real distinct-report rate (not the poll rate).
+// On by default; console "CD" toggles for A/B. (see puck_hid.cpp for the why)
+extern uint8_t g_fwdContentDedup;
 
 // True while we are presenting the desktop keyboard/mouse instead of forwarding the gamepad to Steam
 // (MODE_LIZARD always, or MODE_STEAM once Steam's heartbeat has stopped). Exposed so the haptic layer can
@@ -33,6 +37,14 @@ void puckCmdLogDrain(void);
 // Drop Steam's relayed 0x81 CLEAR_DIGITAL_MAPPINGS in Steam mode (the amp-clicker in Steam's per-connect
 // config; OpenPuck doesn't need it). On by default; console "S81" toggles for A/B.
 extern bool g_drop81;
+
+// Note that a controller power-off (0x9F "off!") was just relayed to `slot` (or ALL used slots for the 0xFF
+// broadcast). The puck then presents that slot as cleanly DISCONNECTED to Steam and HOLDS it there through the
+// controller's messy shutdown -- a real controller keeps streaming F1 for up to ~1s after the off command, and
+// without this the puck faithfully reports "still connected" -> conn bounces -> Steam sees a phantom reconnect
+// (the "reappears for a split second") and re-runs its connect config, or never sees a clean disconnect and
+// leaves the controller in its list. Called from hapticSendShutdown() so every power-off path is covered.
+void puckNotePowerOff(uint8_t slot);
 
 class SteamPuckController : public IController {
     public:
