@@ -41,7 +41,9 @@
 // console wants a bare Sixaxis HID, not a composite). Answers the PS3's GET_REPORT(0xF2/0xF5/0xEF/0x01)
 // enable handshake. + gyro/accel + rumble.
 #define MODE_PS3 9
-#define MODE_MAX 9
+// Microsoft Original Xbox Controller S (045E:0289)
+#define MODE_XBOX_OG 10
+#define MODE_MAX 10
 
 // The two "game" personalities drop the wake-mouse + WebUSB interfaces so the device is a genuine single-HID PS
 // controller (some PC games -- e.g. Fortnite/UE GameInput -- refuse PS classification when extra interfaces are
@@ -74,6 +76,8 @@ static inline uint8_t etypeForMode(uint8_t m)
 {
 	switch (m) {
 	case MODE_XBOX:
+	// OG Xbox Controller S shares the Xbox layout / button config minus guide button
+	case MODE_XBOX_OG:
 		return ET_XBOX;
 	case MODE_SW_HORI:
 	case MODE_SW_PRO:

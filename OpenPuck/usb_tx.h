@@ -46,6 +46,7 @@ void usbTxUnboost(void);
 // Register a callback to run every USB frame ON THE usbd TASK (from tud_sof_cb, right after usbTxDrain()).
 // This is how senders that DON'T go through Adafruit_USBD_HID get their transmits off the loop task too:
 //   - mode_xinput flushes its raw custom-class IN endpoints;
+//   - mode_xbox_og flushes its raw custom-class IN endpoint;
 //   - webusb_config sends the status blob (its usb_web.flush() can otherwise block the loop on a full queue).
 // Call once at setup() (before usbTxBegin()). Safe no-op if usb isn't up yet. Capacity is small + fixed.
 typedef void (*usbTxDrainFn)(void);

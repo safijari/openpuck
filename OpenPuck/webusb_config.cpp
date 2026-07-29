@@ -17,6 +17,26 @@
 
 Adafruit_USBD_WebUSB usb_web;
 
+// Vendor-type control requests and the vendor interface's class requests both land on one global TinyUSB
+// callback, which the Adafruit core defines for WebUSB. Linker wrapping (-Wl,--wrap, set in the Makefile)
+// gives MODE_XBOX_OG first refusal on the XID requests without copying that router; whatever it declines, and
+// every other mode, must still reach __real_ -- that answers WebUSB's 0x22, whose connected flag gates
+// the panel sends.
+bool xboxOgVendorControlXfer(uint8_t rhport, uint8_t stage,
+			     const tusb_control_request_t *request);
+extern "C" bool
+__real_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+				  const tusb_control_request_t *request);
+extern "C" bool
+__wrap_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+				  const tusb_control_request_t *request)
+{
+	if (g_usbMode == MODE_XBOX_OG &&
+	    xboxOgVendorControlXfer(rhport, stage, request))
+		return true;
+	return __real_tud_vendor_control_xfer_cb(rhport, stage, request);
+}
+
 // Panel-blob send is deferred to the usbd task: webusbPoll() (loop) just sets this, and webusbSofDrain()
 // (registered with usb_tx, runs from tud_sof_cb on the usbd task) does the actual write+flush. usb_web.flush()
 // goes through the same blocking osd_queue_send path as HID sends, so doing it from loop() could stall the

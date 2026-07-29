@@ -41,6 +41,11 @@ CFG_TUD_TASK_QUEUE_SZ ?= 512
 # too small and would silently drop every frame (blank panel / stale mappings).
 CFG_TUD_VENDOR_TX_BUFSIZE ?= 256
 EXTRA_FLAGS ?=
+# TinyUSB dispatches every vendor-type control request through one global callback, which the Adafruit core
+# already defines to serve WebUSB. Original Xbox mode needs the XID requests that arrive on it.
+# Overriding the weak symbol would claim the whole hook and force a copy of Adafruit's WebUSB body,
+# so we wrap: webusb_config.cpp takes XID and passes everything else to __real_.
+OPENPUCK_LINK_FLAGS ?= -Wl,--wrap=tud_vendor_control_xfer_cb
 # {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
 USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
 # When BUILD_PATH is set, --clean + path flags are injected; omitted for fast incremental dev builds.
@@ -68,7 +73,7 @@ RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
 ## EXTRA_FLAGS / FQBN as make variables if needed.
 build:
-	arduino-cli compile -b $(FQBN) $(_PATH_FLAGS) --build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" OpenPuck
+	arduino-cli compile -b $(FQBN) $(_PATH_FLAGS) --build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" --build-property "compiler.c.elf.extra_flags=$(OPENPUCK_LINK_FLAGS)" OpenPuck
 
 ## Build for the Raytac MDBT50Q-CX-40 without replacing its Open DFU bootloader.
 ## Like `build`, this does NOT run gen_version.sh -- run it yourself first if you want version provenance
@@ -79,7 +84,8 @@ build-raytac:
 	arduino-cli compile --clean -b adafruit:nrf52:mdbt50qrx \
 		--build-path build/cache/raytac \
 		--output-dir build/raytac \
-		--build-property "build.extra_flags=$(USB_EXTRA_FLAGS) -DOPK_BOARD_MDBT50Q_CX_40=1" OpenPuck
+		--build-property "build.extra_flags=$(USB_EXTRA_FLAGS) -DOPK_BOARD_MDBT50Q_CX_40=1" \
+		--build-property "compiler.c.elf.extra_flags=$(OPENPUCK_LINK_FLAGS)" OpenPuck
 
 ## Package an existing Raytac build for its factory Nordic Open DFU bootloader.
 package-raytac:

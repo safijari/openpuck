@@ -6,3 +6,4 @@ extern "C" {
 }
 
 const usbd_class_driver_t *xinputClassDriver(void);
+const usbd_class_driver_t *xboxOgClassDriver(void);
