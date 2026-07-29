@@ -163,8 +163,9 @@
         <button data-mode="5" class="modebtn">PS5 DualSense</button>
         <button data-mode="6" class="modebtn">HID gyro (DS4)</button>
         <button data-mode="9" class="modebtn">PS3 (DualShock 3)</button>
+        <button data-mode="10" class="modebtn">Original Xbox</button>
       </div>
-      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only.</p>
+      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only. Original Xbox emulates one Microsoft Controller S and uses the Xbox mapping tab; LB/RB become White/Black. It's for a real Original Xbox console — a PC needs a driver for the original Xbox controller to see it as a gamepad.</p>
       <div class="row"><label>Persist last mode</label>
         <button id="persistMode">off</button>
         <span class="note" style="flex:1">Off (default): every restart / fresh reconnect boots into Steam mode. On: remembers the last mode you selected.</span>
@@ -388,7 +389,7 @@
 </div>
 
 <script>
-const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)"];
+const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)","Original Xbox"];
 const CHORD_FIELD = [17, 18, 19];          // back4 + B/X/Y
 const CHORD_DPAD_FIELD = [34, 35, 36, 37]; // back4 + D-pad left/up/right/down (firmware protocol >= 18)
 const CHORD_DPAD_DEF = [9, 8, 7, 2];       // firmware defaults: PS3, DS4 game, PS5 game, Switch HORIPAD
@@ -548,7 +549,7 @@ const TYPE_DEFS = [
   {key:"DS5", name:"DS5", labels:{1:"Cross",2:"Circle",3:"Square",4:"Triangle",5:"L1",6:"R1",7:"L3",8:"R3",9:"Create",10:"Options",11:"PS",19:"L2",20:"R2",...DPAD,16:"Touchpad Click",17:"Mute"}},
 ];
 // Which emulated type a USB mode belongs to (mirror of firmware etypeForMode); -1 = puck mode (no type).
-function etypeForMode(m){ switch(m){case 1:return 0; case 2:case 4:return 1; case 6:case 8:case 9:return 2; case 5:case 7:return 3; default:return -1;} }
+function etypeForMode(m){ switch(m){case 1:case 10:return 0; case 2:case 4:return 1; case 6:case 8:case 9:return 2; case 5:case 7:return 3; default:return -1;} }
 
 // ===================== Lizard (desktop) binding map =====================
 // Mirrors firmware lizard_map.h. A binding is {outType, od:[7], trig, hold}. Output types and the
