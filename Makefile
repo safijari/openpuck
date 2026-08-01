@@ -130,9 +130,7 @@ build-recovery:
 	$(MAKE) build BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR) EXTRA_FLAGS="$(EXTRA_FLAGS) -DOPK_FACTORY_RESET=1"
 
 ## Build OpenPuck and convert the .hex into a drag-and-drop .uf2 (build/openpuck/OpenPuck.ino.uf2 by default).
-## arduino-cli never emits one on its own -- the Adafruit core ships uf2conv.py but leaves the .uf2 objcopy
-## recipe commented out in platform.txt -- so this chains `build` (into a known UF2_OUTPUT_DIR) with
-## gen_uf2.sh. Same overrides as `build` (CFG_TUD_HID / EXTRA_FLAGS / FQBN), e.g. a recovery UF2:
+## Same overrides as `build` (CFG_TUD_HID / EXTRA_FLAGS / FQBN), e.g. a recovery UF2:
 ##   make uf2 EXTRA_FLAGS="-DOPK_FACTORY_RESET=1"
 uf2:
 	$(MAKE) build BUILD_PATH=$(UF2_BUILD_PATH) OUTPUT_DIR=$(UF2_OUTPUT_DIR) EXTRA_FLAGS="$(EXTRA_FLAGS)"
