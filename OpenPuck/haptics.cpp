@@ -322,10 +322,11 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 {
 	if (slot >= NSLOT)
 		return false;
-	// user rumble-strength scale (percent; 200 = double). Clamp to 16-bit.
-	if (g_rumbleScale != 100) {
-		uint32_t l = (uint32_t)lowFreq * g_rumbleScale / 100,
-			 h = (uint32_t)highFreq * g_rumbleScale / 100;
+	// Fixed rumble strength: the decoded amplitude doubled, which is what the (now removed) adjustable
+	// rumble-strength setting shipped as its default. Clamp to 16-bit.
+	{
+		uint32_t l = (uint32_t)lowFreq * RUMBLE_SCALE_PCT / 100,
+			 h = (uint32_t)highFreq * RUMBLE_SCALE_PCT / 100;
 		lowFreq = (l > 0xFFFF) ? 0xFFFF : (uint16_t)l;
 		highFreq = (h > 0xFFFF) ? 0xFFFF : (uint16_t)h;
 	}

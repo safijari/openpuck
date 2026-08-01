@@ -469,7 +469,7 @@ Bonds are written one slot at a time so no command exceeds a single USB-FS packe
 acked with a status blob so the host's read-after-write keeps the OUT pipe flowing. The panel sends all four
 `0x0D` slot writes plus every config field via `0x02`, then a single `0x0E` to persist and reboot — so the
 reboot regenerates the session addresses from the new UUIDs and the restored puck reproduces both the pairings
-and all settings. Other settings (mouse, rumble, chords, per-type button maps, Switch Pro motion) ride in the
+and all settings. Other settings (mouse, chords, per-type button maps, Switch Pro gyro mapping) ride in the
 backup file as plain `0x02` field values, not in the bond commands.
 
 ## 11. Timing notes

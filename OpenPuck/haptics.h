@@ -40,6 +40,9 @@
 // Controller power-off: hapticSendShutdown() relays Steam's confirmed "turn off controller" command (feature-0x01
 // cmd 0x9F, payload "off!" -- captured from the real puck). Sent as a small burst because the RF relay is NO-ACK.
 #define HAPTIC_SHUTDOWN_SHOTS 3u
+// Rumble strength: percent of the decoded host amplitude applied in every mode. Fixed at 200 (double), the
+// default the panel's removed rumble-strength slider shipped with, so pucks feel the same as before.
+#define RUMBLE_SCALE_PCT 200u
 
 // ---- relay queue (written by puck_hid.cpp, mode_*.cpp, serial_console.cpp; drained by rf_link.cpp) ----
 // Enqueue one host->controller report. `slot` = bond slot (0..NSLOT-1) or 0xFF to broadcast to every

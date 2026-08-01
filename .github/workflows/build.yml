@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -31,7 +31,7 @@ jobs:
         uses: arduino/setup-arduino-cli@v2
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
@@ -91,6 +91,9 @@ jobs:
           mkdir -p build/openpuck build/cache/openpuck
           make build BUILD_PATH=build/cache/openpuck OUTPUT_DIR=build/openpuck
 
+      - name: Compile MDBT50Q-CX-40
+        run: make build-raytac
+
       - name: Generate UF2 (OpenPuck)
         # The Adafruit nRF52 core leaves its UF2 objcopy recipe commented out in
         # platform.txt, so arduino-cli only emits .hex/.zip. Convert the .hex to
@@ -110,7 +113,7 @@ jobs:
           find build/openpuck build/reversepuck -maxdepth 1 -type f -print | sort
 
       - name: Upload OpenPuck UF2 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: OpenPuck-${{ steps.build_version.outputs.artifact_version }}-standard.uf2
           retention-days: 7
@@ -118,7 +121,7 @@ jobs:
           path: build/openpuck/OpenPuck.ino.uf2
 
       - name: Upload OpenPuck HEX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: OpenPuck-${{ steps.build_version.outputs.artifact_version }}-standard.hex
           retention-days: 7
@@ -126,7 +129,7 @@ jobs:
           path: build/openpuck/OpenPuck.ino.hex
 
       - name: Upload ReversePuckFirmware UF2 artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ReversePuckFirmware-${{ steps.build_version.outputs.artifact_version }}.uf2
           retention-days: 7
@@ -134,7 +137,7 @@ jobs:
           path: build/reversepuck/ReversePuckFirmware.ino.uf2
 
       - name: Upload ReversePuckFirmware HEX artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ReversePuckFirmware-${{ steps.build_version.outputs.artifact_version }}.hex
           retention-days: 7

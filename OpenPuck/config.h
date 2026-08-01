@@ -105,6 +105,14 @@ extern uint8_t g_usbMode; // loaded from flash at boot
 extern bool g_xbox;
 extern uint8_t g_chordBtn[3]; // back4+B/X/Y -> these modes (A always STEAM)
 
+// back4+D-pad -> these modes, indexed CHD_LEFT/UP/RIGHT/DOWN. Same deal as g_chordBtn: configurable from the
+// panel, defaults reach the console modes that have no config interface (so a controller-only route in exists).
+#define CHD_LEFT 0
+#define CHD_UP 1
+#define CHD_RIGHT 2
+#define CHD_DOWN 3
+extern uint8_t g_chordDpad[4];
+
 // Mode persistence policy: by DEFAULT every fresh power-on/reconnect lands in STEAM mode (0). An explicit
 // mode switch still works for the session via a ONE-SHOT bootMode (honored once, then cleared). g_persistMode
 // instead remembers the last selected mode across reboots.
@@ -157,16 +165,12 @@ extern uint8_t g_ledBright;
 
 // Copy g_type[g_etype] into the live mirrors above (safe defaults when g_etype == ET_NONE).
 void applyActiveType();
-// rumble strength, percent of decoded amplitude (100 = 1x, 200 = 2x default), all modes
-extern uint8_t g_rumbleScale;
-// Switch Pro motion settings. Persisted in their OWN flash file (mode_switch_pro.cpp), NOT in Cfg -- so changing
-// them never resets the rest of the config. Set from the WebUSB panel.
-// Switch Pro report cadence: 0 = 66Hz (15ms, compat), 1 = 120Hz (8ms, DEFAULT), 2 = full (~250Hz)
-extern uint8_t g_swProRate;
-// Switch Pro gyro sensitivity x10 (10 = 1.0x default; 5/15/20/25/30 = 0.5..3.0x)
-extern uint8_t g_swGyroScale10;
+// Switch Pro motion setting. Persisted in its OWN flash file (mode_switch_pro.cpp), NOT in Cfg -- so changing
+// it never resets the rest of the config. Set from the WebUSB panel.
+// Switch Pro gyro mapping: 0 = corrected (default, PR #189 sensitivity trim), 1 = legacy (raw, pre-#189)
+extern uint8_t g_swGyroLegacy;
 
-// persist g_swProRate + g_swGyroScale10 to their flash file
+// persist g_swGyroLegacy to its flash file
 void swProSaveCfg();
 
 // RF poll cadence: 250 Hz (4000 us) -- matches the real Valve puck's rate. The controller does NOT stream

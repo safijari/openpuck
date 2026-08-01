@@ -17,24 +17,23 @@ using namespace Adafruit_LittleFS_Namespace;
 
 SwitchProController g_switchPro;
 
-// Switch full-report (0x30) cadence. The console integrates the 3 IMU samples per report assuming ~5 ms/sample
-// (3 samples / 15 ms genuine); too high a rate over-integrates the gyro. 120 Hz is drift-free and lower-latency
-// (default); 66 Hz is the genuine compat fallback; "full" is the 4 ms PC rate (lowest latency).
-#define SW_PRO_REPORT_MS 15u // 66 Hz
-#define SW_PRO_REPORT_MS_120 8u // ~120 Hz
+// Switch full-report (0x30) cadence: the 4 ms PC rate (lowest latency). The console integrates the 3 IMU samples
+// per report by sample COUNT at a fixed ~5 ms/sample, so slower cadences were once offered as drift fallbacks;
+// they are gone -- full rate is what everything ships with.
 // SC2 accel is +/-2g (16384/g); /4 -> the genuine Pro +/-8g (4096/g) the Switch cal expects
 #define SW_ACCEL_DIV 4
 
-uint8_t g_swProRate =
-	2; // 0 = 66Hz, 1 = 120Hz, 2 = full (~250Hz / USB_STREAM_MS, default)
-uint8_t g_swGyroScale10 = 10; // gyro sensitivity x10 (10 = 1.0x)
+// 0 = corrected gyro mapping (default, PR #189: roll x0.8, pitch/yaw x0.9 -- matches a genuine Pro Controller and
+// Steam mode); 1 = legacy mapping, the raw pre-#189 axes with no trim.
+uint8_t g_swGyroLegacy = 0;
 
-// Persist the two Switch Pro motion settings in their own tiny file so they never trigger a global-Cfg reset.
+// Persist the Switch Pro motion setting in its own tiny file so it never triggers a global-Cfg reset.
 #define SWPRO_CFG_FILE "/swprocfg.bin"
 void swProSaveCfg()
 {
-	uint8_t b[3] = { 0x01, g_swProRate,
-			 g_swGyroScale10 }; // [ver][rate 0/1/2][gyroScale x10]
+	// ver 0x02 = [ver][gyroLegacy]. ver 0x01 was [ver][rate][gyroScale x10]; both knobs are gone, so such a
+	// file is simply ignored on load (defaults win) rather than migrated.
+	uint8_t b[2] = { 0x02, g_swGyroLegacy };
 	InternalFS.remove(SWPRO_CFG_FILE);
 	File f(InternalFS);
 	if (f.open(SWPRO_CFG_FILE, FILE_O_WRITE)) {
@@ -45,30 +44,12 @@ void swProSaveCfg()
 static void swProLoadCfg()
 {
 	File f(InternalFS);
-	uint8_t b[3];
+	uint8_t b[2];
 	if (f.open(SWPRO_CFG_FILE, FILE_O_READ)) {
-		if (f.read(b, 3) == 3 && b[0] == 0x01) {
-			// 0=66Hz, 1=120Hz, 2=full; bad value -> default full
-			g_swProRate = (b[1] <= 2) ? b[1] : 2;
-			g_swGyroScale10 =
-				(b[2] >= 5 && b[2] <= 30) ?
-					b[2] :
-					10; // sane bounds (0.5x..3.0x)
-		}
+		if (f.read(b, 2) == 2 && b[0] == 0x02)
+			g_swGyroLegacy = b[1] ? 1 : 0;
 		f.close();
 	}
-}
-// Scale a gyro axis by g_swGyroScale10/10, clamped to int16 (3x can saturate at high rates -- expected).
-static int16_t gscale(int16_t v)
-{
-	if (g_swGyroScale10 == 10)
-		return v;
-	int32_t s = (int32_t)v * (int32_t)g_swGyroScale10 / 10;
-	if (s > 32767)
-		s = 32767;
-	else if (s < -32768)
-		s = -32768;
-	return (int16_t)s;
 }
 
 static const uint8_t SWPRO_HID_DESC[] = {
@@ -437,7 +418,8 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 	// QAM (3 dots) remap -> applied via codeToJc below like a back paddle (so Capture(18)/any target work).
 	bool qam = g_qamMap && (b & TB_QAM);
 	if ((b & CHORD_BACK4) == CHORD_BACK4)
-		b &= ~(uint32_t)(TB_A | TB_B | TB_X | TB_Y);
+		b &= ~(uint32_t)(TB_A | TB_B | TB_X | TB_Y | TB_DUP | TB_DDN |
+				 TB_DLF | TB_DRT);
 	uint32_t fA = g_abSwap ? JC_BTN_B : JC_BTN_A,
 		 fB = g_abSwap ? JC_BTN_A : JC_BTN_B;
 	uint32_t fX = g_abSwap ? JC_BTN_Y : JC_BTN_X,
@@ -527,10 +509,20 @@ static void switchProBuild(uint8_t slot, uint8_t out[63])
 	int16_t aY = (int16_t)((-(int16_t)g_in[bond].ax) / SW_ACCEL_DIV);
 	int16_t aZ = (int16_t)(g_in[bond].az / SW_ACCEL_DIV);
 
-	// gyro outputs scaled by the user sensitivity factor
-	int16_t groll = gscale((int16_t)g_in[bond].gy);
-	int16_t gpitch = gscale((int16_t)(-(int16_t)g_in[bond].gx));
-	int16_t gyaw = gscale((int16_t)g_in[bond].gz);
+	int16_t groll = (int16_t)g_in[bond].gy;
+	int16_t gpitch = (int16_t)(-(int16_t)g_in[bond].gx);
+	int16_t gyaw = (int16_t)g_in[bond].gz;
+
+	// Sensitivity trim (PR #189), skipped in legacy mode (g_swGyroLegacy, panel-selectable):
+	//  - the physical yaw of the SC made the roll (or yaw, if facing a wall like on the Switch) move too fast in
+	//    Switch mode -> 80%. int32 for the multiply so it cannot overflow.
+	//  - pitch/yaw were also a little off -> 90% matches a genuine Switch Pro Controller and Steam mode.
+	if (!g_swGyroLegacy) {
+		groll = (int16_t)(((int32_t)groll * 4) / 5);
+		gpitch = (int16_t)(((int32_t)gpitch * 9) / 10);
+		gyaw = (int16_t)(((int32_t)gyaw * 9) / 10);
+	}
+
 	for (int k = 0; k < 3; k++) {
 		int o = 12 + k * 12;
 		out[o + 0] = aX & 0xFF;
@@ -981,15 +973,7 @@ void SwitchProController::task()
 		// not until the host has finished init + selected 0x30
 		if (g_swProReportMode[s] != 0x30)
 			continue;
-		// The Switch integrates the report's 3 IMU samples by SAMPLE COUNT at a fixed ~5 ms/sample (it ignores
-		// the timer byte and assumes a 3-samples-per-15ms genuine cadence). Streaming faster (e.g. 250 Hz x 3
-		// = 750 samples/s) over-credits gyro rotation ~3.75x, so residual bias accumulates into the slow
-		// orientation lean that builds over minutes and resets on replug. 15 ms matches the genuine push,
-		// making integration 1:1.
-		uint32_t interval = (g_swProRate == 2) ? USB_STREAM_MS :
-				    (g_swProRate == 1) ? SW_PRO_REPORT_MS_120 :
-							 SW_PRO_REPORT_MS;
-		if (millis() - g_swProLastMs[s] < interval)
+		if (millis() - g_swProLastMs[s] < USB_STREAM_MS)
 			continue;
 		g_swProLastMs[s] = millis();
 		uint8_t p[63];

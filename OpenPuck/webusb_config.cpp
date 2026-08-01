@@ -1,4 +1,5 @@
 #include "webusb_config.h"
+#include "board_config.h"
 #include "config.h"
 #include "bonds.h"
 #include "rf_link.h"
@@ -39,12 +40,31 @@ static void fwupAckPost(uint8_t status)
 	g_fwupAckPend = true;
 }
 
+static bool boardCommand(uint8_t op)
+{
+#if !OPK_HAS_ADAFRUIT_DFU
+	// The factory Open DFU bootloader uses a different settings page.
+	// 0x25 (full board wipe) is rejected for the same reason AND because its recovery story doesn't exist
+	// here: it erases the app expecting the resident UF2 bootloader to come up as a drag-and-drop drive,
+	// and its bootloader-settings page (0xFF000) lands inside this board's factory bootloader region.
+	if (op == 0x0B || op == 0x0C || op == 0x25) {
+		g_blobRequest = true;
+		return true;
+	}
+	if (op >= 0x20 && op <= 0x24) {
+		fwupAckPost(FWUP_ERR_STATE);
+		return true;
+	}
+#endif
+	return false;
+}
+
 // blob payload = [ver=10][mode][mDiv][mFric][qamMap(active)][abSwap(active)][back0..3(active)][connSlot(0xFF=none)][linkUp]
 //                [f1ps_lo][f1ps_hi][pollU100][newps_lo][newps_hi][e7b][relayOp][relaySub][fwdNewOnly]
 //                [qos][persistMode][chordBtn B][chordBtn X][chordBtn Y][pollsps_lo][pollsps_hi]
 //                [loopPeriod_lo][loopPeriod_hi][loopWorstIdx][loopWorstUs_lo][loopWorstUs_hi]
 //                [pollPeriod_lo][pollPeriod_hi][logEnabled][battery%][rssi|dBm|]
-//                [gitDirty][buildId 12B ASCII, NUL-padded][rumbleScale][swPro120][swGyroScale10][raw accel ax ay az 3x s16 LE]
+//                [gitDirty][buildId 12B ASCII, NUL-padded][rsvd x3: ex rumbleScale/swProRate/swGyroScale10][raw accel ax ay az 3x s16 LE]
 //                [bondedCount][slot0_up][slot0_batt][slot0_rssi]...[slot3_up][slot3_batt][slot3_rssi]
 //                [v10/v17: per-type cfg, 4x9B: ET_XBOX/SWITCH/DS4/DS5 each {back0..3, qam, abSwap, padHaptics, ledBright, rumble}]
 //                [v11: resetReason(RR_* code)][resetReas raw u32 LE][rxWin/10 us][hapticBlockOn][hapticBlock s]
@@ -55,7 +75,9 @@ static void fwupAckPost(uint8_t status)
 //                [v13: per-slot link stats, 4x9B from p[145]: {pollsps u16, f1ps u16, newps u16, crc/s u8,
 //                 noRx/s u8, relay/s u8} -- each controller's own rates (the v4 aggregates are their sums)]
 //                [v14/v17: p[181] landAll87 (verbatim-0x87-relay experiment toggle)]
-#define WB_PAYLEN 180
+//                [v18: p[182..185] chordDpad left/up/right/down (back4+D-pad mode assignments)]
+//                [v19: p[186] swGyroLegacy (Switch Pro gyro mapping: 0 = corrected, 1 = legacy/pre-#189)]
+#define WB_PAYLEN 185
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -80,13 +102,16 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (17 = per-type rumble field (TypeCfg k=8), per-type stride 8->9; 16 = +configurable
+	// protocol version (19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the rumble-strength,
+	// Switch report-rate and Switch gyro-scale settings (fields 22/23/24, blob p[53..55]) are GONE -- those
+	// bytes now read 0; 18 = +configurable back4+D-pad chords (fields 34..37, blob p[182..185]);
+	// 17 = per-type rumble field (TypeCfg k=8), per-type stride 8->9; 16 = +configurable
 	// lizard-map ops 0x11..0x15 / 0xAA frame, payload unchanged -- the panel MUST see >=16 before it dares
 	// send 0x11, or a blocking readLizard() would hang forever against a firmware that silently drops the
 	// unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87 toggle; 13 = +per-slot link
 	// stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type
 	// cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 17;
+	p[2] = 19;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -143,13 +168,11 @@ static void webusbSendBlob()
 		for (uint8_t i = 0; i < 12 && buildId[i]; i++)
 			p[41 + i] = (uint8_t)buildId[i];
 	}
-	p[53] = g_rumbleScale; // rumble strength % (protocol v5)
-
-	// Switch Pro report rate 0=66/1=120/2=full (protocol v6)
-	p[54] = g_swProRate;
-
-	// Switch Pro gyro sensitivity x10 (protocol v6)
-	p[55] = g_swGyroScale10;
+	// v19: reserved. Were rumble strength % (v5) and the Switch Pro report rate + gyro scale (v6); all three
+	// settings were removed, so these read 0 and the panel ignores them.
+	p[53] = 0;
+	p[54] = 0;
+	p[55] = 0;
 	{
 		// Read the ACTIVE slot's accel, not a hardcoded g_in[0]: a controller bonded to a non-zero
 		// slot leaves g_in[0] zeroed, which made this readout (and lizard) look dead.
@@ -255,6 +278,13 @@ static void webusbSendBlob()
 	}
 	// v14/v17: verbatim-0x87-relay experiment toggle (panel reflects + toggles it)
 	p[181] = g_landAll87;
+	// v18: back4+D-pad mode assignments (panel renders these as selects next to the B/X/Y ones)
+	p[182] = g_chordDpad[CHD_LEFT];
+	p[183] = g_chordDpad[CHD_UP];
+	p[184] = g_chordDpad[CHD_RIGHT];
+	p[185] = g_chordDpad[CHD_DOWN];
+	// v19: Switch Pro gyro mapping (0 = corrected/default, 1 = legacy pre-#189 raw axes)
+	p[186] = g_swGyroLegacy;
 	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
 	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
 	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
@@ -623,6 +653,11 @@ void webusbPoll()
 					       1;
 			if (n < need)
 				break; // wait for more bytes
+			if (boardCommand(op)) {
+				memmove(buf, buf + need, n - need);
+				n -= need;
+				continue;
+			}
 			if (op == 0x01) {
 				g_blobRequest =
 					true; // sent from the usbd task (webusbSofDrain)
@@ -925,6 +960,15 @@ void webusbPoll()
 						g_chordBtn[f - 17] = v;
 					break;
 
+				// back4+D-pad mode assignments (left/up/right/down), protocol v18
+				case 34:
+				case 35:
+				case 36:
+				case 37:
+					if (modeValid(v))
+						g_chordDpad[f - 34] = v;
+					break;
+
 				// reboot once WITH the CDC serial console (puck mode), then auto-revert
 				case 20:
 					armDebugCdcNextBoot();
@@ -942,24 +986,17 @@ void webusbPoll()
 					}
 					break;
 
-				// rumble strength % (0=off, 100=1x, 200=double)
-				case 22:
-					g_rumbleScale = v;
-					break;
-
-				// Switch Pro report rate (0=66Hz,1=120Hz,2=full)
-				case 23:
-					g_swProRate = (v <= 2) ? v : 2;
+				// Switch Pro gyro mapping: 0 = corrected (default), 1 = legacy
+				// (pre-#189 raw axes, no sensitivity trim). Protocol v19.
+				case 38:
+					g_swGyroLegacy = v ? 1 : 0;
 					swProSaveCfg();
 					persist = false;
 					break;
-				case 24:
-					g_swGyroScale10 =
-						(v >= 5 && v <= 30) ? v : 10;
-					swProSaveCfg();
-					persist = false;
-					break; // Switch Pro gyro scale x10
 
+					// (field 22, rumble strength, removed -- fixed at RUMBLE_SCALE_PCT)
+					// (fields 23/24, Switch Pro report rate + gyro scale, removed -- rate is
+					//  fixed at full and the gyro mapping is now field 38)
 					// (field 25, poll RX window, removed -- g_rxWin is now FIXED/not configurable)
 					// (fields 27/28, post-connect haptic block, removed -- permanently disabled)
 

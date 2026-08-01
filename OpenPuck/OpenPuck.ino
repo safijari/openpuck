@@ -20,6 +20,7 @@
 using namespace Adafruit_LittleFS_Namespace;
 
 #include "config.h"
+#include "board_config.h"
 
 // OPK_GIT_HASH: tags the one-time factory-reset build
 #include "build_info.h"
@@ -124,11 +125,15 @@ void setup()
 	// full-board wipe (debug-only "erase everything"): if the panel armed one, this never returns -- it erases
 	// the app + config/bond + bootloader-settings flash from RAM and resets into the app-less UF2 bootloader.
 	// Checked before the staged-update apply (both use the meta page; only one can be armed at a time).
+	// Both are Adafruit-bootloader-specific (UF2 recovery drive + Adafruit-format settings page), so on
+	// boards without one they're compiled out -- the panel ops that arm them are rejected there too.
+#if OPK_HAS_ADAFRUIT_DFU
 	fwupWipeIfArmed();
 	// staged firmware update (WebUSB "flash on reboot"): if the panel committed one, this never returns --
 	// it copies staged->app from RAM and resets into the new firmware. MUST run before anything else touches
 	// hardware; the board looks dead for the ~5 s the copy takes.
 	fwupApplyIfArmed();
+#endif
 	genSerial();
 	ledInit();
 #if OPK_PWR_SWITCH
