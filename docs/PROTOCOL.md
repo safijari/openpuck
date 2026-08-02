@@ -386,6 +386,18 @@ stop frame that can be lost (unlike the `0x82` on/off pair or `0x80` rumble).
 - Single HID interface with the canonical HORIPAD descriptor (interrupt IN + OUT endpoints), accepted by
   a real Switch console with no handshake; an 8-byte report is streamed at ~250 Hz
 
+### 9.4 Original Xbox mode
+
+- VID:PID `045E:0289` (Microsoft Controller S). Composite: the XID interface plus the wake mouse and
+  the WebUSB panel, so the config panel stays reachable on a PC
+- Proprietary XID interface (class `0x58`, subclass `0x42`, protocol `0x00`) with interrupt IN +
+  OUT endpoints; 20-byte input reports, rumble applied from the OUT endpoint
+- The console refuses the controller until three `0xC1` vendor control requests are answered:
+  `bRequest 0x06` / `wValue 0x4200` (XID descriptor), and `bRequest 0x01` with `wValue 0x0100` /
+  `0x0200` (input and output capabilities)
+- Also answers the XID report requests the protocol carries on EP0, in parallel with the interrupt
+  endpoints: `GET_REPORT` (`0xA1 0x01`, `wValue 0x0100`) and `SET_REPORT` (`0x21 0x09`, `wValue 0x0200`)
+
 ## 10. WebUSB control channel
 
 The WebUSB vendor interface is present only in Steam mode (Xbox/Switch are clean controllers with no
