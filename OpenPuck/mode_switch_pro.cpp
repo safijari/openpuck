@@ -481,8 +481,10 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 	out[2] = (uint8_t)(jc);
 	out[3] = (uint8_t)(jc >> 8);
 	out[4] = (uint8_t)(jc >> 16);
-	jcPackStick(out + 5, g_in[bond].lx, g_in[bond].ly);
-	jcPackStick(out + 8, g_in[bond].rx, g_in[bond].ry);
+	int16_t lx, ly, rx, ry;
+	slotSticks(bond, &lx, &ly, &rx, &ry);
+	jcPackStick(out + 5, lx, ly);
+	jcPackStick(out + 8, rx, ry);
 	// rumble_input_report echo: genuine pad emits 0x09..0x0C; some Switch firmware expects this nonzero.
 	out[11] = 0x09;
 }

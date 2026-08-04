@@ -169,11 +169,12 @@ static void switchBuildHoripad(uint8_t slot, uint8_t out[8])
 	out[0] = btn & 0xFF;
 	out[1] = btn >> 8;
 	out[2] = hat;
-	out[3] = swStick(g_in[slot].lx, false);
-	out[4] = swStick(g_in[slot].ly,
-			 true); // HID Y is down-positive -> invert
-	out[5] = swStick(g_in[slot].rx, false);
-	out[6] = swStick(g_in[slot].ry, true);
+	int16_t lx, ly, rx, ry;
+	slotSticks(slot, &lx, &ly, &rx, &ry);
+	out[3] = swStick(lx, false);
+	out[4] = swStick(ly, true); // HID Y is down-positive -> invert
+	out[5] = swStick(rx, false);
+	out[6] = swStick(ry, true);
 	out[7] = 0;
 }
 

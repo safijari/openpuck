@@ -32,6 +32,41 @@ uint8_t swStick(int16_t v, bool invert)
 	return (uint8_t)a;
 }
 
+void padStickOverride(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
+		      int16_t rpy, int16_t *lx, int16_t *ly, int16_t *rx,
+		      int16_t *ry)
+{
+	// pad index 0 = left pad, 1 = right pad; both share the same s16, center-0 coordinate space as the sticks
+	const int16_t px[2] = { lpx, rpx };
+	const int16_t py[2] = { lpy, rpy };
+	const bool touch[2] = { (b & TB_LPADT) != 0, (b & TB_RPADT) != 0 };
+	for (int pad = 0; pad < 2; pad++) {
+		int16_t *sx, *sy;
+		if (g_padStick[pad] == PS_LEFT) {
+			sx = lx;
+			sy = ly;
+		} else if (g_padStick[pad] == PS_RIGHT) {
+			sx = rx;
+			sy = ry;
+		} else
+			continue;
+		*sx = touch[pad] ? px[pad] : 0;
+		*sy = touch[pad] ? py[pad] : 0;
+	}
+}
+
+void slotSticks(uint8_t slot, int16_t *lx, int16_t *ly, int16_t *rx,
+		int16_t *ry)
+{
+	const PuckInput &in = g_in[slot];
+	*lx = in.lx;
+	*ly = in.ly;
+	*rx = in.rx;
+	*ry = in.ry;
+	padStickOverride(in.buttons, in.lpx, in.lpy, in.rpx, in.rpy, lx, ly, rx,
+			 ry);
+}
+
 // Map Steam trackpad s16 coords into a 0..max axis (centered touch -> mid-range).
 uint16_t padNormU16(int16_t v, uint16_t maxv)
 {
