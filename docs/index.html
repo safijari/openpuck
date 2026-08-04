@@ -1058,7 +1058,7 @@ function applyBlob(p){
   }
 
   // per-type trackpad->stick mapping (blob v20, firmware p[187..194] -> JS p[185..192])
-  const padStickCap=(p[0]>=21 && p.length>192);
+  const padStickCap=(p[0]>=20 && p.length>192);
   const gitDirty=(p.length>38?p[38]:0); let buildId="";
   for(let i=39;i<51 && i<p.length && p[i];i++) buildId+=String.fromCharCode(p[i]);
   $("#stBuild").innerHTML = buildId
