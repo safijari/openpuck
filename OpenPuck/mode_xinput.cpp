@@ -400,10 +400,14 @@ static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 		else if (bc[i] == 20)
 			rt = 0xFF;
 	}
-	xinputSend(slot, btn, lt, rt, (int16_t)s16off(r, 8),
-		   (int16_t)s16off(r, 10), // L stick X/Y
-		   (int16_t)s16off(r, 12),
-		   (int16_t)s16off(r, 14)); // R stick X/Y
+	// Raw-report offsets, not slotSticks(): this mode already decodes 0x45 in place and never
+	// touches g_in. 16/18 = left pad X/Y, 22/24 = right pad X/Y (same pair rfXboxMouse reads).
+	int16_t lx = (int16_t)s16off(r, 8), ly = (int16_t)s16off(r, 10),
+		rx = (int16_t)s16off(r, 12), ry = (int16_t)s16off(r, 14);
+	padStickBlend(b, (int16_t)s16off(r, 16), (int16_t)s16off(r, 18),
+		      (int16_t)s16off(r, 22), (int16_t)s16off(r, 24), &lx, &ly,
+		      &rx, &ry);
+	xinputSend(slot, btn, lt, rt, lx, ly, rx, ry);
 }
 // Right pad -> mouse on a second HID-mouse interface alongside the XInput gamepad. Same glide model as Lizard's
 // right pad; RPad click = left button, LPad click = right. SINGLE shared mouse: the desktop can only consume
@@ -415,7 +419,9 @@ static void rfXboxMouse(const uint8_t *r)
 	static bool prt = false;
 	static float vx = 0, vy = 0, rmx = 0, rmy = 0;
 	static uint8_t pmb = 0;
-	bool rtouch = b & TB_RPADT;
+	// The right pad drives a stick now, so it must not also glide the mouse -- treat it as untouched and let
+	// the residual velocity decay away instead of stopping dead.
+	bool rtouch = (g_padStick[1] == PS_OFF) && (b & TB_RPADT);
 	int rx = s16off(r, 22), ry = s16off(r, 24);
 	if (rtouch) {
 		if (prt) {

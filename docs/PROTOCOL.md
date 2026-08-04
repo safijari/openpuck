@@ -466,6 +466,15 @@ Status blob payload:
 [22] persist-mode flag
 ```
 
+Later fields are appended (the version byte says how far the payload goes). From version 20 the tail carries
+the per-emulated-type trackpad-to-stick mapping at payload bytes 187..194 — two bytes per type
+(`{left pad, right pad}`), each `0` off / `1` left stick / `2` right stick. Set with
+`0x02 <80 + type*2 + pad> <value>`. Fields 40..75 are the per-type config block, so the mapping starts at 80.
+A mapped pad **blends** with its stick: while the pad is touched each axis reports whichever of the two
+sources is deflected further from center (signed); an untouched pad contributes nothing and the physical
+stick passes straight through. A mapped pad also stops reporting as a touchpad contact / mouse.
+
+
 ### 10.1 Backup / clone (bond export & import)
 
 A puck's whole portable identity is its four 24-byte bond records (`[proteus_uuid 4][ibex_uuid 4][serial 16]`,
