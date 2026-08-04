@@ -400,11 +400,13 @@ static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 		else if (bc[i] == 20)
 			rt = 0xFF;
 	}
+	// Raw-report offsets, not slotSticks(): this mode already decodes 0x45 in place and never
+	// touches g_in. 16/18 = left pad X/Y, 22/24 = right pad X/Y (same pair rfXboxMouse reads).
 	int16_t lx = (int16_t)s16off(r, 8), ly = (int16_t)s16off(r, 10),
 		rx = (int16_t)s16off(r, 12), ry = (int16_t)s16off(r, 14);
-	padStickOverride(b, (int16_t)s16off(r, 16), (int16_t)s16off(r, 18),
-			 (int16_t)s16off(r, 22), (int16_t)s16off(r, 24), &lx,
-			 &ly, &rx, &ry);
+	padStickBlend(b, (int16_t)s16off(r, 16), (int16_t)s16off(r, 18),
+		      (int16_t)s16off(r, 22), (int16_t)s16off(r, 24), &lx, &ly,
+		      &rx, &ry);
 	xinputSend(slot, btn, lt, rt, lx, ly, rx, ry);
 }
 // Right pad -> mouse on a second HID-mouse interface alongside the XInput gamepad. Same glide model as Lizard's

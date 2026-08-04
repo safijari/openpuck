@@ -46,11 +46,11 @@ void steamPadsToTouch(uint32_t b, uint16_t touchH, int16_t lpx, int16_t lpy,
 // untouched pad contributes nothing and the physical stick passes through unchanged -- which also means a
 // release can never leave a stale pad value stuck on the axis. b = raw TB_* buttons (touch bits); the
 // sticks are updated in place.
-void padStickOverride(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
-		      int16_t rpy, int16_t *lx, int16_t *ly, int16_t *rx,
-		      int16_t *ry);
+void padStickBlend(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
+		   int16_t rpy, int16_t *lx, int16_t *ly, int16_t *rx,
+		   int16_t *ry);
 
-// g_in[slot] sticks with padStickOverride applied -- what every emulated mode should send to the host.
+// g_in[slot] sticks with padStickBlend applied -- what every emulated mode should send to the host.
 void slotSticks(uint8_t slot, int16_t *lx, int16_t *ly, int16_t *rx,
 		int16_t *ry);
 

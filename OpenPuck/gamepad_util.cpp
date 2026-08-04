@@ -42,9 +42,9 @@ static inline int16_t strongerAxis(int16_t a, int16_t b)
 	return (ma >= mb) ? a : b;
 }
 
-void padStickOverride(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
-		      int16_t rpy, int16_t *lx, int16_t *ly, int16_t *rx,
-		      int16_t *ry)
+void padStickBlend(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
+		   int16_t rpy, int16_t *lx, int16_t *ly, int16_t *rx,
+		   int16_t *ry)
 {
 	// pad index 0 = left pad, 1 = right pad; both share the same s16, center-0 coordinate space as the sticks
 	const int16_t px[2] = { lpx, rpx };
@@ -79,8 +79,8 @@ void slotSticks(uint8_t slot, int16_t *lx, int16_t *ly, int16_t *rx,
 	*ly = in.ly;
 	*rx = in.rx;
 	*ry = in.ry;
-	padStickOverride(in.buttons, in.lpx, in.lpy, in.rpx, in.rpy, lx, ly, rx,
-			 ry);
+	padStickBlend(in.buttons, in.lpx, in.lpy, in.rpx, in.rpy, lx, ly, rx,
+		      ry);
 }
 
 // Map Steam trackpad s16 coords into a 0..max axis (centered touch -> mid-range).
