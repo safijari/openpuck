@@ -103,7 +103,9 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (20 = +per-type trackpad->stick mapping (fields 50..57, blob p[187..194]);
+	// protocol version (21 = trackpad->stick mapping fields moved to 80..87 (50..57 collided with the
+	// per-type cfg range 40..75, so those writes were swallowed as per-type config and clobbered the button
+	// map); 20 = +per-type trackpad->stick mapping (fields 50..57, blob p[187..194]);
 	// 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the rumble-strength,
 	// Switch report-rate and Switch gyro-scale settings (fields 22/23/24, blob p[53..55]) are GONE -- those
 	// bytes now read 0; 18 = +configurable back4+D-pad chords (fields 34..37, blob p[182..185]);
@@ -113,7 +115,7 @@ static void webusbSendBlob()
 	// unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87 toggle; 13 = +per-slot link
 	// stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type
 	// cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 20;
+	p[2] = 21;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -993,18 +995,20 @@ void webusbPoll()
 					}
 					break;
 
-				// 50..57: per-type trackpad->stick mapping, field = 50 + et*2 + pad
+				// 80..87: per-type trackpad->stick mapping, field = 80 + et*2 + pad
 				// (pad 0 = left, 1 = right; value PS_OFF/PS_LEFT/PS_RIGHT).
-				case 50:
-				case 51:
-				case 52:
-				case 53:
-				case 54:
-				case 55:
-				case 56:
-				case 57: {
-					uint8_t et = (uint8_t)((f - 50) / 2),
-						pad = (uint8_t)((f - 50) % 2);
+				// Must stay clear of the per-type cfg range 40..40+ET_COUNT*9-1
+				// (40..75), which is claimed before this switch runs.
+				case 80:
+				case 81:
+				case 82:
+				case 83:
+				case 84:
+				case 85:
+				case 86:
+				case 87: {
+					uint8_t et = (uint8_t)((f - 80) / 2),
+						pad = (uint8_t)((f - 80) % 2);
 					if (et < ET_COUNT && v <= PS_MAX) {
 						g_padStickCfg[et][pad] = v;
 						if (et == g_etype)

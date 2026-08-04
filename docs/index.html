@@ -595,7 +595,7 @@ const typeEls = []; // one entry per TYPE_DEFS: {sec, tab, activeDot, back[], qa
 // Trackpad -> joystick mapping (firmware PS_OFF/PS_LEFT/PS_RIGHT). Field id = PAD_STICK_FIELD0 + et*2 + pad
 // (pad 0 = left trackpad, 1 = right). While mapped and touched the pad drives that stick; on release the
 // stick re-centers, and an untouched mapped pad leaves the physical stick in control.
-const PAD_STICK_FIELD0 = 50;
+const PAD_STICK_FIELD0 = 80;
 const PAD_STICK_OPTS = [[0,"Off (touchpad)"],[1,"Left stick"],[2,"Right stick"]];
 const PAD_STICK_LABELS = ["Left trackpad \u2192 stick","Right trackpad \u2192 stick"];
 function mkSelect(def, includeNone){
@@ -1058,7 +1058,7 @@ function applyBlob(p){
   }
 
   // per-type trackpad->stick mapping (blob v20, firmware p[187..194] -> JS p[185..192])
-  const padStickCap=(p[0]>=20 && p.length>192);
+  const padStickCap=(p[0]>=21 && p.length>192);
   const gitDirty=(p.length>38?p[38]:0); let buildId="";
   for(let i=39;i<51 && i<p.length && p[i];i++) buildId+=String.fromCharCode(p[i]);
   $("#stBuild").innerHTML = buildId
@@ -1203,7 +1203,7 @@ function buildBackup(p, bp){
   for(let et=0; et<TYPE_DEFS.length; et++){ const q=73+et*9;
     const t={back:[p[q],p[q+1],p[q+2],p[q+3]], qam:p[q+4], abSwap:p[q+5], pad:p[q+6], led:p[q+7], rumble:p[q+8]};
     // pad->stick mapping only exists from protocol v20; omit on older pucks so a restore can't replay defaults
-    if(p[0]>=20 && p.length>192) t.padStick=[p[185+et*2],p[186+et*2]];
+    if(p[0]>=21 && p.length>192) t.padStick=[p[185+et*2],p[186+et*2]];
     types.push(t); }
   const cfg={ mode:p[1], mDiv:p[2], mFric:p[3], persistMode:p[22], chord:[p[23],p[24],p[25]], types };
   // D-pad chords only exist from protocol v18, the Switch gyro mapping from v19; omit the keys entirely on
