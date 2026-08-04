@@ -40,10 +40,12 @@ void steamPadsToTouch(uint32_t b, uint16_t touchH, int16_t lpx, int16_t lpy,
 		      int16_t rpx, int16_t rpy, uint16_t *lx, uint16_t *ly,
 		      uint16_t *rx, uint16_t *ry);
 
-// Trackpad -> analog stick override (WebUI "map trackpad to joystick", g_padStick). A pad mapped to a stick
-// drives it with its own coordinates WHILE TOUCHED and forces it to center on release, so the flick-back a
-// capacitive pad has no way to express doesn't read as a stuck stick. An untouched mapped pad leaves the
-// physical stick in control. b = raw TB_* buttons (touch bits), the sticks are updated in place.
+// Trackpad -> analog stick blend (WebUI "map trackpad to joystick", g_padStick). A pad mapped to a stick
+// BLENDS with it rather than replacing it: while the pad is touched each axis reports whichever of the two
+// sources is deflected further from center (signed), so pad and stick stay usable at the same time. An
+// untouched pad contributes nothing and the physical stick passes through unchanged -- which also means a
+// release can never leave a stale pad value stuck on the axis. b = raw TB_* buttons (touch bits); the
+// sticks are updated in place.
 void padStickOverride(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
 		      int16_t rpy, int16_t *lx, int16_t *ly, int16_t *rx,
 		      int16_t *ry);

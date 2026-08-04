@@ -32,6 +32,16 @@ uint8_t swStick(int16_t v, bool invert)
 	return (uint8_t)a;
 }
 
+// Pick whichever of the two sources is deflected further from center, keeping its sign. -32768 has no
+// positive twin in int16, so clamp its magnitude to 32767 before comparing -- otherwise the negation
+// overflows and a full-left stick would lose to anything.
+static inline int16_t strongerAxis(int16_t a, int16_t b)
+{
+	int32_t ma = (a == -32768) ? 32767 : (a < 0 ? -(int32_t)a : (int32_t)a);
+	int32_t mb = (b == -32768) ? 32767 : (b < 0 ? -(int32_t)b : (int32_t)b);
+	return (ma >= mb) ? a : b;
+}
+
 void padStickOverride(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
 		      int16_t rpy, int16_t *lx, int16_t *ly, int16_t *rx,
 		      int16_t *ry)
@@ -50,8 +60,14 @@ void padStickOverride(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
 			sy = ry;
 		} else
 			continue;
-		*sx = touch[pad] ? px[pad] : 0;
-		*sy = touch[pad] ? py[pad] : 0;
+		// An untouched pad contributes NOTHING rather than forcing center, so the physical
+		// stick keeps working while the pad is idle. (No touch means no pad value that could
+		// get stuck on the axis after a release.)
+		if (!touch[pad])
+			continue;
+		// Both sources live: send whichever is pushed further, per axis, sign preserved.
+		*sx = strongerAxis(*sx, px[pad]);
+		*sy = strongerAxis(*sy, py[pad]);
 	}
 }
 
