@@ -152,6 +152,92 @@ build; use the physical Open DFU workflow above instead. The panel's factory
 erase (§6, filesystem-only) and the serial `ERASE-ALL` console command work
 normally.
 
+### 4b. Seeed XIAO nRF52840 (Sense)
+
+Both XIAO nRF52840 variants build from the same source; the Sense only adds a
+microphone and IMU, which OpenPuck does not use. Use `xiaonRF52840Sense` in
+place of `xiaonRF52840` below if you have that board.
+
+#### Prerequisites
+
+The XIAO needs Seeed's own core, which is a fork of the Adafruit one:
+
+```bash
+arduino-cli config add board_manager.additional_urls \
+    https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
+arduino-cli core update-index
+arduino-cli core install Seeeduino:nrf52
+```
+
+It also needs a newer TinyUSB than the core bundles. Seeed's core ships
+Adafruit TinyUSB 1.7.0, which hardcodes `#define CFG_TUD_HID 1` with no
+`#ifndef` guard (so the build flag is silently overridden) and predates
+`setConfigurationAttribute()`, `allocEndpoint()`, and
+`setSerialDescriptor()`. Install a user-library copy, which outranks the
+core-bundled one in arduino-cli's resolver:
+
+```bash
+arduino-cli lib install "Adafruit TinyUSB Library@3.7.0"
+```
+
+Pin the version: 3.7.5 added an `is_isr` parameter to `usbd_edpt_xfer()`,
+which does not compile against `mode_xinput.cpp`. Anything from 3.7.0 through
+3.7.4 works. (The Adafruit core pins 3.7.0, so this matches what the standard
+build uses.)
+
+#### Build and flash
+
+```bash
+make build-xiao
+make deploy-xiao COM5     # or /dev/ttyACM0
+```
+
+Double-tap RST before flashing: like every other target, puck mode drops the
+CDC port, so the board cannot auto-reset into its bootloader.
+
+#### Flash layout
+
+Seeed's core ships **S140 7.3.0** rather than the 6.1.1 the Feather profile
+uses, which moves the application up one page. Everything above it is
+unchanged:
+
+- OpenPuck starts at `0x27000` (not `0x26000`) and must end before `0xED000`.
+- InternalFS occupies `0xED000` through `0xF3FFF`.
+- The Adafruit-format UF2 bootloader occupies `0xF4000` through `0xFFFFF`.
+
+`OPK_APP_BASE` in `board_config.h` carries this difference; the staged updater
+derives `FWUP_APP_BASE` from it.
+
+The XIAO's RGB LEDs are active-low, and `LED_BUILTIN` is the red one. Pin 24 —
+the SuperMini's blue user LED in the Feather pin map — is **P0.21 (QSPI_SCK)**
+on the XIAO, so the dual-pin remote-wake indicator is overridden to
+`LED_BUILTIN` on both pins rather than driving the on-board QSPI flash's clock
+line.
+
+#### Staged WebUSB updates are not supported on this board
+
+Use serial or UF2 DFU (§5, §5b) to update a XIAO. The panel's firmware-update
+tab hardcodes the app base:
+
+```js
+const APP_BASE=0x26000, ...
+if(lo!==APP_BASE) throw new Error("image base 0x"+lo.toString(16)+" ...")
+```
+
+so it rejects a XIAO-built `.uf2` (base `0x27000`), while an official release
+image passes that check but cannot run at `0x27000` — applying one leaves the
+board app-less. `fwupBegin` carries no target address, so the firmware cannot
+reject the mismatch either; `vectorsPlausible()` passes because a Feather
+image's reset vector still falls inside the XIAO's app region. Recovery is the
+normal one: double-tap RST and reflash over serial DFU; the bootloader is
+untouched.
+
+#### Tested
+
+Board enumerates as the puck, controller pairs and reconnects wirelessly,
+bonds survive reboot, the WebUSB panel connects, and Xbox/Switch/Steam mode
+switching re-enumerates correctly.
+
 ## 5. Upload the firmware
 
 The quickest path is `make`. The serial port is a **required argument** (find it with `arduino-cli board list`):

@@ -29,6 +29,8 @@ FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 # on the command line, e.g.   make build CFG_TUD_HID=8 CFG_TUD_TASK_QUEUE_SZ=128
 # or add your own defines:     make build EXTRA_FLAGS="-DOPK_LOG=1"
 FQBN ?= adafruit:nrf52:feather52840
+# Seeed XIAO nRF52840 target (see build-xiao). Use xiaonRF52840Sense for the Sense variant.
+XIAO_FQBN ?= Seeeduino:nrf52:xiaonRF52840
 CFG_TUD_HID ?= 6
 # Optional output paths; when set, --clean is implied and build artifacts land in OUTPUT_DIR.
 # Used by CI: make build BUILD_PATH=build/cache/openpuck OUTPUT_DIR=build/openpuck
@@ -50,7 +52,7 @@ _PATH_FLAGS = $(if $(BUILD_PATH),--clean --build-path $(BUILD_PATH) --output-dir
 # (No auto-detect -- uploading to a guessed serial port risks writing to the wrong device. List with
 # `arduino-cli board list`.) FLASH_PORT = whatever goal isn't one of our real targets; the catch-all rule at
 # the bottom swallows it so make doesn't try to build the port path as a target.
-FLASH_PORT := $(filter-out format format-check check build build-raytac \
+FLASH_PORT := $(filter-out format format-check check build build-raytac build-xiao deploy-xiao \
 	package-raytac flash-raytac deploy-raytac provision-raytac-softdevice \
 	build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy,$(MAKECMDGOALS))
 UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
@@ -61,7 +63,7 @@ UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 RP_USB_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
 RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 
-.PHONY: format format-check check build build-raytac package-raytac \
+.PHONY: format format-check check build build-raytac build-xiao deploy-xiao package-raytac \
 	flash-raytac deploy-raytac provision-raytac-softdevice build-recovery \
 	reversepuck reversepuck-flash reversepuck-deploy flash deploy
 
@@ -80,6 +82,25 @@ build-raytac:
 		--build-path build/cache/raytac \
 		--output-dir build/raytac \
 		--build-property "build.extra_flags=$(USB_EXTRA_FLAGS) -DOPK_BOARD_MDBT50Q_CX_40=1" OpenPuck
+
+## Build for the Seeed XIAO nRF52840 (Seeed nRF52 Boards core -- the Adafruit fork, NOT the mbed one).
+## Same UF2 bootloader story as the SuperMini, but Seeed's core ships S140 7.3.0, so the app base moves to
+## 0x27000 (handled by OPK_BOARD_XIAO_NRF52840 in board_config.h). Add the Seeed index first:
+##   arduino-cli config add board_manager.additional_urls \
+##       https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
+##   arduino-cli core update-index && arduino-cli core install Seeeduino:nrf52
+build-xiao:
+	mkdir -p build/xiao build/cache/xiao
+	arduino-cli compile --clean -b $(XIAO_FQBN) \
+		--build-path build/cache/xiao \
+		--output-dir build/xiao \
+		--build-property "build.extra_flags=$(USB_EXTRA_FLAGS) -DOPK_BOARD_XIAO_NRF52840=1" OpenPuck
+
+## Build then upload to a XIAO. Usage: make deploy-xiao <port>   (double-tap RST first if it is in puck mode)
+deploy-xiao:
+	@[ -n "$(FLASH_PORT)" ] || { echo "usage: make deploy-xiao <port>   e.g. make deploy-xiao /dev/ttyACM0"; exit 1; }
+	$(MAKE) build-xiao
+	arduino-cli upload -b $(XIAO_FQBN) -p "$(FLASH_PORT)" OpenPuck
 
 ## Package an existing Raytac build for its factory Nordic Open DFU bootloader.
 package-raytac:

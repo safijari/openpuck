@@ -34,7 +34,11 @@ if [ -z "$DATA_DIR" ]; then
 	fi
 fi
 
-UF2CONV="$(find "$DATA_DIR/packages/adafruit/hardware/nrf52" -name uf2conv.py 2>/dev/null | sort | tail -n1)"
+# Seeed's XIAO core is a fork of the Adafruit one and ships its own uf2conv.py
+# under a different vendor directory, so search both.
+UF2CONV="$(find "$DATA_DIR/packages/adafruit/hardware/nrf52" \
+	"$DATA_DIR/packages/Seeeduino/hardware/nrf52" \
+	-name uf2conv.py 2>/dev/null | sort | tail -n1)"
 if [ -z "$UF2CONV" ]; then
 	echo "gen_uf2.sh: could not find uf2conv.py under $DATA_DIR" >&2
 	exit 1

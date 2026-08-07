@@ -2,15 +2,17 @@
 // meta-page commit arms it; the next boot applies it from RAM. See fw_update.h for the protocol and the
 // corruption-safety invariant every step here preserves.
 #include "fw_update.h"
+#include "board_config.h"
 #include "fault_diag.h"
 #include <Arduino.h>
 #include <string.h>
 
-// nRF52840 flash map (Adafruit UF2 bootloader layout): MBR 0x0-0x1000, SoftDevice to 0x26000, app region
-// 0x26000-0xED000, internal LittleFS 0xED000-0xF4000, bootloader 0xF4000+, its settings page at 0xFF000.
+// nRF52840 flash map (Adafruit UF2 bootloader layout): MBR 0x0-0x1000, SoftDevice to OPK_APP_BASE, app
+// region OPK_APP_BASE-0xED000 (0x26000 under S140 6.1.1, 0x27000 under the S140 7.3.0 the Seeed XIAO core
+// ships), internal LittleFS 0xED000-0xF4000, bootloader 0xF4000+, its settings page at 0xFF000.
 // We manage the TOP of the app region: the meta/commit page at 0xEC000 and the staged image right below it,
 // growing downward. Nothing outside [APP_BASE, 0xED000) is ever written except FWUP_BL_SETTINGS (see apply).
-#define FWUP_APP_BASE 0x26000UL
+#define FWUP_APP_BASE OPK_APP_BASE
 #define FWUP_APP_END 0xED000UL
 #define FWUP_META 0xEC000UL
 // internal LittleFS (cfg.bin + bonds.bin) sits between the app region and the bootloader; wiped whole by the
@@ -19,8 +21,9 @@
 #define FWUP_FS_END 0xF4000UL
 #define FWUP_BL_SETTINGS 0xFF000UL
 #define FWUP_PAGE 4096UL
-// Image cap. Also what makes the apply copy safe from self-overlap: dst ends at most at 0x26000+0x60000 =
-// 0x86000, while the staged source starts at (0xEC000-size)&~0xFFF >= 0x8C000 -- disjoint by >=24 KiB.
+// Image cap. Also what makes the apply copy safe from self-overlap: dst ends at most at APP_BASE+0x60000 =
+// 0x86000 (0x87000 on a 0x27000 app base), while the staged source starts at (0xEC000-size)&~0xFFF >=
+// 0x8C000 -- disjoint by >=20 KiB on either layout.
 #define FWUP_MAX_IMG 0x60000UL
 
 // Capability tag, searched for BY THE PANEL inside any .uf2 it is about to flash: an image without this

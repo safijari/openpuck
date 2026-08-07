@@ -11,6 +11,16 @@
 // Override the pins/polarity below if your board differs.
 #pragma once
 
+// Seeed XIAO nRF52840: the RGB LEDs are active-LOW (variant.cpp parks them HIGH at boot, despite variant.h
+// advertising LED_STATE_ON as 1). LED_BUILTIN is the red one (P0.26). Pin B MUST be overridden here: 24 in
+// the Feather map is P0.15, but on the XIAO map D24 is P0.21 = QSPI_SCK, and driving that fights the
+// on-board 2 MB QSPI flash.
+#if defined(OPK_BOARD_XIAO_NRF52840)
+#define WAKE_LED_PIN_A LED_BUILTIN
+#define WAKE_LED_PIN_B LED_BUILTIN
+#define WAKE_LED_ON LOW
+#endif
+
 #ifndef WAKE_LED_PIN_A
 
 // Feather: P1.15 user LED (harmless unconnected pad on SuperMini clones)
