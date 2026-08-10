@@ -503,17 +503,27 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				// EXPERIMENT (console "RQ"/"RG"/"RE", firing relayEnqueue directly): diagnostic
 				// one-shot relays of read-only queries (no side effects) so a hardware capture can
 				// show what the controller's real reply looks like on the F1 link -- OpenPuck
-				// currently answers 0x83/0x89/0xED locally and never asks the controller (see
-				// puck_hid.cpp handleSet's `localAnswer`). All three are >= 0x87-or-equivalent risk
-				// of being dropped in legacy framing (docs/PROTOCOL.md sec 3.3; 0x83 is technically
-				// below the cutoff but landing a zero-payload query costs nothing), so land all three
-				// unconditionally for certainty. CONFIRMED from a real puck<->controller capture
-				// (2026-08-10): a landed `0xED` query for path "esb/bond" gets an immediate tag-2 ack
-				// (`00 00 00 00`, "received") followed -- on a LATER poll, not the same one -- by a
-				// tag-4 reply containing `[echoed report_id][len][payload]` (here: the 24-byte bond
-				// record). This is the real per-command reply channel the F1 TLV decode was missing.
-				(m.rid == 0x83) || (m.rid == 0x89) || (m.rid == 0xED);
-			uint8_t p[5 + RELAY_MAXP], plen;
+				// currently answers 0x83/0x89/0xED/0xAE locally and never asks the controller (see
+				// puck_hid.cpp handleSet's `localAnswer`). All are >= 0x87-or-equivalent risk of being
+				// dropped in legacy framing (docs/PROTOCOL.md sec 3.3; 0x83 is technically below the
+				// cutoff but landing a zero-payload query costs nothing), so land all of them
+				// unconditionally for certainty.
+				(m.rid == 0x83) || (m.rid == 0x89) || (m.rid == 0xED) ||
+				(m.rid == 0xAE);
+			// CONFIRMED from a real puck<->controller capture (2026-08-10): a real `0xED` query for
+			// path "esb/bond", AND separately a real `0xAE` query (string attribute idx 3), each end
+			// with a fixed 3-byte trailer `01 03 00` that sits OUTSIDE the [01][rid][innerlen][data]
+			// structure's own declared LEN (LEN=2+rl in both captures did not count these 3 bytes).
+			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side already uses (tags
+			// 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3) -- read here as len=1, tag=3, value=0. Without
+			// it, the controller ACKs receipt (tag-2, "00000000") but never prepares/delivers the real
+			// answer: sending this exact query (without the trailer) got an ack and nothing else, ever
+			// (session: A/B'd against the real puck's byte-identical request, which DID get the delayed
+			// tag-4 reply). Only appended for query-type relays, which is the only case observed to
+			// carry it; other landed commands (0x9F, 0x87) are unconfirmed and left unchanged.
+			bool queryTrailer = (m.rid == 0x83) || (m.rid == 0x89) ||
+					     (m.rid == 0xED) || (m.rid == 0xAE);
+			uint8_t p[5 + RELAY_MAXP + 3], plen;
 			if (land01) {
 				p[0] = g_relayOp;
 				p[1] = (uint8_t)(2 + rl);
@@ -522,6 +532,13 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				p[4] = rl;
 				memcpy(p + 5, m.data, rl);
 				plen = (uint8_t)(5 + rl);
+				if (queryTrailer &&
+				    plen + 3 <= sizeof p) {
+					p[plen + 0] = 0x01;
+					p[plen + 1] = 0x03;
+					p[plen + 2] = 0x00;
+					plen = (uint8_t)(plen + 3);
+				}
 			} else {
 				p[0] = g_relayOp;
 				p[1] = (uint8_t)(1 + rl);
