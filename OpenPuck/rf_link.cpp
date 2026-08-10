@@ -412,32 +412,32 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 				}
 			}
 			if (rtype != 0xF1 && rtype != 0xF2 &&
-				    rtype != 0xF3) {
-					// DIAGNOSTIC: a CRC-good reply whose top-level type is none of the three this
-					// decoder understands. Nothing above touches its CONTENT -- even the `rtype >=
-					// 0xF0` "mark alive" branch only bumps timestamps, and a reply below 0xF0 doesn't
-					// even hit that. If the controller answers a relayed feature-01 query (see
-					// puck_hid.cpp handleSet's `localAnswer`, and the "RQ"/"RG" console commands) with
-					// a dedicated frame type instead of riding inside an F1 TLV, this is where it would
-					// have been silently dropped. Always on (not gated behind g_connVerbose) so a
-					// capture session doesn't need verbose mode to catch it; own rate limiter so it
-					// can't starve the other diagnostics or the loop.
-					static unsigned long lastOtherType = 0;
-					if (Serial.availableForWrite() > 180 &&
-					    millis() - lastOtherType >= 100) {
-						lastOtherType = millis();
-						Serial.printf("RTYPE %02X len=%u:",
-							      rtype, rxlen);
-						for (uint8_t i = 0;
-						     i < (rxlen + 2 <= 66 ?
-								  rxlen + 2 :
-								  66);
-						     i++)
-							Serial.printf(" %02X",
-								      rfrx[i]);
-						Serial.println();
-					}
+			    rtype != 0xF3) {
+				// DIAGNOSTIC: a CRC-good reply whose top-level type is none of the three this
+				// decoder understands. Nothing above touches its CONTENT -- even the `rtype >=
+				// 0xF0` "mark alive" branch only bumps timestamps, and a reply below 0xF0 doesn't
+				// even hit that. If the controller answers a relayed feature-01 query (see
+				// puck_hid.cpp handleSet's `localAnswer`, and the "RQ"/"RG" console commands) with
+				// a dedicated frame type instead of riding inside an F1 TLV, this is where it would
+				// have been silently dropped. Always on (not gated behind g_connVerbose) so a
+				// capture session doesn't need verbose mode to catch it; own rate limiter so it
+				// can't starve the other diagnostics or the loop.
+				static unsigned long lastOtherType = 0;
+				if (Serial.availableForWrite() > 180 &&
+				    millis() - lastOtherType >= 100) {
+					lastOtherType = millis();
+					Serial.printf("RTYPE %02X len=%u:",
+						      rtype, rxlen);
+					for (uint8_t i = 0;
+					     i < (rxlen + 2 <= 66 ?
+							  rxlen + 2 :
+							  66);
+					     i++)
+						Serial.printf(" %02X",
+							      rfrx[i]);
+					Serial.println();
 				}
+			}
 			bool isF1 = (rtype == 0xF1);
 			// Every rfConnTx caller (rfConnStep) sets g_curSlot to a valid 0..NSLOT-1 before a poll, so it
 			// IS in range here today. But this block does ~50 unguarded g_curSlot array writes (g_in[],
@@ -844,7 +844,14 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					Serial.printf("%02X", rfrx[i]);
 				Serial.println();
 			}
-		} else
+		} 
+		else if (crcok && rxlen) {
+
+			Serial.printf("rxlen long: %d\n", rxlen);
+		}
+		
+		
+		else
 			rxlen = 0;
 		// RX window expired with no packet at all
 	} else {
