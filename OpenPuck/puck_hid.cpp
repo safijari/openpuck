@@ -612,7 +612,6 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 			  uint8_t *buf, uint16_t reqlen)
 {
-	(void)rid;
 	if (type != HID_REPORT_TYPE_FEATURE)
 		return 0;
 
@@ -624,6 +623,18 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	// heartbeat ~every 3s, and 0x82 haptics), which stamp g_steamAliveMs on the handleSet paths. So drop the
 	// GET-based stamp entirely; a read alone no longer suppresses lizard.
 	Slot &S = g_slot[slot];
+	// A feature-01 query (0x83/0xAE/0xED, relayed for real when rid==1 -- see handleSet's `relayQuery`)
+	// is still waiting on the controller's actual reply: `resp` only holds the local placeholder for it
+	// right now (pendingQueryCmd, bonds.h; cleared by rf_link.cpp when the real answer lands). Rather
+	// than hand Steam that stale placeholder, STALL this GET -- returning 0 here makes TinyUSB's HID
+	// class driver treat the request as unhandled and stall the control transfer, which the host sees as
+	// a failed read (Linux: -EPIPE) and retries shortly after. CONFIRMED this is the real dongle's own
+	// behavior too (2026-08-10 capture: Steam's SET->GET pairs for these commands race the RF round-trip
+	// exactly like ours do). Checking `resp[0] == pendingQueryCmd`, not just `pendingQueryCmd != 0`,
+	// keeps this scoped to "the answer NOW staged is itself the stale placeholder" -- a later, unrelated
+	// SET/GET (rid==2, or unrelated rid==1 cmds) already overwrote resp[0] and must not stall.
+	if (S.pendingQueryCmd != 0 && S.resp[0] == S.pendingQueryCmd)
+		return 0;
 	uint16_t n = S.resp_len ? S.resp_len : 63;
 	if (n > reqlen)
 		n = reqlen;
