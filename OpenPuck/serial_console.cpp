@@ -108,6 +108,19 @@ void serialConsolePoll()
 				relayEnqueue(0x83, nullptr, 0, 0xFF);
 				Serial.println(
 					"# queued diagnostic relay: GET_ATTRIBUTES_VALUES (0x83) -> watch for TAG2/TAG4 lines");
+			} else if (!strncmp(line, "RG", 2)) {
+				// DIAGNOSTIC: one-shot relay of feature-01 GET_SETTINGS_VALUES (0x89) for setting
+				// <id> ("RG<id>", decimal or 0x-prefixed hex; default id=9=lizard_mode -- a value
+				// OpenPuck itself writes via hapticTask's id9 keepalive, so the reply can be sanity-
+				// checked against what we last told the controller instead of an unverifiable
+				// attribute). Same purpose/caveats as "RQ" -- see its comment.
+				uint8_t id = (line[2] != 0) ?
+						     (uint8_t)strtoul(line + 2, 0, 0) :
+						     9;
+				relayEnqueue(0x89, &id, 1, 0xFF);
+				Serial.printf(
+					"# queued diagnostic relay: GET_SETTINGS_VALUES (0x89) id=%u -> watch for TAG2/TAG4 lines\n",
+					id);
 			} else if (!strcmp(line, "FR")) {
 				// re-dump the flight recorder trail captured before the last watchdog hang (also printed
 				// automatically at boot, but CDC may not be attached yet then -- this reprints on demand).
