@@ -3,7 +3,7 @@ name: Build
 on:
   push:
     branches:
-      - '*'
+      - main
     tags:
       - '[0-9]*.[0-9]*.[0-9]*'
   # Build every PR head commit and publish UF2 artifacts for reviewers.

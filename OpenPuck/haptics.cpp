@@ -502,12 +502,11 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				(g_landAll87 && m.rid == 0x87) ||
 				// Feature-01 QUERY relays: 0x83 GET_ATTRIBUTES, 0xAE string attribute, 0xED
 				// READ_SETTING -- puck_hid.cpp now relays these for real when Steam asks about the
-				// CONTROLLER (rid==1; see its `relayQuery`). 0x89 GET_SETTINGS_VALUES isn't relayed
-				// there (it's a single dongle-side shadow, not a puck-vs-controller split) but still
-				// lands here so the "RG" console command can probe it by hand. All are >= 0x87-or-
+				// CONTROLLER (rid==1; see its `relayQuery`). All are >= 0x87-or-
 				// equivalent risk of being dropped in legacy framing (docs/PROTOCOL.md sec 3.3; 0x83
 				// is technically below the cutoff but landing a small query costs nothing), so land
 				// all of them unconditionally.
+				// TODO: Check for other query types we should relay to the controller!
 				(m.rid == 0x83) || (m.rid == 0x89) || (m.rid == 0xED) ||
 				(m.rid == 0xAE);
 			// CONFIRMED from a real puck<->controller capture (2026-08-10): a landed query also needs a
@@ -532,6 +531,7 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				plen = (uint8_t)(5 + rl);
 				if (queryTrailer &&
 				    plen + 3 <= sizeof p) {
+						// TODO: Figure out what these bytes mean and if they're static.
 					p[plen + 0] = 0x01;
 					p[plen + 1] = 0x03;
 					p[plen + 2] = 0x00;

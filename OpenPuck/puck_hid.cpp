@@ -368,6 +368,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// fills `resp` with a local placeholder FIRST (e.g. g_slot[slot].rec for 0xED, the product-id-
 		// patched ATTR83 blob for 0x83) for whichever GET_FEATURE Steam issues before the async reply
 		// arrives, or if the controller never answers -- the real data, when it lands, just overwrites that.
+
+		// TODO: Figure out which other commands this should also apply to. Probably all of them??
 		bool relayQuery = (rid == 1) &&
 				   (cmd == 0x83 || cmd == 0xAE || cmd == 0xED);
 		bool localAnswer =
@@ -574,6 +576,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		S.resp[0] = 0xED;
 		if (slot >= 0 && slot < NSLOT && g_slot[slot].used &&
 		    pathIs("esb/bond")) {
+				// TODO: Now that controller communication is implemented, can this be removed?
 			S.resp[1] = 0x18;
 			memcpy(S.resp + 2, g_slot[slot].rec, 24);
 		} else if (pathIs("user/wireless_transport")) {
@@ -660,9 +663,13 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	// gating on this: for a hypothetical reqlen<=1 request the prepend is skipped, xferlen starts at 0,
 	// and 0+0xFFFF does NOT wrap -- it stays 0xFFFF and would be handed to tud_control_xfer() as a bogus
 	// 65535-byte transfer length. Fall through to a normal (placeholder) reply instead of risking that.
+
+	// TODO: This is a very, very, very ugly solution. Can we find a cleaner one?
 	if (rid == 1 && S.pendingQueryCmd != 0 &&
 	    S.resp[0] == S.pendingQueryCmd && reqlen > 1)
 		return (uint16_t)-1;
+
+
 	uint16_t n = S.resp_len ? S.resp_len : 63;
 	if (n > reqlen)
 		n = reqlen;
