@@ -121,6 +121,20 @@ void serialConsolePoll()
 				Serial.printf(
 					"# queued diagnostic relay: GET_SETTINGS_VALUES (0x89) id=%u -> watch for TAG2/TAG4 lines\n",
 					id);
+			} else if (!strcmp(line, "RE")) {
+				// DIAGNOSTIC: one-shot relay of feature-01 READ_SETTING (0xED) for path "esb/bond",
+				// byte-identical to a request CONFIRMED from a real puck<->controller RF capture
+				// (2026-08-10) to elicit a real reply: immediate tag-2 ack, then -- on a LATER poll,
+				// so give it several seconds and don't re-send while waiting -- a tag-4 reply carrying
+				// [0xED][0x18][24-byte bond record]. OpenPuck answers 0xED locally today (puck_hid.cpp
+				// handleSet's `localAnswer`) and never asks the controller; this fires the real RF
+				// query so the same round-trip can be confirmed on OpenPuck's own relay path.
+				static const uint8_t path[9] = { 'e', 's', 'b', '/',
+								  'b', 'o', 'n', 'd',
+								  0 };
+				relayEnqueue(0xED, path, sizeof path, 0xFF);
+				Serial.println(
+					"# queued diagnostic relay: READ_SETTING (0xED) path=esb/bond -> wait several seconds, watch for TAG2/TAG4 lines");
 			} else if (!strcmp(line, "FR")) {
 				// re-dump the flight recorder trail captured before the last watchdog hang (also printed
 				// automatically at boot, but CDC may not be attached yet then -- this reprints on demand).

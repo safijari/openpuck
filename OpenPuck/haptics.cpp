@@ -500,14 +500,19 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				 ampReg) ||
 				// experiment: land EVERY 0x87 verbatim (real-puck relay) when enabled
 				(g_landAll87 && m.rid == 0x87) ||
-				// EXPERIMENT (console "RQ"/"RG", firing relayEnqueue directly): diagnostic one-shot
-				// relays of read-only queries (no side effects) so a hardware capture can show what
-				// the controller's real reply looks like on the F1 link -- OpenPuck currently answers
-				// 0x83/0x89 locally and never asks the controller (see puck_hid.cpp handleSet's
-				// `localAnswer`). 0x89 (GET_SETTINGS_VALUES) is >= 0x87 so legacy framing would DROP
-				// it outright (docs/PROTOCOL.md sec 3.3); 0x83 is below that cutoff but landing a
-				// zero-payload query costs nothing, so do both unconditionally for certainty.
-				(m.rid == 0x83) || (m.rid == 0x89);
+				// EXPERIMENT (console "RQ"/"RG"/"RE", firing relayEnqueue directly): diagnostic
+				// one-shot relays of read-only queries (no side effects) so a hardware capture can
+				// show what the controller's real reply looks like on the F1 link -- OpenPuck
+				// currently answers 0x83/0x89/0xED locally and never asks the controller (see
+				// puck_hid.cpp handleSet's `localAnswer`). All three are >= 0x87-or-equivalent risk
+				// of being dropped in legacy framing (docs/PROTOCOL.md sec 3.3; 0x83 is technically
+				// below the cutoff but landing a zero-payload query costs nothing), so land all three
+				// unconditionally for certainty. CONFIRMED from a real puck<->controller capture
+				// (2026-08-10): a landed `0xED` query for path "esb/bond" gets an immediate tag-2 ack
+				// (`00 00 00 00`, "received") followed -- on a LATER poll, not the same one -- by a
+				// tag-4 reply containing `[echoed report_id][len][payload]` (here: the 24-byte bond
+				// record). This is the real per-command reply channel the F1 TLV decode was missing.
+				(m.rid == 0x83) || (m.rid == 0x89) || (m.rid == 0xED);
 			uint8_t p[5 + RELAY_MAXP], plen;
 			if (land01) {
 				p[0] = g_relayOp;
