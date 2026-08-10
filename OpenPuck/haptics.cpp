@@ -500,27 +500,25 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				 ampReg) ||
 				// experiment: land EVERY 0x87 verbatim (real-puck relay) when enabled
 				(g_landAll87 && m.rid == 0x87) ||
-				// EXPERIMENT (console "RQ"/"RG"/"RE", firing relayEnqueue directly): diagnostic
-				// one-shot relays of read-only queries (no side effects) so a hardware capture can
-				// show what the controller's real reply looks like on the F1 link -- OpenPuck
-				// currently answers 0x83/0x89/0xED/0xAE locally and never asks the controller (see
-				// puck_hid.cpp handleSet's `localAnswer`). All are >= 0x87-or-equivalent risk of being
-				// dropped in legacy framing (docs/PROTOCOL.md sec 3.3; 0x83 is technically below the
-				// cutoff but landing a zero-payload query costs nothing), so land all of them
-				// unconditionally for certainty.
+				// Feature-01 QUERY relays: 0x83 GET_ATTRIBUTES, 0xAE string attribute, 0xED
+				// READ_SETTING -- puck_hid.cpp now relays these for real when Steam asks about the
+				// CONTROLLER (rid==1; see its `relayQuery`). 0x89 GET_SETTINGS_VALUES isn't relayed
+				// there (it's a single dongle-side shadow, not a puck-vs-controller split) but still
+				// lands here so the "RG" console command can probe it by hand. All are >= 0x87-or-
+				// equivalent risk of being dropped in legacy framing (docs/PROTOCOL.md sec 3.3; 0x83
+				// is technically below the cutoff but landing a small query costs nothing), so land
+				// all of them unconditionally.
 				(m.rid == 0x83) || (m.rid == 0x89) || (m.rid == 0xED) ||
 				(m.rid == 0xAE);
-			// CONFIRMED from a real puck<->controller capture (2026-08-10): a real `0xED` query for
-			// path "esb/bond", AND separately a real `0xAE` query (string attribute idx 3), each end
-			// with a fixed 3-byte trailer `01 03 00` that sits OUTSIDE the [01][rid][innerlen][data]
-			// structure's own declared LEN (LEN=2+rl in both captures did not count these 3 bytes).
-			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side already uses (tags
-			// 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3) -- read here as len=1, tag=3, value=0. Without
-			// it, the controller ACKs receipt (tag-2, "00000000") but never prepares/delivers the real
-			// answer: sending this exact query (without the trailer) got an ack and nothing else, ever
-			// (session: A/B'd against the real puck's byte-identical request, which DID get the delayed
-			// tag-4 reply). Only appended for query-type relays, which is the only case observed to
-			// carry it; other landed commands (0x9F, 0x87) are unconfirmed and left unchanged.
+			// CONFIRMED from a real puck<->controller capture (2026-08-10): a landed query also needs a
+			// fixed 3-byte trailer `01 03 00` appended AFTER the [01][rid][innerlen][data] structure and
+			// OUTSIDE its declared LEN (LEN=2+rl in the capture did not count these 3 bytes) -- without
+			// it the controller ACKs receipt (a tag-2 reply, "00 00 00 00") but never prepares/delivers
+			// the real answer. Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
+			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
+			// value=0. Verified end-to-end on 0xED (echoed in a delayed tag-4 reply, `[echoed report_id]
+			// [len][payload]`, decoded+consumed in rf_link.cpp); 0x83/0x89/0xAE take the same trailer on
+			// the working assumption it's query-general rather than 0xED-specific.
 			bool queryTrailer = (m.rid == 0x83) || (m.rid == 0x89) ||
 					     (m.rid == 0xED) || (m.rid == 0xAE);
 			uint8_t p[5 + RELAY_MAXP + 3], plen;

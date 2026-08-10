@@ -353,15 +353,28 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// (hapticReinit) sends its own 0x81 via relayEnqueue directly, so that cure path is unaffected.
 		bool drop =
 			(g_drop81 && g_usbMode == MODE_STEAM && cmd == 0x81);
-		// Do NOT relay commands OpenPuck answers LOCALLY (identity/bond/settings READS). Relaying them to the
-		// controller is pointless (their reply can't come back over the NO-ACK RF link -- we answer from the
-		// handleSet/handleGet switch), and 0x83 GET_ATTRIBUTES in particular is < 0x87 so it EXECUTES on the
-		// controller -- captured as the remaining periodic CLICK, fired every time Steam re-polls identity
-		// (0x83/0xAE on all 4 interfaces). Only actuator/config commands (0x80-0x82/0x84-0x88 haptics+config,
-		// 0x9F power) should reach the controller.
-		bool localAnswer = (cmd == 0x83 || cmd == 0x89 || cmd == 0xAE ||
-				    cmd == 0xA2 || cmd == 0xA3 || cmd == 0xAD ||
-				    cmd == 0xB4 || cmd == 0xED || cmd == 0xA4);
+		// Do NOT relay commands OpenPuck answers LOCALLY (identity/bond/settings READS). Report-id 2 (about
+		// the PUCK itself) always stays purely local -- there's nothing on the controller to ask. Only
+		// actuator/config commands (0x80-0x82/0x84-0x88 haptics+config, 0x9F power) and report-id 1 QUERIES
+		// about the CONTROLLER reach it.
+		//
+		// 0x83 (GET_ATTRIBUTES), 0xAE (string attribute), 0xED (READ_SETTING, incl. bond-by-path) are
+		// RELAYED FOR REAL when rid==1 (Steam asking about the CONTROLLER). CONFIRMED end-to-end from a real
+		// puck<->controller capture (2026-08-10) for 0xED "esb/bond": landed with the type-01 framing PLUS a
+		// trailing `01 03 00` (rfConnFlushRelay's `queryTrailer`, haptics.cpp -- without it the controller
+		// only ACKs and never answers), the controller replies -- on a LATER poll -- with a tag-4 TLV
+		// carrying `[echoed cmd][len][payload]`, decoded in rf_link.cpp's F1 walk and written into this
+		// slot's `resp` (pendingQueryCmd, bonds.h). The switch-case below still runs unconditionally and
+		// fills `resp` with a local placeholder FIRST (e.g. g_slot[slot].rec for 0xED, the product-id-
+		// patched ATTR83 blob for 0x83) for whichever GET_FEATURE Steam issues before the async reply
+		// arrives, or if the controller never answers -- the real data, when it lands, just overwrites that.
+		bool relayQuery = (rid == 1) &&
+				   (cmd == 0x83 || cmd == 0xAE || cmd == 0xED);
+		bool localAnswer =
+			(cmd == 0x89 || cmd == 0xA2 || cmd == 0xA3 ||
+			 cmd == 0xAD || cmd == 0xB4 || cmd == 0xA4 ||
+			 ((cmd == 0x83 || cmd == 0xAE || cmd == 0xED) &&
+			  !relayQuery));
 		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop).
 		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
 		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
@@ -387,6 +400,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			// track from RELAYED frames only (see the OUTPUT path)
 			if (haptic82)
 				haptic82HostReport(pl, len);
+			if (relayQuery && slot >= 0 && slot < NSLOT)
+				g_slot[slot].pendingQueryCmd = cmd;
 		}
 	}
 #if OPK_LOG
