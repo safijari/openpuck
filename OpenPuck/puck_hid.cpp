@@ -644,8 +644,14 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	// TU_ASSERT(xferlen > 0) failure a genuinely-empty callback would have hit, which is what actually
 	// stalls the endpoint. No TinyUSB/library changes needed; this is arithmetic we control entirely from
 	// here. Checking `resp[0] == pendingQueryCmd`, not just `pendingQueryCmd != 0`, keeps this scoped to
-	// "the answer NOW staged is itself the stale placeholder" -- a later, unrelated SET/GET (rid==2, or
-	// an unrelated rid==1 cmd) already overwrote resp[0] and must not stall.
+	// "the answer NOW staged is itself the stale placeholder" -- a later, unrelated SET/GET for a
+	// DIFFERENT cmd already overwrote resp[0] and must not stall. That alone isn't enough, though:
+	// `resp`/`pendingQueryCmd` are shared per SLOT, not split by rid, and the switch-case below sets
+	// resp[0]=cmd unconditionally regardless of rid -- so a still-outstanding rid==1 relay for cmd X
+	// left pendingQueryCmd==X, and a LATER rid==2 request for that SAME cmd X (about the puck itself,
+	// answered locally, never relayed, ready immediately) rewrites resp[0] back to X too, spuriously
+	// matching a query it has nothing to do with. Require rid==1 as well -- only rid==1 queries are ever
+	// relayed (handleSet's `relayQuery`), so a rid==2 read must never stall on this.
 	//
 	// The wraparound only lands on 0 because TinyUSB's prepend added exactly 1 first, which only happens
 	// when the ORIGINAL requested length was > 1 (its own `req_len > 1` check, above). This `reqlen`
@@ -654,8 +660,8 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	// gating on this: for a hypothetical reqlen<=1 request the prepend is skipped, xferlen starts at 0,
 	// and 0+0xFFFF does NOT wrap -- it stays 0xFFFF and would be handed to tud_control_xfer() as a bogus
 	// 65535-byte transfer length. Fall through to a normal (placeholder) reply instead of risking that.
-	if (S.pendingQueryCmd != 0 && S.resp[0] == S.pendingQueryCmd &&
-	    reqlen > 1)
+	if (rid == 1 && S.pendingQueryCmd != 0 &&
+	    S.resp[0] == S.pendingQueryCmd && reqlen > 1)
 		return (uint16_t)-1;
 	uint16_t n = S.resp_len ? S.resp_len : 63;
 	if (n > reqlen)
