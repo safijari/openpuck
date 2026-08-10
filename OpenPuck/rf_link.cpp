@@ -691,6 +691,40 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									     i]);
 							Serial.println();
 						}
+					} else if ((ttype == 2 || ttype == 4) &&
+						   tlen >= 1 &&
+						   (size_t)(idx + 2) + tlen <=
+							   sizeof(rfrx)) {
+						// DIAGNOSTIC: tags 0x02 ("4-byte control/status field") and 0x04 ("bulk data
+						// blob"), per docs/PROTOCOL.md sec 7.3 -- known F1 TLV tags that are NOT
+						// currently decoded anywhere. These are the leading candidate for where a
+						// feature-01 command's REAL reply (GET_ATTRIBUTES/GET_SETTINGS_VALUES/string
+						// attrs/etc, currently answered locally instead of relayed -- see puck_hid.cpp
+						// handleSet's `localAnswer`) would surface, since the only reply path this
+						// decoder understands today is the type-6 input-report wrapper. Log rate-
+						// limited + non-blocking (own limiter, so a tag-4 burst can't starve tag-2 or
+						// the UNK/I45 logging above) until the framing is confirmed from a capture.
+						static unsigned long lastTag[2] = {
+							0, 0
+						};
+						uint8_t li = (ttype == 2) ? 0 : 1;
+						if (Serial.availableForWrite() >
+							    150 &&
+						    millis() - lastTag[li] >=
+							    200) {
+							lastTag[li] = millis();
+							Serial.printf(
+								"TAG%u tlen=%u:",
+								ttype, tlen);
+							for (uint8_t i = 0;
+							     i < tlen; i++)
+								Serial.printf(
+									" %02X",
+									rfrx[idx +
+									     2 +
+									     i]);
+							Serial.println();
+						}
 					}
 					idx += tlen + 2;
 				}

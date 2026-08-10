@@ -499,7 +499,16 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				(g_landAmp && m.rid == 0x87 && rl >= 1 &&
 				 ampReg) ||
 				// experiment: land EVERY 0x87 verbatim (real-puck relay) when enabled
-				(g_landAll87 && m.rid == 0x87);
+				(g_landAll87 && m.rid == 0x87) ||
+				// EXPERIMENT (console "RQ" fires this via relayEnqueue directly): a diagnostic
+				// one-shot relay of GET_ATTRIBUTES_VALUES (a read-only query, no side effects) so
+				// a hardware capture can show what the controller's real reply looks like on the
+				// F1 link -- OpenPuck currently answers 0x83 locally and never asks the controller
+				// (see puck_hid.cpp handleSet's `localAnswer`). Must land: legacy framing drops any
+				// 0x87+ command per docs/PROTOCOL.md sec 3.3, and while 0x83 is below that cutoff,
+				// landing costs nothing for a zero-payload query, so do it unconditionally for
+				// certainty.
+				(m.rid == 0x83);
 			uint8_t p[5 + RELAY_MAXP], plen;
 			if (land01) {
 				p[0] = g_relayOp;

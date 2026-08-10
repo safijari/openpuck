@@ -99,6 +99,15 @@ void serialConsolePoll()
 				Serial.printf(
 					"# land-all-0x87 (verbatim 0x87 relay) %s\n",
 					g_landAll87 ? "ON" : "off");
+			} else if (!strcmp(line, "RQ")) {
+				// DIAGNOSTIC: one-shot relay of feature-01 GET_ATTRIBUTES_VALUES (0x83, no payload,
+				// read-only) to every connected controller. OpenPuck normally answers 0x83 locally
+				// and never asks the controller (puck_hid.cpp handleSet's `localAnswer`); this fires
+				// the real RF query so a capture (watch for the new "TAG2"/"TAG4" lines from the F1
+				// TLV decode in rf_link.cpp) can show what the controller's actual reply looks like.
+				relayEnqueue(0x83, nullptr, 0, 0xFF);
+				Serial.println(
+					"# queued diagnostic relay: GET_ATTRIBUTES_VALUES (0x83) -> watch for TAG2/TAG4 lines");
 			} else if (!strcmp(line, "FR")) {
 				// re-dump the flight recorder trail captured before the last watchdog hang (also printed
 				// automatically at boot, but CDC may not be attached yet then -- this reprints on demand).
