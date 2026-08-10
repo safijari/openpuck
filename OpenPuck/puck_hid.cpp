@@ -626,15 +626,37 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	// A feature-01 query (0x83/0xAE/0xED, relayed for real when rid==1 -- see handleSet's `relayQuery`)
 	// is still waiting on the controller's actual reply: `resp` only holds the local placeholder for it
 	// right now (pendingQueryCmd, bonds.h; cleared by rf_link.cpp when the real answer lands). Rather
-	// than hand Steam that stale placeholder, STALL this GET -- returning 0 here makes TinyUSB's HID
-	// class driver treat the request as unhandled and stall the control transfer, which the host sees as
-	// a failed read (Linux: -EPIPE) and retries shortly after. CONFIRMED this is the real dongle's own
-	// behavior too (2026-08-10 capture: Steam's SET->GET pairs for these commands race the RF round-trip
-	// exactly like ours do). Checking `resp[0] == pendingQueryCmd`, not just `pendingQueryCmd != 0`,
-	// keeps this scoped to "the answer NOW staged is itself the stale placeholder" -- a later, unrelated
-	// SET/GET (rid==2, or unrelated rid==1 cmds) already overwrote resp[0] and must not stall.
-	if (S.pendingQueryCmd != 0 && S.resp[0] == S.pendingQueryCmd)
-		return 0;
+	// than hand Steam that stale placeholder, STALL this GET so the host retries shortly after (Linux:
+	// -EPIPE) -- CONFIRMED this is the real dongle's own behavior too (2026-08-10 capture: Steam's
+	// SET->GET pairs for these commands race the RF round-trip exactly like ours do).
+	//
+	// Returning plain 0 does NOT stall here: this device's reports are all NUMBERED (report id 1/2), and
+	// TinyUSB's hidd_control_xfer_cb (adafruit/Adafruit_TinyUSB_Arduino, src/class/hid/hid_device.c)
+	// auto-prepends that report id byte into the reply BEFORE calling this callback --
+	//   uint16_t xferlen = 0;
+	//   if (report_id != HID_REPORT_TYPE_INVALID && req_len > 1) { *report_buf++ = report_id; xferlen++; }
+	//   xferlen += tud_hid_get_report_cb(...);   // <- our return value lands here
+	//   TU_ASSERT(xferlen > 0);                  // stalls the control transfer iff this is false
+	// -- so xferlen is already 1 before we're even asked, and adding our 0 leaves it at 1: the assert
+	// never fires and TinyUSB happily ships that lone prepended report-id byte as a "successful" 1-byte
+	// reply (this is exactly what showed up on the wire: report id 1, success). `xferlen` is uint16_t, so
+	// returning (uint16_t)-1 (0xFFFF) makes `1 + 0xFFFF` wrap to exactly 0 -- landing on the SAME
+	// TU_ASSERT(xferlen > 0) failure a genuinely-empty callback would have hit, which is what actually
+	// stalls the endpoint. No TinyUSB/library changes needed; this is arithmetic we control entirely from
+	// here. Checking `resp[0] == pendingQueryCmd`, not just `pendingQueryCmd != 0`, keeps this scoped to
+	// "the answer NOW staged is itself the stale placeholder" -- a later, unrelated SET/GET (rid==2, or
+	// an unrelated rid==1 cmd) already overwrote resp[0] and must not stall.
+	//
+	// The wraparound only lands on 0 because TinyUSB's prepend added exactly 1 first, which only happens
+	// when the ORIGINAL requested length was > 1 (its own `req_len > 1` check, above). This `reqlen`
+	// parameter is that value already reduced by 1 if the prepend fired -- so `reqlen > 1` here is only
+	// reachable when it did (had it not, reqlen would still be the untouched original, capped at 1). Not
+	// gating on this: for a hypothetical reqlen<=1 request the prepend is skipped, xferlen starts at 0,
+	// and 0+0xFFFF does NOT wrap -- it stays 0xFFFF and would be handed to tud_control_xfer() as a bogus
+	// 65535-byte transfer length. Fall through to a normal (placeholder) reply instead of risking that.
+	if (S.pendingQueryCmd != 0 && S.resp[0] == S.pendingQueryCmd &&
+	    reqlen > 1)
+		return (uint16_t)-1;
 	uint16_t n = S.resp_len ? S.resp_len : 63;
 	if (n > reqlen)
 		n = reqlen;
