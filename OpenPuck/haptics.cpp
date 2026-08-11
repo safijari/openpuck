@@ -507,17 +507,13 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				// is technically below the cutoff but landing a small query costs nothing), so land
 				// all of them unconditionally.
 				// TODO: Check for other query types we should relay to the controller!
-				(m.rid == 0x83) || (m.rid == 0x89) || (m.rid == 0xED) ||
+				// This 0x87 condition effectively enabled g_landAll87 permanently. 
+				// Lets see if this causes issues.
+				(m.rid == 0x83) || (m.rid == 0x87) || (m.rid == 0x89) || (m.rid == 0xED) ||
 				(m.rid == 0xAE);
-			// CONFIRMED from a real puck<->controller capture (2026-08-10): a landed query also needs a
-			// fixed 3-byte trailer `01 03 00` appended AFTER the [01][rid][innerlen][data] structure and
-			// OUTSIDE its declared LEN (LEN=2+rl in the capture did not count these 3 bytes) -- without
-			// it the controller ACKs receipt (a tag-2 reply, "00 00 00 00") but never prepares/delivers
-			// the real answer. Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
+			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
 			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
-			// value=0. Verified end-to-end on 0xED (echoed in a delayed tag-4 reply, `[echoed report_id]
-			// [len][payload]`, decoded+consumed in rf_link.cpp); 0x83/0x89/0xAE take the same trailer on
-			// the working assumption it's query-general rather than 0xED-specific.
+			// value=0. 0x83/0x89/0xAE take the same trailer.
 			bool queryTrailer = (m.rid == 0x83) || (m.rid == 0x89) ||
 					     (m.rid == 0xED) || (m.rid == 0xAE);
 			uint8_t p[5 + RELAY_MAXP + 3], plen;
@@ -531,7 +527,7 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				plen = (uint8_t)(5 + rl);
 				if (queryTrailer &&
 				    plen + 3 <= sizeof p) {
-						// TODO: Figure out what these bytes mean and if they're static.
+						// TODO: Figure out which commands need that trailer and which ones don't.
 					p[plen + 0] = 0x01;
 					p[plen + 1] = 0x03;
 					p[plen + 2] = 0x00;
