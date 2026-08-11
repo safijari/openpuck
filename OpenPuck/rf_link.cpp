@@ -691,8 +691,11 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									     i]);
 							Serial.println();
 						}
-					} else if (ttype == 2 || ttype == 4 && tlen >= 1 &&
-						   (size_t)(idx + 2) + tlen <= sizeof(rfrx)) {
+					} else if (ttype == 2 ||
+						   ttype == 4 && tlen >= 1 &&
+							   (size_t)(idx +
+								    2) + tlen <=
+								   sizeof(rfrx)) {
 						// tag 0x02 ("control/status field") and tag 0x04 ("bulk data blob") --
 						// docs/PROTOCOL.md sec 7.3. CONFIRMED from a real puck<->controller capture
 						// (2026-08-10): tag-2 (`00 00 00 00`) is an immediate "request received" ack
@@ -702,7 +705,8 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						// for real when rid==1 -- route it into whichever slot is waiting on exactly
 						// this cmd (pendingQueryCmd, bonds.h), so a stray/late/mismatched tag-4 can't
 						// clobber a slot that has moved on to a different query.
-						const uint8_t *rec = &rfrx[idx + 2];
+						const uint8_t *rec =
+							&rfrx[idx + 2];
 						if (ttype == 4 && tlen >= 2 &&
 						    rec[0] != 0 &&
 						    (uint16_t)(2 + rec[1]) <=
@@ -710,23 +714,22 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						    rec[1] <= 61 &&
 						    g_curSlot >= 0 &&
 						    g_curSlot < NSLOT &&
-						    g_slot[g_curSlot]
-							    .pendingQueryCmd ==
+						    g_slot[g_curSlot].pendingQueryCmd ==
 							    rec[0]) {
 							// `resp`/`resp_len` are also written from handleSet (switch(cmd)) and
 							// read from handleGet -- both on the usbd task. Match the PRIMASK-guard
 							// pattern the rest of this file uses for usbd<->loop shared state
 							// (relayEnqueue/hapLogAdd/fcPush) so a GET_FEATURE can't observe a torn
 							// write mid-memcpy.
-							Slot &S = g_slot[g_curSlot];
+							Slot &S =
+								g_slot[g_curSlot];
 							uint32_t pm =
 								__get_PRIMASK();
 							__disable_irq();
 							S.resp[0] = rec[0];
 							S.resp[1] = rec[1];
 							memcpy(S.resp + 2,
-							       rec + 2,
-							       rec[1]);
+							       rec + 2, rec[1]);
 							S.resp_len = 63;
 							S.pendingQueryCmd = 0;
 							__set_PRIMASK(pm);
@@ -824,7 +827,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					Serial.printf("%02X", rfrx[i]);
 				Serial.println();
 			}
-		} else 
+		} else
 			rxlen = 0;
 		// RX window expired with no packet at all
 	} else {

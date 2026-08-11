@@ -463,16 +463,18 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// the controller only with the type-01 + inner-len form E3 [2+rl][01][rid][innerlen][data];
 			// the legacy form E3 [1+rl][05][rid][data] makes the controller DISCARD any 0x87+ command.
 
-			bool land01 =
-				(m.rid == 0x9F) || (m.rid == 0x83) || (m.rid == 0x87) || 
-				(m.rid == 0x89) || (m.rid == 0xED) || (m.rid == 0xAE);
+			bool land01 = (m.rid == 0x9F) || (m.rid == 0x83) ||
+				      (m.rid == 0x87) || (m.rid == 0x89) ||
+				      (m.rid == 0xED) || (m.rid == 0xAE);
 
 			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
 			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
 			// value=0. 0x83/0x89/0xAE take the same trailer.
 			// This should only be added if we expect a response from the controller, so, not for 0x87.
 			// TODO: Figure out which commands need that trailer and which ones don't.
-			bool queryTrailer = (m.rid == 0x83) || (m.rid == 0x89) || (m.rid == 0xED) || (m.rid == 0xAE);
+			bool queryTrailer = (m.rid == 0x83) ||
+					    (m.rid == 0x89) ||
+					    (m.rid == 0xED) || (m.rid == 0xAE);
 			uint8_t p[5 + RELAY_MAXP + 3], plen;
 			if (land01) {
 				p[0] = g_relayOp;
@@ -482,8 +484,7 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				p[4] = rl;
 				memcpy(p + 5, m.data, rl);
 				plen = (uint8_t)(5 + rl);
-				if (queryTrailer &&
-				    plen + 3 <= sizeof p) {
+				if (queryTrailer && plen + 3 <= sizeof p) {
 					p[plen + 0] = 0x01;
 					p[plen + 1] = 0x03;
 					p[plen + 2] = 0x00;
