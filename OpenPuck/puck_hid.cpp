@@ -554,53 +554,6 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		S.resp_len = 63;
 		break;
 	}
-	case 0xED: {
-		// GET-SETTING-BY-PATH (keyed). Steam SETs the path string, then GETs the value; the REAL controller
-		// returns the setting's value, but OpenPuck was ECHOING the path -> Steam sees the controller as
-		// un-provisioned/un-bonded and re-runs its full LEGACY config every connect (0x81 CLEAR_DIGITAL_MAPPINGS
-		// = the amp clicks/buzz; captured: 0xED reads of "esb/bond"/"user/wireless_transport" that got echoed).
-		// Answer the paths Steam checks at connect so it treats the controller as provisioned + bonded:
-		//   esb/bond          -> this slot's 24-byte bond record (the controller's record of ITS puck)
-		//   esb/bond_2        -> a 2nd-puck bond; OpenPuck bonds one puck per slot -> absent (empty)
-		//   user/wireless_transport -> 1 byte = the ACTIVE (connected) slot's transport code (see below)
-		// Anything else -> empty ([0xED][0]) rather than a garbage path echo.
-		const char *p = (const char *)pl;
-		uint16_t pl_n = pln;
-		auto pathIs = [&](const char *k) -> bool {
-			uint16_t kl = (uint16_t)strlen(k);
-			return pl_n >= kl && memcmp(p, k, kl) == 0 &&
-			       (pl_n == kl || p[kl] == 0);
-		};
-		S.resp[0] = 0xED;
-		if (slot >= 0 && slot < NSLOT && g_slot[slot].used &&
-		    pathIs("esb/bond")) {
-				// TODO: Now that controller communication is implemented, can this be removed?
-			S.resp[1] = 0x18;
-			memcpy(S.resp + 2, g_slot[slot].rec, 24);
-		} else if (pathIs("user/wireless_transport")) {
-			// Steam reads this (a CONTROLLER setting, relayed rid1) to mark which bond slot is ACTIVE in the
-			// pairing list, mapping active_slot = value XOR 2 (HANDOFF: slot0->0x02, slot1->0x03, slot2->0x00,
-			// slot3->0x01). It's a single DONGLE-WIDE value = the currently-connected slot, NOT this
-			// interface's own index (returning the raw index made Steam mark slot^2 active -> the live puck
-			// showed "Inactive"). Report the connected slot's code so Steam marks the live puck active.
-			int act = 0;
-			unsigned long best = 0, now = millis();
-			for (int s2 = 0; s2 < NSLOT; s2++)
-				if (g_slot[s2].used && g_connReplyMs[s2] &&
-				    (now - g_connReplyMs[s2]) < 1200u &&
-				    (best == 0 || g_connReplyMs[s2] > best)) {
-					best = g_connReplyMs[s2];
-					act = s2;
-				}
-			S.resp[1] = 1;
-			S.resp[2] = (uint8_t)(act ^ 2);
-		} else {
-			S.resp[1] =
-				0; // absent/empty -- valid "no value" reply, not a path echo
-		}
-		S.resp_len = 63;
-		break;
-	}
 	default:
 		S.resp[0] = cmd;
 		S.resp[1] = len;
