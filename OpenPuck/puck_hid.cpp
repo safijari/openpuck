@@ -358,27 +358,31 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			(g_drop81 && g_usbMode == MODE_STEAM && cmd == 0x81);
 
 
-		// Do NOT relay commands OpenPuck answers LOCALLY (identity/bond/settings READS). Report-id 2 (about
-		// the PUCK itself) always stays purely local -- there's nothing on the controller to ask. Only
-		// actuator/config commands (0x80-0x82/0x84-0x88 haptics+config, 0x9F power) and report-id 1 QUERIES
-		// about the CONTROLLER reach it.
-		//
-		// 0x83 (GET_ATTRIBUTES), 0xAE (string attribute), 0xED (READ_SETTING, incl. bond-by-path) are
-		// RELAYED FOR REAL when rid==1 (Steam asking about the CONTROLLER). CONFIRMED end-to-end from a real
-		// puck<->controller capture (2026-08-10) for 0xED "esb/bond": landed with the type-01 framing PLUS a
-		// trailing `01 03 00` (rfConnFlushRelay's `queryTrailer`, haptics.cpp -- without it the controller
-		// only ACKs and never answers), the controller replies -- on a LATER poll -- with a tag-4 TLV
-		// carrying `[echoed cmd][len][payload]`, decoded in rf_link.cpp's F1 walk and written into this
-		// slot's `resp` (pendingQueryCmd, bonds.h). The switch-case below still runs unconditionally and
-		// fills `resp` with a local placeholder FIRST (e.g. g_slot[slot].rec for 0xED, the product-id-
-		// patched ATTR83 blob for 0x83) for whichever GET_FEATURE Steam issues before the async reply
-		// arrives, or if the controller never answers -- the real data, when it lands, just overwrites that.
+		
+		// Reports in relayQuery will be forwarded to the controller if rid==1 and may be answered locally
+		// if it makes sense and rid==2. 
+
+		// Reports in localAnswer will always be answered by the puck and not be forwarded. 
+		
+		// Forwarding uses the type-01 framing PLUS a trailing `01 03 00` (rfConnFlushRelay's `queryTrailer`, 
+		// haptics.cpp -- without it the controller only ACKs and never answers), the controller replies -- 
+		// on a LATER poll -- with a tag-4 TLV carrying `[echoed cmd][len][payload]`, decoded in rf_link.cpp's 
+		// F1 walk and written into this slot's `resp` (pendingQueryCmd, bonds.h). 
 
 		// TODO: Figure out which other commands this should also apply to. Probably all of them??
-		bool relayQuery = (cmd == 0x83 || cmd == 0xAE || cmd == 0xED);
-		bool localAnswer =
-			(cmd == 0x89 || cmd == 0xA2 || cmd == 0xA3 ||
-			 cmd == 0xAD || cmd == 0xB4 || cmd == 0xA4);
+		// We could probably just relay *every*c ommand that comes with rid==1 but that needs further testing.
+		bool relayQuery = (
+			cmd == 0x83 ||  // GET_ATTRIBUTES_VALUES
+			cmd == 0x87 || 	// GET_SETTINGS
+			cmd == 0x89 ||  // SET_SETTINGS
+			cmd == 0xAE ||  // GET_STRING_ATTRIBUTE
+			cmd == 0xED);   
+		bool localAnswer = (
+			cmd == 0xA2 || // Write puck pairing
+			cmd == 0xA3 || // Read puck pairing
+			cmd == 0xAD || // ???
+			cmd == 0xB4 || // Read puck slot connection state
+			cmd == 0xA4);  // ???
 		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop).
 		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
 		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
@@ -485,6 +489,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		S.resp_len = 63;
 		break;
 	case 0xAD:
+		// TODO: Check if this should be relayed?
 		g_pairing = (pln > 0 && pl[0] != 0);
 #if OPK_LOG
 		Serial.printf("# pairing %s\n", g_pairing ? "ON" : "off");
@@ -520,40 +525,6 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			memcpy(S.resp + 2, S.rec, 24);
 		S.resp_len = 63;
 		break;
-	case 0x87:
-		// SET_SETTINGS_VALUES: payload = N x [id][val16 LE]. Shadow each into g_setShadow[slot] so the 0x89
-		// read-back below matches what Steam wrote -- this is THE fix that stops Steam's endless config-verify
-		// retry (the 0x81/0x87 storm that buzzes the amp). (Still relayed to the controller by the feature-1
-		// path above; this just maintains the dongle-side shadow the real controller would return on 0x89.)
-		// ACK with [0x87][0], not the default payload echo (a clean success reply, like the real dongle).
-		if (slot >= 0 && slot < NSLOT)
-			for (uint16_t i = 0; i + 2 < pln; i += 3) {
-				uint8_t id = pl[i];
-				if (id < 0x53)
-					g_setShadow[slot][id] =
-						(uint16_t)(pl[i + 1] |
-							   (pl[i + 2] << 8));
-			}
-		S.resp[0] = 0x87;
-		S.resp[1] = 0;
-		S.resp_len = 63;
-		break;
-	case 0x89: {
-		// GET_SETTINGS_VALUES: Steam reads back setting `id` (payload[0]) from the id-indexed array. Answer
-		// from the shadow 0x87 populated: [0x89][3][id][val16 LE]. (Steam didn't use 0x89 in the captured
-		// session -- it provisions via 0xED below -- but this is the correct real-dongle behavior; harmless.)
-		uint8_t id = (pln > 0) ? pl[0] : 0;
-		uint16_t v = (slot >= 0 && slot < NSLOT && id < 0x53) ?
-				     g_setShadow[slot][id] :
-				     0;
-		S.resp[0] = 0x89;
-		S.resp[1] = 3;
-		S.resp[2] = id;
-		S.resp[3] = (uint8_t)v;
-		S.resp[4] = (uint8_t)(v >> 8);
-		S.resp_len = 63;
-		break;
-	}
 	default:
 		S.resp[0] = cmd;
 		S.resp[1] = len;
@@ -595,29 +566,15 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	//   TU_ASSERT(xferlen > 0);                  // stalls the control transfer iff this is false
 	// -- so xferlen is already 1 before we're even asked, and adding our 0 leaves it at 1: the assert
 	// never fires and TinyUSB happily ships that lone prepended report-id byte as a "successful" 1-byte
-	// reply (this is exactly what showed up on the wire: report id 1, success). `xferlen` is uint16_t, so
-	// returning (uint16_t)-1 (0xFFFF) makes `1 + 0xFFFF` wrap to exactly 0 -- landing on the SAME
-	// TU_ASSERT(xferlen > 0) failure a genuinely-empty callback would have hit, which is what actually
-	// stalls the endpoint. No TinyUSB/library changes needed; this is arithmetic we control entirely from
-	// here. Checking `resp[0] == pendingQueryCmd`, not just `pendingQueryCmd != 0`, keeps this scoped to
+	// reply. `xferlen` is uint16_t, so returning (uint16_t)-1 (0xFFFF) makes `1 + 0xFFFF` wrap to exactly 0 
+	// -- landing on the SAME TU_ASSERT(xferlen > 0) failure a genuinely-empty callback would have hit, 
+	// which is what actually returns -EPIPE to the host, just like the original puck. 
+	// Checking `resp[0] == pendingQueryCmd`, not just `pendingQueryCmd != 0`, keeps this scoped to
 	// "the answer NOW staged is itself the stale placeholder" -- a later, unrelated SET/GET for a
-	// DIFFERENT cmd already overwrote resp[0] and must not stall. That alone isn't enough, though:
-	// `resp`/`pendingQueryCmd` are shared per SLOT, not split by rid, and the switch-case below sets
-	// resp[0]=cmd unconditionally regardless of rid -- so a still-outstanding rid==1 relay for cmd X
-	// left pendingQueryCmd==X, and a LATER rid==2 request for that SAME cmd X (about the puck itself,
-	// answered locally, never relayed, ready immediately) rewrites resp[0] back to X too, spuriously
-	// matching a query it has nothing to do with. Require rid==1 as well -- only rid==1 queries are ever
-	// relayed (handleSet's `relayQuery`), so a rid==2 read must never stall on this.
-	//
-	// The wraparound only lands on 0 because TinyUSB's prepend added exactly 1 first, which only happens
-	// when the ORIGINAL requested length was > 1 (its own `req_len > 1` check, above). This `reqlen`
-	// parameter is that value already reduced by 1 if the prepend fired -- so `reqlen > 1` here is only
-	// reachable when it did (had it not, reqlen would still be the untouched original, capped at 1). Not
-	// gating on this: for a hypothetical reqlen<=1 request the prepend is skipped, xferlen starts at 0,
-	// and 0+0xFFFF does NOT wrap -- it stays 0xFFFF and would be handed to tud_control_xfer() as a bogus
-	// 65535-byte transfer length. Fall through to a normal (placeholder) reply instead of risking that.
+	// DIFFERENT cmd already overwrote resp[0] and must not stall. The additional check for rid is necessary
+	// so if the controller never replies, a new query for a puck feature can get the puck un-stuck. 
 
-	// TODO: This is a very, very, very ugly solution. Can we find a cleaner one?
+	// TODO: This is a very, very, very ugly solution and may break with library updates. Can we find a cleaner one?
 	if (rid == 1 && S.pendingQueryCmd != 0 &&
 	    S.resp[0] == S.pendingQueryCmd && reqlen > 1)
 		return (uint16_t)-1;
