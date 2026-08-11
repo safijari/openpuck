@@ -333,6 +333,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	// confirmed from a real puck capture. The feature-0x01 relay below forwards it once; hapticSendShutdown
 	// bursts it for NO-ACK reliability. Slot-targeted: the command arrived on THIS controller's interface,
 	// so only this controller powers off (broadcasting killed all connected controllers at once).
+
+	// TODO: Why do we spam this? Doesn't the controller respond with a TAG4 upon command receival?
 	if (rid == 1 && cmd == 0x9F)
 		hapticSendShutdown((uint8_t)slot);
 
@@ -353,6 +355,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// (hapticReinit) sends its own 0x81 via relayEnqueue directly, so that cure path is unaffected.
 		bool drop =
 			(g_drop81 && g_usbMode == MODE_STEAM && cmd == 0x81);
+
+
 		// Do NOT relay commands OpenPuck answers LOCALLY (identity/bond/settings READS). Report-id 2 (about
 		// the PUCK itself) always stays purely local -- there's nothing on the controller to ask. Only
 		// actuator/config commands (0x80-0x82/0x84-0x88 haptics+config, 0x9F power) and report-id 1 QUERIES
@@ -370,13 +374,10 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// arrives, or if the controller never answers -- the real data, when it lands, just overwrites that.
 
 		// TODO: Figure out which other commands this should also apply to. Probably all of them??
-		bool relayQuery = (rid == 1) &&
-				   (cmd == 0x83 || cmd == 0xAE || cmd == 0xED);
+		bool relayQuery = (cmd == 0x83 || cmd == 0xAE || cmd == 0xED);
 		bool localAnswer =
 			(cmd == 0x89 || cmd == 0xA2 || cmd == 0xA3 ||
-			 cmd == 0xAD || cmd == 0xB4 || cmd == 0xA4 ||
-			 ((cmd == 0x83 || cmd == 0xAE || cmd == 0xED) &&
-			  !relayQuery));
+			 cmd == 0xAD || cmd == 0xB4 || cmd == 0xA4);
 		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop).
 		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
 		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
@@ -421,44 +422,23 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	S.resp_len = 0;
 	switch (cmd) {
 	case 0x83:
-		S.resp[0] = 0x83;
-		S.resp[1] = sizeof ATTR83;
-		memcpy(S.resp + 2, ATTR83, sizeof ATTR83);
-		// Report-id 1 = an attributes query RELAYED to the bonded CONTROLLER; it must report the CONTROLLER's
-		// product id (0x1302), NOT the puck/dongle's (0x1304) -- else Steam sees "a controller with a dongle's
-		// id" (HANDOFF.md) and drops to the LEGACY 0x81 CLEAR_DIGITAL_MAPPINGS init path, whose rapid re-arm
-		// storm is the connect buzz; with the correct id Steam uses the modern quiet 0x87 id9=0 path. Report-id
-		// 2 stays the puck (0x1304). ATTR83 stores product as u32 LE at offset 1, so only the low byte flips
-		// (0x04 -> 0x02); everything else in the blob is identical.
-		if (rid == 1)
-			S.resp[2 + 1] =
-				0x02; // product 0x1304 -> 0x1302 (controller)
-		S.resp_len = 63;
+		if (rid == 2) {
+			// Only if the puck rid is requested. If rid==1, it'll be forwarded to the connected controller.
+			S.resp[0] = 0x83;
+			S.resp[1] = sizeof ATTR83;
+			memcpy(S.resp + 2, ATTR83, sizeof ATTR83);
+			S.resp_len = 63;
+		}
 		break;
 	case 0xAE: {
 		uint8_t idx = pln > 0 ? pl[0] : 1;
-		// Report-id 1 = string attributes of the bonded CONTROLLER, not the puck. Steam matches the connected
-		// controller to its bond by SERIAL: it reads the controller's serial here (rid 1) and compares to the
-		// 16-byte serial in the bond record it reads via 0xA3. OpenPuck was returning the PUCK's serial (g_unit,
-		// "FXB..."), which never matches any bond's controller serial ("FXA...") -> Steam can't associate the
-		// controller with a puck -> "paired to" list is EMPTY -> Steam treats it as unconfigured and re-runs the
-		// 0x81/0x87 config storm every connect (the buzz). So on rid 1, answer with the CONTROLLER's serial from
-		// this interface's bond record (rec[8..24], the same 16-byte serial 0xA3 returns). Captured: Steam
-		// hammered this read (AE x39 on rid1) exactly because the identity never matched. rid 2 = puck (unchanged).
-		// idx 0/1/4 = board/unit/alt serial (real controller returns the SAME serial for 0 and 4; the clone
-		// was returning "NA" for idx 4, which failed Steam's read -> retry).
+		// Report-id 1 = string attributes of the bonded CONTROLLER, not the puck. Not handled here, this request
+		// will have been forwarded to the controller by earlier code. 
 		S.resp[0] = 0xAE;
 		S.resp[1] = 0x14;
 		S.resp[2] = idx;
 		memset(S.resp + 3, 0, 60);
-		if (rid == 1 && slot >= 0 && slot < NSLOT &&
-		    g_slot[slot].used && (idx == 0 || idx == 1 || idx == 4)) {
-			// THIS slot's paired-controller serial, straight from its bond record (rec[8..24], the same
-			// 16-byte serial 0xA3 returns) -- per device, nothing hardcoded. Copied without a stack temp
-			// (this runs on the fragile 800B usbd task; every byte off the stack helps under a Steam
-			// re-enumeration burst).
-			memcpy(S.resp + 3, g_slot[slot].rec + 8, 16);
-		} else {
+		if (rid == 2) {
 			// rid 2 = the puck's own board/unit serials (device-derived). Any other idx -> "NA".
 			const char *s = (rid == 1)	       ? "NA" :
 					(idx == 0 || idx == 4) ? g_board :
@@ -626,6 +606,8 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	// heartbeat ~every 3s, and 0x82 haptics), which stamp g_steamAliveMs on the handleSet paths. So drop the
 	// GET-based stamp entirely; a read alone no longer suppresses lizard.
 	Slot &S = g_slot[slot];
+
+
 	// A feature-01 query (0x83/0xAE/0xED, relayed for real when rid==1 -- see handleSet's `relayQuery`)
 	// is still waiting on the controller's actual reply: `resp` only holds the local placeholder for it
 	// right now (pendingQueryCmd, bonds.h; cleared by rf_link.cpp when the real answer lands). Rather
