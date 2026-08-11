@@ -691,11 +691,10 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									     i]);
 							Serial.println();
 						}
-					} else if (ttype == 2 ||
-						   ttype == 4 && tlen >= 1 &&
-							   (size_t)(idx +
-								    2) + tlen <=
-								   sizeof(rfrx)) {
+					} else if ((ttype == 2 || ttype == 4) &&
+						   tlen >= 1 &&
+						   (size_t)(idx + 2) + tlen <=
+							   sizeof(rfrx)) {
 						// tag 0x02 ("control/status field") and tag 0x04 ("bulk data blob") --
 						// docs/PROTOCOL.md sec 7.3. CONFIRMED from a real puck<->controller capture
 						// (2026-08-10): tag-2 (`00 00 00 00`) is an immediate "request received" ack

@@ -389,6 +389,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
 		// smoothness. Config (0x87/0x88), get_attributes (0x83) and power-off (0x9F) still relay so nothing else regresses.
 		bool hapticCmd = (cmd >= 0x80 && cmd <= 0x86 && cmd != 0x83);
+		bool queryArmed = false;
 		bool relayOk = hapticRelaySlotOk(slot) && !drop &&
 			       !localAnswer &&
 			       !(haptic82 && (lizardActive() || muted)) &&
@@ -409,8 +410,23 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			// track from RELAYED frames only (see the OUTPUT path)
 			if (haptic82)
 				haptic82HostReport(pl, len);
-			if (relayQuery && slot >= 0 && slot < NSLOT)
+			if (relayQuery && slot >= 0 && slot < NSLOT) {
 				g_slot[slot].pendingQueryCmd = cmd;
+				queryArmed = true;
+			}
+		}
+		// No real controller answer is EVER coming for this SET: it wasn't a tracked query
+		// (haptics/0x87/0x9F/localAnswer/...), or it was one but couldn't relay right now (link down,
+		// blocked). `resp` must still be made to reflect CMD, not left holding whatever unrelated
+		// command's data happened to be cached there from an earlier request -- otherwise a later
+		// GET(rid=1), seeing pendingQueryCmd==0, would silently hand Steam stale/wrong data instead of
+		// a defined answer. Same echo shape the old always-run `default:` switch case used.
+		if (!queryArmed) {
+			S.resp[0] = cmd;
+			S.resp[1] = len;
+			if (pln)
+				memcpy(S.resp + 2, pl, pln > 60 ? 60 : pln);
+			S.resp_len = 63;
 		}
 	}
 #if OPK_LOG
