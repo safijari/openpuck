@@ -514,7 +514,7 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
 			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
 			// value=0. 0x83/0x89/0xAE take the same trailer.
-			bool queryTrailer = (m.rid == 0x83) || (m.rid == 0x89) ||
+			bool queryTrailer = (m.rid == 0x83) || (m.rid == 0x87) || (m.rid == 0x89) ||
 					     (m.rid == 0xED) || (m.rid == 0xAE);
 			uint8_t p[5 + RELAY_MAXP + 3], plen;
 			if (land01) {
