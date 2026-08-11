@@ -691,10 +691,8 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									     i]);
 							Serial.println();
 						}
-					} else if (ttype == 2 || ttype == 4) {
-						if (tlen >= 1 &&
-						   (size_t)(idx + 2) + tlen <=
-							   sizeof(rfrx)) {
+					} else if (ttype == 2 || ttype == 4 && tlen >= 1 &&
+						   (size_t)(idx + 2) + tlen <= sizeof(rfrx)) {
 						// tag 0x02 ("control/status field") and tag 0x04 ("bulk data blob") --
 						// docs/PROTOCOL.md sec 7.3. CONFIRMED from a real puck<->controller capture
 						// (2026-08-10): tag-2 (`00 00 00 00`) is an immediate "request received" ack
@@ -733,35 +731,8 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 							S.pendingQueryCmd = 0;
 							__set_PRIMASK(pm);
 						}
-						// Log rate-limited + non-blocking (own limiter, so a tag-4 burst can't
-						// starve tag-2 or the UNK/I45 logging above); other/future query types show
-						// up here so a capture can confirm their shape before wiring up a consumer.
-						static unsigned long lastTag[2] = {
-							0, 0
-						};
-						uint8_t li = (ttype == 2) ? 0 : 1;
-						if (Serial.availableForWrite() >
-							    150 &&
-						    millis() - lastTag[li] >=
-							    200) {
-							lastTag[li] = millis();
-							Serial.printf(
-								"TAG%u tlen=%u:",
-								ttype, tlen);
-							for (uint8_t i = 0;
-							     i < tlen; i++)
-								Serial.printf(
-									" %02X",
-									rfrx[idx +
-									     2 +
-									     i]);
-							Serial.println();
-						}
 					}
 
-
-
-					} 
 					idx += tlen + 2;
 				}
 				// mode-switch chord (back4 + face/dpad): A=always Steam; B/X/Y=configurable (g_chordBtn[]);
@@ -853,13 +824,8 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					Serial.printf("%02X", rfrx[i]);
 				Serial.println();
 			}
-		} else {
-			if (g_connVerbose && Serial.availableForWrite() > 40) {
-				Serial.printf("Packet too long len: %u", rxlen);
-				Serial.println();
-			}
+		} else 
 			rxlen = 0;
-		}
 		// RX window expired with no packet at all
 	} else {
 		g_stNoRx[slot]++;

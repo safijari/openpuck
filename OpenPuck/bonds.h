@@ -16,12 +16,11 @@ struct Slot {
 	bool used;
 	uint8_t resp[63];
 	uint16_t resp_len;
-	// 0 = none; else the feature-01 cmd byte (0x83/0xAE/0xED) just relayed to this slot's controller
+
+	// 0 = none; else the feature-01 cmd byte (0x83/0xAE/0xED/...) just relayed to this slot's controller
 	// (puck_hid.cpp handleSet, usbd task) and awaiting its real reply. Cleared by rf_link.cpp (loop/RF
-	// context) when a tag-4 reply whose echoed report_id matches lands and overwrites `resp` with it --
-	// this is what stops a stray/late tag-4 (or one answering an EARLIER query this slot already moved
-	// on from) from being misapplied. Not persisted -- transient per-session state, unlike rec/used (see
-	// bonds.cpp saveBonds/loadBonds).
+	// context) when the controller has responded to this request and overwrote resp with the response.
+	// Not persisted.
 	volatile uint8_t pendingQueryCmd;
 };
 extern Slot g_slot[NSLOT];

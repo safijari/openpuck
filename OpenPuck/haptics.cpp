@@ -471,52 +471,17 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// On-air sub-TLV framing. CONFIRMED from real puck<->controller sniffs: a command LANDS on
 			// the controller only with the type-01 + inner-len form E3 [2+rl][01][rid][innerlen][data];
 			// the legacy form E3 [1+rl][05][rid][data] makes the controller DISCARD any 0x87+ command.
-			//
-			// Whitelist type-01 to exactly three commands: LED brightness (0x87 reg 0x2D), power-off
-			// (0x9F), and the STANDALONE lizard-suppression keepalive (0x87 [09 00 00] -- rl==3 so a
-			// multi-register block that merely STARTS with 0x09 can't smuggle other registers into
-			// landing). Setting index 9 = digital-mappings/lizard-active (ibex FUN_0001f554 decomp);
-			// the real puck lands id9=0 every 3s -- without it the controller's revert timer fires,
-			// re-enables autonomous mode and resets ALL settings to defaults (audible amp pop +
-			// autonomous touchpad ticks = the spurious mid-session buzz). Other 0x87 writes (e.g. reg
-			// 0x30 IMU enable, 0x34/0x35 haptic amplitude) must stay on legacy form -- landing 0x30
-			// freezes the gyro; landing 0x34/0x35 causes the connect buzz.
-			// Amp/haptic-config registers (0x18/0x2E/0x34/0x35): LAND these so the controller's amplifier is
-			// configured the way Steam intends -> haptics (0x82 ticks, connect cue) play as clean ticks
-			// instead of the default-amp BUZZ we get when the config is discarded. Steam sends these grouped
-			// in 0x87 blocks that START with one of those regs and do NOT contain 0x30 (the gyro reg, which
-			// must NOT land -- it freezes the gyro), so gating on data[0] lands the amp block without 0x30.
-			// (g_landAmp, console "AMP"; on by default. The old "landing 0x34/0x35 buzzes" note was really the
-			// 0x81 storm, now removed.)
-			bool ampReg = (m.data[0] == 0x18 || m.data[0] == 0x2E ||
-				       m.data[0] == 0x34 || m.data[0] == 0x35);
+
 			bool land01 =
-				(m.rid == 0x9F) ||
-				(m.rid == 0x87 && rl >= 1 &&
-				 m.data[0] == 0x2D) ||
-				(m.rid == 0x87 && rl == 3 &&
-				 m.data[0] == 0x09) ||
-				(g_landAmp && m.rid == 0x87 && rl >= 1 &&
-				 ampReg) ||
-				// experiment: land EVERY 0x87 verbatim (real-puck relay) when enabled
-				(g_landAll87 && m.rid == 0x87) ||
-				// Feature-01 QUERY relays: 0x83 GET_ATTRIBUTES, 0xAE string attribute, 0xED
-				// READ_SETTING -- puck_hid.cpp now relays these for real when Steam asks about the
-				// CONTROLLER (rid==1; see its `relayQuery`). All are >= 0x87-or-
-				// equivalent risk of being dropped in legacy framing (docs/PROTOCOL.md sec 3.3; 0x83
-				// is technically below the cutoff but landing a small query costs nothing), so land
-				// all of them unconditionally.
-				// TODO: Check for other query types we should relay to the controller!
-				// This 0x87 condition effectively enabled g_landAll87 permanently. 
-				// Lets see if this causes issues.
-				(m.rid == 0x83) || (m.rid == 0x87) || (m.rid == 0x89) || (m.rid == 0xED) ||
-				(m.rid == 0xAE);
+				(m.rid == 0x9F) || (m.rid == 0x83) || (m.rid == 0x87) || 
+				(m.rid == 0x89) || (m.rid == 0xED) || (m.rid == 0xAE);
+
 			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
 			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
 			// value=0. 0x83/0x89/0xAE take the same trailer.
 			// This should only be added if we expect a response from the controller, so, not for 0x87.
-			bool queryTrailer = (m.rid == 0x83) || (m.rid == 0x89) ||
-					     (m.rid == 0xED) || (m.rid == 0xAE);
+			// TODO: Figure out which commands need that trailer and which ones don't.
+			bool queryTrailer = (m.rid == 0x83) || (m.rid == 0x89) || (m.rid == 0xED) || (m.rid == 0xAE);
 			uint8_t p[5 + RELAY_MAXP + 3], plen;
 			if (land01) {
 				p[0] = g_relayOp;
@@ -528,7 +493,6 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				plen = (uint8_t)(5 + rl);
 				if (queryTrailer &&
 				    plen + 3 <= sizeof p) {
-						// TODO: Figure out which commands need that trailer and which ones don't.
 					p[plen + 0] = 0x01;
 					p[plen + 1] = 0x03;
 					p[plen + 2] = 0x00;
