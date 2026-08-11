@@ -8,6 +8,7 @@
 #include "triton.h"
 #include "mode_lizard.h"
 #include "wake_hid.h"
+#include "build_info.h"
 #include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
@@ -443,8 +444,25 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			const char *s = (rid == 1)	       ? "NA" :
 					(idx == 0 || idx == 4) ? g_board :
 					(idx == 1)	       ? g_unit :
+					(idx == 3)	       ? "OpenPuck " :
 								 "NA";
 			memcpy(S.resp + 3, s, strlen(s));
+			if (rid == 2 && idx == 3) {
+				// The official puck has a 12-character GIT commit hash of the firmware in here.
+				// Since I doubt any official process is ever going to parse / use this,
+				// looks like the perfect place to put the OpenPuck version number.
+				char *off = (char *)(S.resp + 3 + strlen(s));
+				memcpy(off, OPK_BUILD_VERSION,
+				       strlen(OPK_BUILD_VERSION));
+				off += strlen(OPK_BUILD_VERSION);
+				memcpy(off, " ", 1);
+				memcpy(off + 1, OPK_GIT_HASH,
+				       strlen(OPK_GIT_HASH));
+				if (OPK_GIT_DIRTY != 0) {
+					off += 1 + strlen(OPK_GIT_HASH);
+					memcpy(off, "-dirty", 6);
+				}
+			}
 		}
 		S.resp_len = 63;
 		break;
