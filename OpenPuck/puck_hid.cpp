@@ -576,8 +576,10 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 
 	// TODO: This is a very, very, very ugly solution and may break with library updates. Can we find a cleaner one?
 	if (rid == 1 && S.pendingQueryCmd != 0 &&
-	    S.resp[0] == S.pendingQueryCmd && reqlen > 1)
-		return (uint16_t)-32767;
+	    S.resp[0] == S.pendingQueryCmd && reqlen > 1) {
+			return 0xFFFF;
+		}
+		
 
 
 	uint16_t n = S.resp_len ? S.resp_len : 63;
