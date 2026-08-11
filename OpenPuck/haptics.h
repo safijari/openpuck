@@ -59,9 +59,6 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 #define LIZKEEP_MS 2000u
 extern uint8_t
 	g_lizKeep; // 1 = hold on (default, persisted); console 'u' toggles for A/B
-// Experiment: land ALL relayed 0x87 SET_SETTINGS verbatim (real-puck relay) instead of the discard-whitelist.
-// Default 0 (whitelist). Console "L87" toggles; persisted. See haptics.cpp for the buzz hypothesis it tests.
-extern uint8_t g_landAll87;
 // Land Steam's amp/haptic-config 0x87 (regs 0x18/0x2E/0x34/0x35, not gyro 0x30) so haptics play as clean
 // ticks not a default-amp buzz. On by default; console "AMP" toggles.
 extern uint8_t g_landAmp;

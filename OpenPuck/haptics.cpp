@@ -26,15 +26,6 @@ uint16_t g_hapticBlockMs = HAPTIC_BLOCK_MS_DEFAULT;
 // or Steam-closed fallback) so the autonomous pad layer -- the trackpad-tick source -- is on.
 // Persisted; console 'u' toggles for A/B.
 uint8_t g_lizKeep = 1;
-// EXPERIMENT (console "L87" toggles, persisted): land ALL relayed 0x87 SET_SETTINGS via type-01 framing so
-// Steam's haptic/amp/IMU config actually reaches the controller (verbatim relay = real-puck behavior),
-// instead of the whitelist discarding everything but LED(0x2D)/id9(0x09). Hypothesis: the buzz is the
-// controller's haptic engine left MISCONFIGURED because Steam's 0x87 config is discarded; landing it should
-// configure the engine correctly and stop the buzz. Default OFF (keeps the safe whitelist) because landing
-// reg 0x30 was once blamed for freezing the gyro and 0x34/0x35 for the buzz -- but those were OpenPuck's own
-// bad hapticReinit values, so Steam's real values may be fine. Flip it on hardware to test; flip back if the
-// gyro freezes.
-uint8_t g_landAll87 = 0;
 // Land Steam's amp/haptic-config 0x87 blocks (regs 0x18/0x2E/0x34/0x35, NOT gyro 0x30) so the controller's
 // amplifier is configured and haptics play as clean ticks instead of a default-amp buzz. On by default;
 // console "AMP" toggles for A/B. See the land01 whitelist in rfConnFlushRelay.

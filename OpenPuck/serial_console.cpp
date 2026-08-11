@@ -91,14 +91,6 @@ void serialConsolePoll()
 					"# feature-cmd capture %s (I45 %s)\n",
 					g_cmdCapture ? "ON" : "off",
 					g_cmdCapture ? "suppressed" : "on");
-			} else if (!strcmp(line, "L87")) {
-				// EXPERIMENT: land all relayed 0x87 config verbatim (real-puck relay) vs the discard-whitelist.
-				// Exact-match string (single letters are all taken; 'l' alone = rfListenStart).
-				g_landAll87 = !g_landAll87;
-				saveCfg();
-				Serial.printf(
-					"# land-all-0x87 (verbatim 0x87 relay) %s\n",
-					g_landAll87 ? "ON" : "off");
 			} else if (!strcmp(line, "FR")) {
 				// re-dump the flight recorder trail captured before the last watchdog hang (also printed
 				// automatically at boot, but CDC may not be attached yet then -- this reprints on demand).

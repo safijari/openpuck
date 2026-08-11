@@ -277,7 +277,7 @@ static void webusbSendBlob()
 		q[8] = g_slotRelayps[s];
 	}
 	// v14/v17: verbatim-0x87-relay experiment toggle (panel reflects + toggles it)
-	p[181] = g_landAll87;
+	p[181] = 0; // used to be g_landAll87
 	// v18: back4+D-pad mode assignments (panel renders these as selects next to the B/X/Y ones)
 	p[182] = g_chordDpad[CHD_LEFT];
 	p[183] = g_chordDpad[CHD_UP];
@@ -1000,10 +1000,9 @@ void webusbPoll()
 					// (field 25, poll RX window, removed -- g_rxWin is now FIXED/not configurable)
 					// (fields 27/28, post-connect haptic block, removed -- permanently disabled)
 
-				// EXPERIMENT: land ALL relayed 0x87 config verbatim (real-puck relay)
-				// instead of the discard-whitelist. Persisted; blob p[181] reflects state.
+				// Used to be experimental g_landAll87. Persisted; blob p[181] reflects state. Now ignored.
 				case 29:
-					g_landAll87 = v ? 1 : 0;
+					// g_landAll87 = v ? 1 : 0;
 					break;
 				}
 				if (persist)
