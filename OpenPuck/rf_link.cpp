@@ -695,7 +695,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						if (Serial.availableForWrite() > 150) {
 							const uint8_t *recdbg = &rfrx[idx + 2];
 							Serial.printf("TTYPE%u tlen=%u idx=%d sizeof=%d\n", ttype, tlen, idx, sizeof(rfrx));
-							Serial.printf("rec0=%u 2+rec1=%u gcurSlot=%d pending=%d\n", rec[0], 2+recdbg[1], g_curSlot, g_slot[g_curSlot].pendingQueryCmd);							
+							Serial.printf("rec0=%u 2+rec1=%u gcurSlot=%d pending=%d\n", recdbg[0], 2+recdbg[1], g_curSlot, g_slot[g_curSlot].pendingQueryCmd);							
 						}
 
 
