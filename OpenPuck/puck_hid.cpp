@@ -423,8 +423,10 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		Serial.println();
 	}
 #endif
-	memset(S.resp, 0, sizeof S.resp);
-	S.resp_len = 0;
+	if (rid == 2) {
+		memset(S.resp, 0, sizeof S.resp);
+		S.resp_len = 0;
+	}
 	switch (cmd) {
 	case 0x83:
 		if (rid == 2) {
