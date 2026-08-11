@@ -849,8 +849,13 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					Serial.printf("%02X", rfrx[i]);
 				Serial.println();
 			}
-		} else
+		} else {
+			if (g_connVerbose && Serial.availableForWrite() > 40) {
+				Serial.printf("Packet too long len: %u", rxlen);
+				Serial.println();
+			}
 			rxlen = 0;
+		}
 		// RX window expired with no packet at all
 	} else {
 		g_stNoRx[slot]++;
