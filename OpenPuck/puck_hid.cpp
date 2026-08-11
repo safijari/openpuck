@@ -373,8 +373,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// We could probably just relay *every*c ommand that comes with rid==1 but that needs further testing.
 		bool relayQuery = (
 			cmd == 0x83 ||  // GET_ATTRIBUTES_VALUES
-			cmd == 0x87 || 	// GET_SETTINGS
-			//cmd == 0x89 ||  // SET_SETTINGS
+			cmd == 0x87 || 	// SET_SETTINGS
+			cmd == 0x89 ||  // GET_SETTINGS
 			cmd == 0xAE ||  // GET_STRING_ATTRIBUTE
 			cmd == 0xED);   
 		bool localAnswer = (
