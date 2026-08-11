@@ -692,22 +692,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 							Serial.println();
 						}
 					} else if (ttype == 2 || ttype == 4) {
-						if (Serial.availableForWrite() > 180) {
-							const uint8_t *recdbg = &rfrx[idx + 2];
-							Serial.printf("TTYPE%u tlen=%u idx=%d sizeof=%d\n", ttype, tlen, idx, sizeof(rfrx));
-							Serial.printf("rec0=%u 2+rec1=%u gcurSlot=%d pending=%d\n", recdbg[0], 2+recdbg[1], g_curSlot, g_slot[g_curSlot].pendingQueryCmd);							
-
-							for (uint8_t i = 0;
-							     i < tlen+2; i++)
-								Serial.printf(
-									"%02X ",
-									rfrx[idx + i]);
-							Serial.println();
-						}
-
-
-						if ((ttype == 2 || ttype == 4) &&
-						   tlen >= 1 &&
+						if (tlen >= 1 &&
 						   (size_t)(idx + 2) + tlen <=
 							   sizeof(rfrx)) {
 						// tag 0x02 ("control/status field") and tag 0x04 ("bulk data blob") --
@@ -735,7 +720,6 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 							// pattern the rest of this file uses for usbd<->loop shared state
 							// (relayEnqueue/hapLogAdd/fcPush) so a GET_FEATURE can't observe a torn
 							// write mid-memcpy.
-							Serial.printf("matching, write to resp\n");
 							Slot &S = g_slot[g_curSlot];
 							uint32_t pm =
 								__get_PRIMASK();
