@@ -691,7 +691,14 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									     i]);
 							Serial.println();
 						}
-					} else if ((ttype == 2 || ttype == 4) &&
+					} else if (ttype == 2 || ttype == 4) {
+						if (Serial.availableForWrite() > 150) {
+							Serial.printf("TTYPE%u tlen=%u idx=%d sizeof=%d\n", ttype, tlen, idx, sizeof(rfrx));
+							Serial.printf("rec0=%u 2+rec1=%u gcurSlot=%d pending=%d\n", rec[0], 2+rec[1], g_curSlot, g_slot[g_curSlot].pendingQueryCmd);							
+						}
+
+
+						if ((ttype == 2 || ttype == 4) &&
 						   tlen >= 1 &&
 						   (size_t)(idx + 2) + tlen <=
 							   sizeof(rfrx)) {
@@ -758,6 +765,10 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 							Serial.println();
 						}
 					}
+
+
+
+					} 
 					idx += tlen + 2;
 				}
 				// mode-switch chord (back4 + face/dpad): A=always Steam; B/X/Y=configurable (g_chordBtn[]);
