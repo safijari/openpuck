@@ -387,7 +387,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
 		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
 		// smoothness. Config (0x87/0x88) and power-off (0x9F) still relay so nothing else regresses.
-		bool hapticCmd = (cmd >= 0x80 && cmd <= 0x86);
+		bool hapticCmd = (cmd >= 0x80 && cmd <= 0x86 && cmd != 0x83);
 		bool relayOk = hapticRelaySlotOk(slot) && !drop &&
 			       !localAnswer &&
 			       !(haptic82 && (lizardActive() || muted)) &&
