@@ -428,6 +428,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		S.resp_len = 0;
 	}
 	else {
+		// If we forwarded the packet to the controller, do NOT clear the buffer. 
+		// The controller will respond and put its data into the buffer.
 		return;
 		// rid == 1 will be handled by the controller, no need to respond here.
 	}
@@ -576,10 +578,11 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	// so if the controller never replies, a new query for a puck feature can get the puck un-stuck. 
 
 	// TODO: This is a very, very, very ugly solution and may break with library updates. Can we find a cleaner one?
-	if (rid == 1 && S.pendingQueryCmd != 0 &&
-	    S.resp[0] == S.pendingQueryCmd && reqlen > 1) {
+	if (rid == 1 && S.pendingQueryCmd != 0 && reqlen > 1) {
 			return 0xFFFF;
 		}
+
+	// rf_link.cpp will set pendingQueryCmd to 0 once the controller answered.
 		
 
 
