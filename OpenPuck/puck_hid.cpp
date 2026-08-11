@@ -427,15 +427,17 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		memset(S.resp, 0, sizeof S.resp);
 		S.resp_len = 0;
 	}
+	else {
+		return;
+		// rid == 1 will be handled by the controller, no need to respond here.
+	}
 	switch (cmd) {
 	case 0x83:
-		if (rid == 2) {
-			// Only if the puck rid is requested. If rid==1, it'll be forwarded to the connected controller.
-			S.resp[0] = 0x83;
-			S.resp[1] = sizeof ATTR83;
-			memcpy(S.resp + 2, ATTR83, sizeof ATTR83);
-			S.resp_len = 63;
-		}
+		// Only if the puck rid is requested.
+		S.resp[0] = 0x83;
+		S.resp[1] = sizeof ATTR83;
+		memcpy(S.resp + 2, ATTR83, sizeof ATTR83);
+		S.resp_len = 63;
 		break;
 	case 0xAE: {
 		uint8_t idx = pln > 0 ? pl[0] : 1;
@@ -445,29 +447,26 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		S.resp[1] = 0x14;
 		S.resp[2] = idx;
 		memset(S.resp + 3, 0, 60);
-		if (rid == 2) {
-			// rid 2 = the puck's own board/unit serials (device-derived). Any other idx -> "NA".
-			const char *s = (rid == 1)	       ? "NA" :
-					(idx == 0 || idx == 4) ? g_board :
-					(idx == 1)	       ? g_unit :
-					(idx == 3)	       ? "OpenPuck " :
-								 "NA";
-			memcpy(S.resp + 3, s, strlen(s));
-			if (rid == 2 && idx == 3) {
-				// The official puck has a 12-character GIT commit hash of the firmware in here.
-				// Since I doubt any official process is ever going to parse / use this,
-				// looks like the perfect place to put the OpenPuck version number.
-				char *off = (char *)(S.resp + 3 + strlen(s));
-				memcpy(off, OPK_BUILD_VERSION,
-				       strlen(OPK_BUILD_VERSION));
-				off += strlen(OPK_BUILD_VERSION);
-				memcpy(off, " ", 1);
-				memcpy(off + 1, OPK_GIT_HASH,
-				       strlen(OPK_GIT_HASH));
-				if (OPK_GIT_DIRTY != 0) {
-					off += 1 + strlen(OPK_GIT_HASH);
-					memcpy(off, "-dirty", 6);
-				}
+		// rid 2 = the puck's own board/unit serials (device-derived). Any other idx -> "NA".
+		const char *s = (idx == 0 || idx == 4) ? g_board :
+				(idx == 1)	       ? g_unit :
+				(idx == 3)	       ? "OpenPuck " :
+								"NA";
+		memcpy(S.resp + 3, s, strlen(s));
+		if (idx == 3) {
+			// The official puck has a 12-character GIT commit hash of the firmware in here.
+			// Since I doubt any official process is ever going to parse / use this,
+			// looks like the perfect place to put the OpenPuck version number.
+			char *off = (char *)(S.resp + 3 + strlen(s));
+			memcpy(off, OPK_BUILD_VERSION,
+					strlen(OPK_BUILD_VERSION));
+			off += strlen(OPK_BUILD_VERSION);
+			memcpy(off, " ", 1);
+			memcpy(off + 1, OPK_GIT_HASH,
+					strlen(OPK_GIT_HASH));
+			if (OPK_GIT_DIRTY != 0) {
+				off += 1 + strlen(OPK_GIT_HASH);
+				memcpy(off, "-dirty", 6);
 			}
 		}
 		S.resp_len = 63;
