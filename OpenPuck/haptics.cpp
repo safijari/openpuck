@@ -54,7 +54,7 @@ void hapticSendShutdown(uint8_t slot)
 	// the panel/test power-off button.
 	faultDiagTrace(FR_OFF, slot);
 	for (uint8_t i = 0; i < HAPTIC_SHUTDOWN_SHOTS; i++)
-		relayEnqueue(0x9F, OFF, sizeof OFF, slot);
+		relayEnqueue(0x9F, OFF, sizeof OFF, false, slot);
 	// Tell the puck presentation layer to show this slot (or all, for 0xFF broadcast) cleanly DISCONNECTED to
 	// Steam and hold it there through the controller's post-off F1 tail -- otherwise the dying replies bounce
 	// the connection state (phantom reconnect / never-removed). Covers every power-off path (Steam 0x9F, the
@@ -84,6 +84,7 @@ static bool g_rumble80On[NSLOT] = { false, false, false, false };
 // per slot (rfConnFlushRelay on that slot's poll turn). Producers serialize under PRIMASK.
 struct RelayMsg {
 	uint8_t rid, len;
+	bool isHaptic;
 	uint8_t data[RELAY_MAXP];
 	// set by the caller at relayEnqueue() time (see haptics.h) -- true iff a real controller reply is
 	// wanted for this specific message, i.e. whether rfConnFlushRelay appends the query-reply trailer.
@@ -113,7 +114,7 @@ bool relayPending()
 	return g_rqHead[cur] != g_rqTail[cur];
 }
 bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
-		  uint8_t slot, bool expectReply)
+		   bool isHaptic, uint8_t slot, bool expectReply)
 {
 	if (plen > RELAY_MAXP)
 		plen = RELAY_MAXP;
@@ -133,12 +134,13 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 		g_rq[s][h].rid = rid;
 		g_rq[s][h].len = plen;
 		g_rq[s][h].expectReply = expectReply;
+		g_rq[s][h].isHaptic = isHaptic;
 		if (plen)
 			memcpy(g_rq[s][h].data, payload, plen);
 		g_rqHead[s] = nx;
 	}
 	// Track last-haptic time for the Steam-mode quiet timeout (marks the 0x82 stream inactive after silence).
-	if (rid == 0x82 || rid == 0x80)
+	if (isHaptic)
 		g_haptic82Ms = millis();
 	__set_PRIMASK(pm);
 	faultDiagTrace(FR_RELAY, (uint16_t)((slot << 8) | rid));
@@ -366,7 +368,7 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 	uint8_t reps = stopping ? RUMBLE_STOP_REPS : 1;
 	bool queued = false;
 	for (uint8_t i = 0; i < reps; i++)
-		if (relayEnqueue(0x80, p, sizeof p, slot))
+		if (relayEnqueue(0x80, p, sizeof p, true, slot))
 			queued = true;
 	if (!queued)
 		return false;
@@ -397,7 +399,7 @@ void hapticStabTask()
 		for (uint8_t s = 0; s < NSLOT; s++)
 			if (g_slot[s].used && g_connReplyMs[s] &&
 			    (unsigned long)(now - g_connReplyMs[s]) < 300u)
-				relayEnqueue(0x82, p, 3, s);
+				relayEnqueue(0x82, p, 3, true, s);
 	};
 	if (lastOn == 0 || (uint32_t)(now - lastOn) >= 10000u) {
 		lastOn = now;
@@ -417,10 +419,10 @@ void rfConnQueueHapticRelay()
 	static const uint8_t HAP_ON[3] = { 0x01, 0x01, 0xF7 };
 	static const uint8_t HAP_OFF[3] = { 0x01, 0x01, 0x00 };
 	if (g_testHaptic) {
-		if (relayEnqueue(0x82, HAP_ON, 3, 0xFF))
+		if (relayEnqueue(0x82, HAP_ON, 3, true, 0xFF))
 			g_testHaptic--;
 	} else if (g_hapticStop && !g_xbox) {
-		if (relayEnqueue(0x82, HAP_OFF, 3, 0xFF))
+		if (relayEnqueue(0x82, HAP_OFF, 3, true, 0xFF))
 			g_hapticStop--;
 	}
 }
@@ -474,7 +476,8 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// Should check later if there's a way to somehow determine which types need the trailer and which ones don't.
 			bool queryTrailer = m.expectReply;
 			uint8_t p[5 + RELAY_MAXP + 3], plen;
-			if (land01) {
+			if (!m.isHaptic) {
+				// Non-haptics use type 01
 				p[0] = g_relayOp;
 				p[1] = (uint8_t)(2 + rl);
 				p[2] = 0x01;
@@ -489,6 +492,7 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 					plen = (uint8_t)(plen + 3);
 				}
 			} else {
+				// Haptics use type 05
 				p[0] = g_relayOp;
 				p[1] = (uint8_t)(1 + rl);
 				p[2] = 0x05;
@@ -507,7 +511,7 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				usbTxBoost();
 				Serial.printf("# TX t=%lu slot%d %s rid=%02X:",
 					      (unsigned long)millis(), cur,
-					      land01 ? "L01" : "l05", m.rid);
+					      m.isHaptic ? "L05" : "L01", m.rid);
 				for (uint8_t i = 0; i < rl && i < 8; i++)
 					Serial.printf(" %02X", m.data[i]);
 				Serial.println();
@@ -551,7 +555,7 @@ void hapticSetPadEnabled(uint8_t slot, bool on)
 {
 #if SETTING_HAPTICS_ENABLED != 0xFF
 	uint8_t pl[3] = { SETTING_HAPTICS_ENABLED, (uint8_t)(on ? 1 : 0), 0 };
-	relayEnqueue(0x87, pl, 3, slot);
+	relayEnqueue(0x87, pl, 3, true, slot);
 #else
 	(void)slot;
 	(void)on;
@@ -572,15 +576,18 @@ void hapticReinit(uint8_t slot)
 	static const uint8_t T81B[] = {
 		0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 	};
+
+	// TODO: Check if these are actually all haptics commands .....
+
 	// reset action (FUN_0001f554) -- Steam sends this first
-	relayEnqueue(0x81, nullptr, 0, slot);
-	relayEnqueue(0x87, H30, sizeof H30, slot);
+	relayEnqueue(0x81, nullptr, 0, true, slot);
+	relayEnqueue(0x87, H30, sizeof H30, true, slot);
 
 	// haptic config (enabled/amplifier/gain): the part that clears a latch
-	relayEnqueue(0x87, H18, sizeof H18, slot);
-	relayEnqueue(0x87, H35, sizeof H35, slot);
-	relayEnqueue(0x81, T81A, sizeof T81A, slot);
-	relayEnqueue(0x81, T81B, sizeof T81B, slot);
+	relayEnqueue(0x87, H18, sizeof H18, true, slot);
+	relayEnqueue(0x87, H35, sizeof H35, true, slot);
+	relayEnqueue(0x81, T81A, sizeof T81A, true, slot);
+	relayEnqueue(0x81, T81B, sizeof T81B, true, slot);
 	// Re-apply the active emulated type's trackpad-haptics preference last (after the haptic-config writes
 	// above, which would otherwise re-enable it). Default-on types send "enable"; Switch (padHaptics=0)
 	// disables. Inert until the setting id is captured.
@@ -590,7 +597,7 @@ void hapticReinit(uint8_t slot)
 	// full brightness. 0 = no override (preserve controller default).
 	if (g_etype < ET_COUNT && g_ledBright > 0) {
 		uint8_t pl[3] = { 0x2D, g_ledBright, 0x00 };
-		relayEnqueue(0x87, pl, sizeof pl, slot);
+		relayEnqueue(0x87, pl, sizeof pl, true, slot);
 	}
 }
 void hapticInit()
@@ -663,7 +670,7 @@ void hapticTask()
 			if (wantAuto) {
 				if (!landedAuto[s]) {
 					landedAuto[s] = true;
-					relayEnqueue(0x87, K1, sizeof K1,
+					relayEnqueue(0x87, K1, sizeof K1, true,
 						     (uint8_t)s);
 				}
 			} else {
@@ -673,7 +680,7 @@ void hapticTask()
 					    LIZKEEP_MS)
 					continue;
 				lastKeep[s] = millis();
-				relayEnqueue(0x87, K0, sizeof K0, (uint8_t)s);
+				relayEnqueue(0x87, K0, sizeof K0, true, (uint8_t)s);
 			}
 		}
 	}

@@ -346,7 +346,7 @@ void serialConsolePoll()
 				uint8_t pl[3] = { id, (uint8_t)(val & 0xFF),
 						  (uint8_t)(val >> 8) };
 				// console-injected writes go to all connected controllers (no specific slot in scope)
-				relayEnqueue(0x87, pl, 3, 0xFF);
+				relayEnqueue(0x87, pl, 3, false, 0xFF);
 				Serial.printf(
 					"# queued SET-SETTINGS id=0x%02X val=%u (relay 0x87) — watch new=/s\n",
 					id, val);

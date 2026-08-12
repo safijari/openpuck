@@ -285,7 +285,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				relayEnqueue(rid, b,
 					     (uint8_t)(n > RELAY_MAXP ?
 							       RELAY_MAXP :
-							       n),
+							       n), true,
 					     (uint8_t)slot);
 				// Track on/off from what was actually RELAYED (= the controller's believed state): a
 				// BLOCKED stop must leave "on" set (controller may be latched -> reconnect stop-burst),
@@ -328,6 +328,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	faultDiagTrace(FR_SET, (uint16_t)((rid << 8) | cmd));
 
 	// settings/haptic/LED report (incl. 0x87 lizard-off heartbeat, SDL Triton lizard-disable)
+	// TODO: this is not related to haptics, find a better condition.
 	if (cmd >= 0x80 && cmd <= 0x89)
 		hostStampAlive();
 	// Controller power-off: Steam's "turn off controller" is feature-0x01 frame 9F 04 6F 66 66 21 ("off!"),
@@ -343,7 +344,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	if (rid == 1 && n >= 2) {
 		// (feature-1 commands -- haptics, LED, 0x87 settings, 0x9F power-off -- are captured by the
 		// general feature-SET hapLogAdd above.)
-		bool haptic82 = (cmd == 0x82 && len <= pln);
+		bool haptic82 = false;
 
 		bool muted = g_resumeMs &&
 			     millis() - g_resumeMs < POST_RESUME_MUTE_MS;
@@ -354,8 +355,9 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// its OWN input translation and holds mappings cleared via the id9=0 keepalive, so it does NOT need the
 		// controller's mapping engine -> Steam's 0x81 is pure downside here. The manual "Clear stuck buzz"
 		// (hapticReinit) sends its own 0x81 via relayEnqueue directly, so that cure path is unaffected.
-		bool drop =
-			(g_drop81 && g_usbMode == MODE_STEAM && cmd == 0x81);
+		//bool drop =
+		//	(g_drop81 && g_usbMode == MODE_STEAM && cmd == 0x81);
+		bool drop = false;
 
 		// Reports in relayQuery will be forwarded to the controller if rid==1 and may be answered locally
 		// if it makes sense and rid==2.
@@ -381,14 +383,15 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		bool localAnswer =
 			(cmd == 0xA2 || // Write puck pairing
 			 cmd == 0xA3 || // Read puck pairing
-			 cmd == 0xAD || // ???
-			 cmd == 0xB4 || // Read puck slot connection state
-			 cmd == 0xA4); // ???
+			 cmd == 0xAD || // ENABLE_PAIRING
+			 cmd == 0xB4 || // DONGLE_GET_WIRELESS_STATE (Read puck slot connection state)
+			 cmd == 0xA4);  // ???
 		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop).
 		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
 		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
 		// smoothness. Config (0x87/0x88), get_attributes (0x83) and power-off (0x9F) still relay so nothing else regresses.
-		bool hapticCmd = (cmd >= 0x80 && cmd <= 0x86 && cmd != 0x83);
+		//bool hapticCmd = (cmd == 0x80 || cmd == 0x81 || cmd == 0x82 || cmd == 0x85);
+		bool hapticCmd = false;
 		bool queryArmed = false;
 		bool relayOk = hapticRelaySlotOk(slot) && !drop &&
 			       !localAnswer &&
@@ -405,7 +408,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
 					cmd, len, (unsigned)RELAY_MAXP);
 #endif
-			relayEnqueue(cmd, pl, rl, (uint8_t)slot, relayQuery);
+			relayEnqueue(cmd, pl, rl, false, (uint8_t)slot, relayQuery);
 
 			// track from RELAYED frames only (see the OUTPUT path)
 			if (haptic82)
