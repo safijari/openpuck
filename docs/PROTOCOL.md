@@ -150,15 +150,10 @@ When Steam writes feature report `0x01`, OpenPuck forwards it over RF to the con
 containing a sub-TLV. There are two on-air forms:
 
 ```text
-legacy   [E3][1+len][0x05][report_id][data...]              (no inner-len)
-landing  [E3][2+len][0x01][report_id][innerlen][data...]    (type 01, KEEPS inner-len; controller ACTS on it)
+haptic   [E3][1+len][0x05][report_id][data...]             (type 05, no inner-len)
+normal  [E3][2+len][0x01][report_id][innerlen][data...]    (type 01, KEEPS inner-len)
 ```
 
-A command only **lands** on the controller in the `landing` form (type `0x01` — the same type byte the GET poll
-uses, `E3 02 01 45 <param>`; the `report_id` selects the action, `innerlen` is the report's own `[len]`). In the
-`legacy` form the controller discards any `0x87+` command (it reads the first data byte as the length).
-
-**OpenPuck sends the `landing` form for 0x83 and everything >= 0x87. Other commands <0x87 use the legacy form:
 
 ```text
 haptic on    E3 04 05 82 01 01 F7              (report 0x82, legacy)
