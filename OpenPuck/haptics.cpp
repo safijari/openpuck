@@ -470,7 +470,7 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 
 			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
 			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
-			// value=0. If the caller decides they want an answer, we add the queryTrailer. 
+			// value=0. If the caller decides they want an answer, we add the queryTrailer.
 			// Should check later if there's a way to somehow determine which types need the trailer and which ones don't.
 			bool queryTrailer = m.expectReply;
 			uint8_t p[5 + RELAY_MAXP + 3], plen;

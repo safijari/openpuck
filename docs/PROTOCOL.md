@@ -90,22 +90,13 @@ A command only **lands** on the controller in the `landing` form (type `0x01` �
 uses, `E3 02 01 45 <param>`; the `report_id` selects the action, `innerlen` is the report's own `[len]`). In the
 `legacy` form the controller discards any `0x87+` command (it reads the first data byte as the length).
 
-**OpenPuck sends the `legacy` form for everything EXCEPT a tight whitelist** — only LED brightness (`0x87` whose
-first register byte is `0x2D`) and controller power-off (`0x9F`) use the `landing` form:
+**OpenPuck sends the `landing` form for 0x83 and everything >= 0x87. Other commands <0x87 use the legacy form:
 
 ```text
 haptic on    E3 04 05 82 01 01 F7              (report 0x82, legacy)
-brightness   E3 05 01 87 03 2D <val> 00        (report 0x87 reg 0x2D, LANDING -- whitelisted)
-power-off    E3 06 01 9F 04 6F 66 66 21        (report 0x9F "off!", LANDING -- whitelisted)
-Steam 0x87 cfg  E3 .. 05 87 ..                 (haptic/IMU config: legacy -> DISCARDED, by design)
+brightness   E3 05 01 87 03 2D <val> 00        (report 0x87 reg 0x2D, LANDING)
+power-off    E3 06 01 9F 04 6F 66 66 21        (report 0x9F "off!", LANDING)
 ```
-
-**Why the whitelist is tight, not "land everything `0x87+`":** Steam continuously writes its own `0x87`
-passthrough during normal play — the haptic-config block including reg `0x30` (IMU/subsystem enable) and
-`0x34/0x35` (haptic amplitude). If those *land*, reg `0x30` **freezes the controller's gyro stream** and
-`0x34/0x35` drive the **connect-time buzz**. The long-working build never landed any `0x87`, so neither happened.
-Landing the whole class regresses both (stuck gyro + buzz); landing only the brightness register and power-off
-adds those two features while leaving Steam's config writes discarded exactly as before.
 
 The relay carries the command's declared length, up to 60 bytes — the most one RF frame fits. Relays are staged
 in a small ring (not a single buffer): the USB SET callbacks run in ISR context and Steam sends
