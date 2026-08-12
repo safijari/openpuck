@@ -47,8 +47,15 @@
 // ---- relay queue (written by puck_hid.cpp, mode_*.cpp, serial_console.cpp; drained by rf_link.cpp) ----
 // Enqueue one host->controller report. `slot` = bond slot (0..NSLOT-1) or 0xFF to broadcast to every
 // connected controller (used by hapticSendShutdown / hapticReinit / test haptics). ISR-safe (PRIMASK).
+// `expectReply`: true iff the CALLER is relaying this specifically because it wants the controller's real
+// answer back (a query like GET_ATTRIBUTES/GET_STRING_ATTRIBUTE/READ_SETTING -- see puck_hid.cpp
+// handleSet's `relayQuery`), as opposed to a fire-and-forget action (haptics, settings writes, power-off)
+// that nothing will ever wait on a reply for. rfConnFlushRelay uses this -- not a hardcoded rid list -- to
+// decide whether to append the query-reply trailer (docs/PROTOCOL.md; CONFIRMED 2026-08-10 capture), so
+// the one place that actually KNOWS "this expects a reply" is the only place that has to stay right.
+// Default false: every existing fire-and-forget caller is correct without changes.
 bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
-		  uint8_t slot = 0xFF);
+		  uint8_t slot = 0xFF, bool expectReply = false);
 
 // id9=0 hold (MODE_STEAM only): land the controller's SET_SETTINGS index 9 (digital-mappings/lizard-active)
 // at 0, once per LIZKEEP_MS per connected slot, like the real puck. This holds the controller's autonomous

@@ -405,7 +405,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
 					cmd, len, (unsigned)RELAY_MAXP);
 #endif
-			relayEnqueue(cmd, pl, rl, (uint8_t)slot);
+			relayEnqueue(cmd, pl, rl, (uint8_t)slot, relayQuery);
 
 			// track from RELAYED frames only (see the OUTPUT path)
 			if (haptic82)

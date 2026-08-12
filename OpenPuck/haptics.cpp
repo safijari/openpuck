@@ -85,6 +85,9 @@ static bool g_rumble80On[NSLOT] = { false, false, false, false };
 struct RelayMsg {
 	uint8_t rid, len;
 	uint8_t data[RELAY_MAXP];
+	// set by the caller at relayEnqueue() time (see haptics.h) -- true iff a real controller reply is
+	// wanted for this specific message, i.e. whether rfConnFlushRelay appends the query-reply trailer.
+	bool expectReply;
 };
 // deep enough to hold a full Steam settings/LED transaction burst without loss
 #define RELAY_QLEN 32
@@ -110,7 +113,7 @@ bool relayPending()
 	return g_rqHead[cur] != g_rqTail[cur];
 }
 bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
-		  uint8_t slot)
+		  uint8_t slot, bool expectReply)
 {
 	if (plen > RELAY_MAXP)
 		plen = RELAY_MAXP;
@@ -129,6 +132,7 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 			g_rqTail[s] = rqNext(g_rqTail[s]);
 		g_rq[s][h].rid = rid;
 		g_rq[s][h].len = plen;
+		g_rq[s][h].expectReply = expectReply;
 		if (plen)
 			memcpy(g_rq[s][h].data, payload, plen);
 		g_rqHead[s] = nx;
@@ -462,19 +466,13 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// On-air sub-TLV framing. CONFIRMED from real puck<->controller sniffs: a command LANDS on
 			// the controller only with the type-01 + inner-len form E3 [2+rl][01][rid][innerlen][data];
 			// the legacy form E3 [1+rl][05][rid][data] makes the controller DISCARD any 0x87+ command.
-
-			bool land01 = (m.rid == 0x9F) || (m.rid == 0x83) ||
-				      (m.rid == 0x87) || (m.rid == 0x89) ||
-				      (m.rid == 0xED) || (m.rid == 0xAE);
+			bool land01 = (m.rid == 0x83) || (m.rid >= 0x87);
 
 			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
 			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
-			// value=0. 0x83/0x89/0xAE take the same trailer.
-			// This should only be added if we expect a response from the controller, so, not for 0x87.
-			// TODO: Figure out which commands need that trailer and which ones don't.
-			bool queryTrailer = (m.rid == 0x83) ||
-					    (m.rid == 0x89) ||
-					    (m.rid == 0xED) || (m.rid == 0xAE);
+			// value=0. If the caller decides they want an answer, we add the queryTrailer. 
+			// Should check later if there's a way to somehow determine which types need the trailer and which ones don't.
+			bool queryTrailer = m.expectReply;
 			uint8_t p[5 + RELAY_MAXP + 3], plen;
 			if (land01) {
 				p[0] = g_relayOp;
