@@ -186,8 +186,7 @@ class HidDev:
             attrs = self.read_attribute_values(1, 0x83)
 
         elif self.pid in PUCK_PIDS:
-            if self.get_bcd_version() in [2, 0x212, 0x213, 0x211]:       
-                # 2 = Valve Puck or Machine, 211-213 OpenPuck? Unclear why.
+            if self.get_bcd_version() == 2:
                 attrs = self.read_attribute_values(2, 0x83)
             else: 
                 # I wonder which official 
@@ -214,7 +213,7 @@ class HidDev:
             r = self.get_feature(1)
               
         elif self.pid in PUCK_PIDS:
-            if self.get_bcd_version() in [2, 0x212, 0x213, 0x211]:       
+            if self.get_bcd_version() == 2:
                 # 2 = Valve Puck or Machine, 211-213 OpenPuck? Unclear why.
                 self.set_feature(2, 0xae, bytes([index]))
                 r = self.get_feature(2)
@@ -522,8 +521,6 @@ def write_puck_slot(puck_serial=None, puck_slot=None, ctrl_name=None, pkey=None)
         print("writing to puck %s slot %d: controller %s key=%s" %
           (puck_serial, slot_obj['idx'], ctrl_name, pkey.hex()))
         # puck slot: 0xA2 [r1 r2][ctrl serial]
-
-        print(slot_obj['dev'].node)
 
         slot_obj['dev'].set_feature(2, 0xA2, pkey + _ser16(ctrl_name))
 
