@@ -164,13 +164,19 @@ static ps5_setcb_t const PS5_SETCB[NSLOT] = { ps5Set0, ps5Set1, ps5Set2,
 static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 {
 	uint32_t b = psButtonsFromSteam(g_in[slot].buttons);
-	bool lTouch = (b & TB_LPADT) || (b & TB_LPADC),
-	     rTouch = (b & TB_RPADT) || (b & TB_RPADC);
+	// A pad mapped to a stick must NOT also report as a touchpad contact -- the host would read the same
+	// finger twice (stick deflection AND a cursor drag).
+	bool lTouch = g_padStick[0] == PS_OFF &&
+		      ((b & TB_LPADT) || (b & TB_LPADC)),
+	     rTouch = g_padStick[1] == PS_OFF &&
+		      ((b & TB_RPADT) || (b & TB_RPADC));
 	memset(out, 0, 63);
-	out[0] = swStick(g_in[slot].lx, false);
-	out[1] = swStick(g_in[slot].ly, true);
-	out[2] = swStick(g_in[slot].rx, false);
-	out[3] = swStick(g_in[slot].ry, true);
+	int16_t lx, ly, rx, ry;
+	slotSticks(slot, &lx, &ly, &rx, &ry);
+	out[0] = swStick(lx, false);
+	out[1] = swStick(ly, true);
+	out[2] = swStick(rx, false);
+	out[3] = swStick(ry, true);
 	out[4] = g_in[slot].lt;
 	out[5] = g_in[slot].rt;
 	static uint8_t seq[NSLOT] = { 0 };
@@ -192,10 +198,11 @@ static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 	out[24] = g_in[slot].ay >> 8;
 	out[25] = g_in[slot].az & 0xFF;
 	out[26] = g_in[slot].az >> 8;
-	uint16_t lx, ly, rx, ry;
+	uint16_t tlx, tly, trx, trry;
 	steamPadsToTouch(b, PS5_TOUCH_H, g_in[slot].lpx, g_in[slot].lpy,
-			 g_in[slot].rpx, g_in[slot].rpy, &lx, &ly, &rx, &ry);
-	touchPackPads(out + 32, lTouch, rTouch, lx, ly, rx, ry);
+			 g_in[slot].rpx, g_in[slot].rpy, &tlx, &tly, &trx,
+			 &trry);
+	touchPackPads(out + 32, lTouch, rTouch, tlx, tly, trx, trry);
 	out[52] = PS5_STATUS_USB;
 }
 

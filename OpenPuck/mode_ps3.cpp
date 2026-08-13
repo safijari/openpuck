@@ -284,10 +284,12 @@ static void ds3Build(uint8_t slot, uint8_t out[48])
 	out[3] = (b & TB_STEAM) ? 0x01 : 0;
 
 	// out[5..8] (rd[6..9]): LX LY RX RY, center 0x80
-	out[5] = swStick(g_in[slot].lx, false);
-	out[6] = swStick(g_in[slot].ly, true);
-	out[7] = swStick(g_in[slot].rx, false);
-	out[8] = swStick(g_in[slot].ry, true);
+	int16_t lx, ly, rx, ry;
+	slotSticks(slot, &lx, &ly, &rx, &ry);
+	out[5] = swStick(lx, false);
+	out[6] = swStick(ly, true);
+	out[7] = swStick(rx, false);
+	out[8] = swStick(ry, true);
 
 	// out[13..24] (rd[14..25]): analog pressures, order Up Right Down Left L2 R2 L1 R1 Tri Cir Cross Square
 	out[13] = (b & TB_DUP) ? 0xFF : 0;

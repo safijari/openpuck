@@ -489,6 +489,7 @@ State touched by **both** the loop task and the usbd task (the synchronization-c
 | **`g_rq[NSLOT][32]` relay rings** + `g_rqHead/Tail` (haptics) | usbd HID callbacks (`handleSet`, mode rumble cbs) + loop (console/test/`hapticTask`) | loop `rfConnFlushRelay` | **Producers under PRIMASK**; `volatile` head/tail; ring body not volatile; SPSC-drain per slot |
 | **`g_slot[NSLOT].rec/used/resp`** (bonds) | usbd `handleSet` (0xA2 / reply staging) + loop (`loadBonds`) | loop RF/webusb/console, usbd `handleGet` | `resp` is same-task (usbd); `g_dirty` (`volatile`) defers the flash write to loop |
 | **`g_dirty`** | usbd `handleSet` | loop `loop()` → `saveBonds` | `volatile` flag |
+| **`g_padStick[2]`** (config, trackpad→stick live mirror) | loop `applyActiveType()` (boot + WebUSB setter) | loop mode builders via `slotSticks`; **usbd `jcInputPrefix` (switch pro)** | none; plain `uint8_t` byte writes, worst case one stale frame (same shape as `g_abSwap`/`g_back[]`) |
 | **`g_in[NSLOT]`** (decoded input) | loop `rf_link` decode | loop mode `task()`/`onReport45`; **usbd `jcInputPrefix` (switch pro)**; webusb | none (single writer; readers tolerate staleness) |
 | **`g_connReplyMs[NSLOT]`** | loop `rf_link` | loop puck_hid/usb_mount/haptics/webusb; usbd haptic gates | none (plain `unsigned long`) |
 | **`g_battery/g_batteryState/g_linkRssi[NSLOT]`** | loop `rf_link` | loop puck_hid `task`/webusb | declared `volatile` |

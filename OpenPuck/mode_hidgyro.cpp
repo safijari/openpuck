@@ -143,13 +143,19 @@ static ds4_setcb_t const DS4_SETCB[NSLOT] = { hidGyroSet0, hidGyroSet1,
 static void hidGyroBuild(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 {
 	uint32_t b = psButtonsFromSteam(g_in[slot].buttons);
-	bool lTouch = (b & TB_LPADT) || (b & TB_LPADC),
-	     rTouch = (b & TB_RPADT) || (b & TB_RPADC);
+	// A pad mapped to a stick must NOT also report as a touchpad contact -- the host would read the same
+	// finger twice (stick deflection AND a cursor drag).
+	bool lTouch = g_padStick[0] == PS_OFF &&
+		      ((b & TB_LPADT) || (b & TB_LPADC)),
+	     rTouch = g_padStick[1] == PS_OFF &&
+		      ((b & TB_RPADT) || (b & TB_RPADC));
 	memset(out, 0, 63);
-	out[0] = swStick(g_in[slot].lx, false);
-	out[1] = swStick(g_in[slot].ly, true);
-	out[2] = swStick(g_in[slot].rx, false);
-	out[3] = swStick(g_in[slot].ry, true);
+	int16_t lx, ly, rx, ry;
+	slotSticks(slot, &lx, &ly, &rx, &ry);
+	out[0] = swStick(lx, false);
+	out[1] = swStick(ly, true);
+	out[2] = swStick(rx, false);
+	out[3] = swStick(ry, true);
 	out[4] = psHatNibble(b) | psFaceNibble(b);
 	out[5] = psShouldersByte(b, g_in[slot].lt, g_in[slot].rt);
 	static uint8_t ctr[NSLOT] = { 0 };
@@ -172,14 +178,14 @@ static void hidGyroBuild(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 	out[23] = g_in[slot].az >> 8;
 	out[29] = DS4_STATUS_USB;
 	if (lTouch || rTouch) {
-		uint16_t lx, ly, rx, ry;
+		uint16_t tlx, tly, trx, trry;
 		steamPadsToTouch(b, DS4_TOUCH_H, g_in[slot].lpx, g_in[slot].lpy,
-				 g_in[slot].rpx, g_in[slot].rpy, &lx, &ly, &rx,
-				 &ry);
+				 g_in[slot].rpx, g_in[slot].rpy, &tlx, &tly,
+				 &trx, &trry);
 		static uint8_t tstamp[NSLOT] = { 0 };
 		out[32] = 1;
 		out[33] = tstamp[usbSlot]++;
-		touchPackPads(out + 34, lTouch, rTouch, lx, ly, rx, ry);
+		touchPackPads(out + 34, lTouch, rTouch, tlx, tly, trx, trry);
 	} else {
 		out[32] = 0;
 		touchPackPads(

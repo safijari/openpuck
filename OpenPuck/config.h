@@ -139,6 +139,16 @@ struct TypeCfg {
 	uint8_t rumble;
 };
 extern TypeCfg g_type[ET_COUNT];
+
+// Trackpad -> analog stick mapping, per emulated type: {left pad, right pad}, values PS_OFF/PS_LEFT/PS_RIGHT.
+// While the mapped pad is touched its coordinates drive that stick; releasing it re-centers the stick (the
+// physical stick still drives it whenever the pad is untouched). Kept OUTSIDE TypeCfg so the on-flash Cfg
+// layout only grows in its tail -- an existing cfg.bin still loads and keeps every other setting.
+#define PS_OFF 0
+#define PS_LEFT 1
+#define PS_RIGHT 2
+#define PS_MAX 2
+extern uint8_t g_padStickCfg[ET_COUNT][2];
 extern uint8_t
 	g_etype; // etypeForMode(g_usbMode), resolved at boot (ET_NONE for puck modes)
 
@@ -153,6 +163,8 @@ extern uint8_t
 extern uint8_t g_rumble;
 // LED brightness for the active emulated type (0 = no override, 1-100 = brightness %)
 extern uint8_t g_ledBright;
+// Live mirror of g_padStickCfg[g_etype]: {left pad, right pad} -> stick (PS_*).
+extern uint8_t g_padStick[2];
 
 // Copy g_type[g_etype] into the live mirrors above (safe defaults when g_etype == ET_NONE).
 void applyActiveType();
