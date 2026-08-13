@@ -5,6 +5,8 @@
 //               0x03 <mode>          switch USB mode (0..6): persist + reboot
 //               0x0B                 reboot into serial DFU (adafruit-nrfutil)
 //               0x0C                 reboot into UF2 bootloader (USB mass storage)
+//               0x16                 test rumble: buzz every connected controller with the current
+//                                    style/strength for RUMBLE_TEST_MS (auto-stops)
 //               0x20 <size u32> <crc32 u32>        firmware update: begin staging (disarms any previous)
 //               0x21 <off u32> <len> <data...>     firmware update: sequential chunk (len<=128, %4==0)
 //               0x22                 firmware update: verify staged image + COMMIT (applies on next reboot)

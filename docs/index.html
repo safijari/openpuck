@@ -266,6 +266,21 @@
       <p id="swGyroOld" class="note hide">This puck's firmware predates the gyro-mapping setting — update it to configure it.</p>
     </div>
 
+    <div class="card">
+      <h2>Rumble</h2>
+      <!-- Host-rumble shaping (firmware >= v21). Applies to the translated modes (Xbox / Switch / PlayStation),
+           where the puck decodes the host's rumble packet itself. Steam mode relays Steam's own haptics
+           untouched, so these do nothing there. Older firmware hides the block. -->
+      <div id="rumbleBlock">
+        <div class="row"><label>Style</label><select id="rumbleStyle"></select></div>
+        <div class="row"><label>Strength</label><select id="rumbleScale"></select></div>
+        <div class="row" style="margin:10px 0 0"><button id="rumbleTest">Test rumble</button>
+          <span class="note" style="flex:1">Buzzes every connected controller for half a second at the settings above, so you can compare styles without launching a game.</span></div>
+        <p class="note">Strength is a percentage of the amplitude the game asked for; 200% is the shipped default, so leave it there for stock feel. Style reshapes the two motors before that scale: <strong>mono</strong> drives both at the stronger value, <strong>heavy</strong> and <strong>light</strong> mute one motor each, <strong>punchy</strong> softens weak effects while leaving strong ones alone, and <strong>soft</strong> lifts weak ones so subtle rumble is felt.</p>
+      </div>
+      <p id="rumbleOld" class="note hide">This puck's firmware predates the rumble-shaping settings — update it to configure them.</p>
+    </div>
+
     <div class="card wide">
       <h2>Button mapping</h2>
       <p class="note" style="margin-top:0">Separate mappings per emulated controller type — each only offers targets that exist on that controller. The type matching the current mode is highlighted. Steam &amp; Lizard are native puck modes (Steam does its own remapping) and aren't configured here.</p>
@@ -691,6 +706,18 @@ for(const sel of document.querySelectorAll("select.chordD")){
   for(const [lbl,v] of [["Corrected (default)",0],["Legacy (untrimmed)",1]]){
     const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
 }
+// Rumble style names track RUMBLE_STYLE_* in haptics.h; the value IS the wire value for field 39.
+const RUMBLE_STYLES=[["Normal (default)",0],["Mono (both motors)",1],["Heavy (low only)",2],["Light (high only)",3],["Swapped motors",4],["Punchy (squared)",5],["Soft (boost weak)",6]];
+// Strength is sent as percent/2 (field 22), so every value here must be even.
+const RUMBLE_SCALES=[50,75,100,150,200,250,300,400,500];
+{ const sel=document.getElementById("rumbleStyle");
+  for(const [lbl,v] of RUMBLE_STYLES){
+    const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
+}
+{ const sel=document.getElementById("rumbleScale");
+  for(const v of RUMBLE_SCALES){
+    const o=document.createElement("option"); o.value=v; o.textContent=v+"%"+(v===200?" (default)":""); sel.appendChild(o); }
+}
 
 // ---- per-slot tab state ----
 let g_activeSlot = 0;
@@ -887,6 +914,9 @@ function applyBlob(p){
   // carry rumble strength / Switch report rate / Switch gyro scale, all removed settings.
   const gyroMapCap=(p[0]>=19 && p.length>184);
   const swGyroLegacy=gyroMapCap?p[184]:0;
+  // Rumble shaping (protocol v21): firmware p[53]/p[195] = payload p[51]/p[193]. Strength is percent/2.
+  const rumbleCap=(p[0]>=21 && p.length>193);
+  const rumbleScale=rumbleCap?p[51]*2:200, rumbleStyle=rumbleCap?p[193]:0;
   const rssi=(p.length>37?p[37]:0);
 
   // per-slot link status (protocol v8, p.length >= 73)
@@ -1105,6 +1135,14 @@ function applyBlob(p){
     $("#swGyroMapBlock").classList.toggle("hide", !gyroMapCap);
     $("#swGyroOld").classList.toggle("hide", gyroMapCap);
     if(gyroMapCap && document.activeElement!==sel) sel.value=swGyroLegacy; }
+  { const sty=$("#rumbleStyle"), scl=$("#rumbleScale");
+    $("#rumbleBlock").classList.toggle("hide", !rumbleCap);
+    $("#rumbleOld").classList.toggle("hide", rumbleCap);
+    if(rumbleCap){
+      if(document.activeElement!==sty) sty.value=rumbleStyle;
+      // a strength set from the console can land between the presets -- show the nearest one
+      if(document.activeElement!==scl) scl.value=RUMBLE_SCALES.reduce((a,b)=>Math.abs(b-rumbleScale)<Math.abs(a-rumbleScale)?b:a);
+    } }
   for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
   $("#dpadChords").classList.toggle("hide", !dpadCap);
   $("#dpadOld").classList.toggle("hide", dpadCap);
@@ -2215,6 +2253,9 @@ for(const id of ["mDiv","mFric"]){
   $("#"+id).addEventListener("change", ()=>setField(field, +$("#"+id).value));
 }
 // per-type back/QAM/A-B-swap/haptics handlers are wired in buildTypeCfgs()
+$("#rumbleTest").onclick=async()=>{ if(dev){ await send([0x16]); log("test rumble sent (style "+$("#rumbleStyle").value+", "+$("#rumbleScale").value+"%)"); } };
+$("#rumbleStyle").addEventListener("change", ()=>setField(39, +$("#rumbleStyle").value));
+$("#rumbleScale").addEventListener("change", ()=>setField(22, (+$("#rumbleScale").value)/2));
 $("#swGyroMap").addEventListener("change", ()=>setField(38, +$("#swGyroMap").value));
 for(const sel of document.querySelectorAll("select.chord")){
   sel.addEventListener("change", ()=>setField(CHORD_FIELD[+sel.dataset.i], +sel.value));

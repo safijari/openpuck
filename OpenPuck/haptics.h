@@ -40,9 +40,34 @@
 // Controller power-off: hapticSendShutdown() relays Steam's confirmed "turn off controller" command (feature-0x01
 // cmd 0x9F, payload "off!" -- captured from the real puck). Sent as a small burst because the RF relay is NO-ACK.
 #define HAPTIC_SHUTDOWN_SHOTS 3u
-// Rumble strength: percent of the decoded host amplitude applied in every mode. Fixed at 200 (double), the
-// default the panel's removed rumble-strength slider shipped with, so pucks feel the same as before.
+// Rumble strength: percent of the decoded host amplitude applied in every translated (non-puck) mode. 200
+// (double) is the default the panel's removed rumble-strength slider shipped with, so an untouched puck feels
+// exactly as before. Runtime-adjustable and persisted -- console "RS<pct>".
 #define RUMBLE_SCALE_PCT 200u
+#define RUMBLE_SCALE_MIN 10u
+#define RUMBLE_SCALE_MAX 500u
+// Rumble style: how the decoded low/high motor amplitudes are shaped before the 0x80 frame is built. Applied
+// BEFORE the strength scale, on the raw host amplitudes. Persisted -- console "RY<n>".
+#define RUMBLE_STYLE_NORMAL \
+	0 // as captured: low -> left speed, high -> right speed
+#define RUMBLE_STYLE_MONO 1 // both motors at max(low,high) -- heavier, fuller
+#define RUMBLE_STYLE_HEAVY 2 // low-frequency motor only (mute the buzzy one)
+#define RUMBLE_STYLE_LIGHT \
+	3 // high-frequency motor only (crisp, no deep rumble)
+#define RUMBLE_STYLE_SWAP 4 // swap the two motors
+#define RUMBLE_STYLE_PUNCHY \
+	5 // squared curve: weak effects softer, strong ones untouched
+#define RUMBLE_STYLE_SOFT \
+	6 // sqrt curve: lifts weak effects so subtle rumble is felt
+#define RUMBLE_STYLE_MAX 6
+extern uint16_t g_rumbleScale; // percent, RUMBLE_SCALE_MIN..RUMBLE_SCALE_MAX
+extern uint8_t g_rumbleStyle; // RUMBLE_STYLE_*
+// Test buzz for the panel/console: a fixed mid-scale amplitude pushed through the SAME shaping path host
+// rumble takes, so what you feel is what a game at that amplitude would feel like. Auto-stops in hapticTask()
+// -- the controller's haptic LATCHES, so the stop is not optional.
+#define RUMBLE_TEST_AMP 0x8000u
+#define RUMBLE_TEST_MS 500u
+void hapticTestRumble();
 
 // ---- relay queue (written by puck_hid.cpp, mode_*.cpp, serial_console.cpp; drained by rf_link.cpp) ----
 // Enqueue one host->controller report. `slot` = bond slot (0..NSLOT-1) or 0xFF to broadcast to every

@@ -39,6 +39,9 @@ uint8_t g_landAll87 = 0;
 // amplifier is configured and haptics play as clean ticks instead of a default-amp buzz. On by default;
 // console "AMP" toggles for A/B. See the land01 whitelist in rfConnFlushRelay.
 uint8_t g_landAmp = 1;
+// Host-rumble shaping (persisted in cfg.bin; console "RS<pct>" / "RY<n>").
+uint16_t g_rumbleScale = RUMBLE_SCALE_PCT;
+uint8_t g_rumbleStyle = RUMBLE_STYLE_NORMAL;
 // Master enable for the puck->controller haptic RELAY (Steam OUTPUT reports 0x80-0x86, incl. the trackpad
 // texture-feedback stream Steam pushes WHILE you drag). Each relayed frame is an extra TX that precedes the
 // E3 poll and steals its reply window, and the controller must stop to process it -- both can depress the
@@ -318,15 +321,62 @@ void haptic82HostReport(const uint8_t *p, uint16_t n)
 	// 0x82 is a discrete pad click -- the spurious end-of-movement "click"/buzz the real puck never produces.
 	g_haptic82On = haptic82PayloadOn(p, n);
 }
+// Integer square root (binary restoring). Used by RUMBLE_STYLE_SOFT; avoids pulling float math into the USB
+// OUT callback that calls hapticSteamRumble().
+static uint32_t isqrt32(uint32_t v)
+{
+	uint32_t r = 0, b = 1UL << 30;
+	while (b > v)
+		b >>= 2;
+	while (b) {
+		if (v >= r + b) {
+			v -= r + b;
+			r = (r >> 1) + b;
+		} else {
+			r >>= 1;
+		}
+		b >>= 2;
+	}
+	return r;
+}
+
 bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 {
 	if (slot >= NSLOT)
 		return false;
-	// Fixed rumble strength: the decoded amplitude doubled, which is what the (now removed) adjustable
-	// rumble-strength setting shipped as its default. Clamp to 16-bit.
+	// Shape the decoded host amplitudes: style first (which motor plays, and the response curve), then the
+	// strength scale. Integer-only -- this runs in the USB OUT callback (ISR context), so no float math.
 	{
-		uint32_t l = (uint32_t)lowFreq * RUMBLE_SCALE_PCT / 100,
-			 h = (uint32_t)highFreq * RUMBLE_SCALE_PCT / 100;
+		uint32_t l = lowFreq, h = highFreq, t;
+		switch (g_rumbleStyle) {
+		case RUMBLE_STYLE_MONO:
+			l = h = (l > h) ? l : h;
+			break;
+		case RUMBLE_STYLE_HEAVY:
+			h = 0;
+			break;
+		case RUMBLE_STYLE_LIGHT:
+			l = 0;
+			break;
+		case RUMBLE_STYLE_SWAP:
+			t = l;
+			l = h;
+			h = t;
+			break;
+		case RUMBLE_STYLE_PUNCHY:
+			// x^2/FS: 0xFFFF*0xFFFF fits uint32 exactly, so no intermediate overflow
+			l = l * l / 0xFFFF;
+			h = h * h / 0xFFFF;
+			break;
+		case RUMBLE_STYLE_SOFT:
+			l = isqrt32(l * 0xFFFF);
+			h = isqrt32(h * 0xFFFF);
+			break;
+		default: // RUMBLE_STYLE_NORMAL
+			break;
+		}
+		l = l * g_rumbleScale / 100;
+		h = h * g_rumbleScale / 100;
 		lowFreq = (l > 0xFFFF) ? 0xFFFF : (uint16_t)l;
 		highFreq = (h > 0xFFFF) ? 0xFFFF : (uint16_t)h;
 	}
@@ -649,8 +699,29 @@ void hapticOnReconnect(int slot)
 	uint8_t mk = 2;
 	hapLogAdd(0xFD, 0xEE, &mk, 1);
 }
+// Panel/console rumble test: buzz every connected controller at RUMBLE_TEST_AMP through the normal
+// hapticSteamRumble() path (so g_rumbleStyle / g_rumbleScale / the per-type rumble toggle all apply), and
+// schedule the stop. Deadline 0 = idle; millis()+MS can be 0 only once every 49 days, so bias it off zero.
+static unsigned long g_rumbleTestStop = 0;
+
+void hapticTestRumble()
+{
+	for (uint8_t s = 0; s < NSLOT; s++)
+		if (hapticLinkUp((int)s))
+			hapticSteamRumble(RUMBLE_TEST_AMP, RUMBLE_TEST_AMP, s);
+	g_rumbleTestStop = millis() + RUMBLE_TEST_MS;
+	if (!g_rumbleTestStop)
+		g_rumbleTestStop = 1;
+}
+
 void hapticTask()
 {
+	// stop the test buzz -- signed compare so the millis() rollover cannot strand a latched actuator
+	if (g_rumbleTestStop && (long)(millis() - g_rumbleTestStop) >= 0) {
+		g_rumbleTestStop = 0;
+		for (uint8_t s = 0; s < NSLOT; s++)
+			hapticSteamRumble(0, 0, s);
+	}
 	// id9 steering (SET_SETTINGS index 9 = digital-mappings / the controller's AUTONOMOUS mapping+haptic
 	// engine, which is what generates the trackpad tick haptics). We decide per mode whether that autonomous
 	// engine should be ON, then either land id9=1 ONCE per connect episode (engine on) or hold id9=0 every

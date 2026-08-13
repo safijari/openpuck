@@ -395,10 +395,15 @@ Messages:
 
 - Host to device:
   - `0x01`: get status blob
-  - `0x02 <field> <value>`: set one field
+  - `0x02 <field> <value>`: set one field. Notable fields: `22` host-rumble strength as **percent/2**
+    (10–500%, revived in blob version 21), `39` host-rumble style (`RUMBLE_STYLE_*` in `haptics.h`:
+    0 normal, 1 mono, 2 heavy, 3 light, 4 swapped, 5 punchy, 6 soft), `38` Switch Pro gyro mapping
   - `0x03 <mode>`: switch mode and reboot
   - `0x07`: re-init haptics (clear a stuck buzz)
   - `0x08`: send controller power-off
+  - `0x16`: test rumble — buzz every linked controller with the configured style/strength for 500 ms,
+    auto-stopped by the firmware. **Requires status-blob version ≥ 21**; older firmware drops it silently
+    (the parser only accepts `0x01`–`0x15` and `0x20`–`0x25`).
   - `0x09`: export all bond slots (reply: `0xA7` frame) — see §10.1
   - `0x0A 0x45 0x52 0x53`: factory erase (`"ERS"` magic), then reboot
   - `0x0B` / `0x0C`: reboot into serial DFU / UF2 bootloader

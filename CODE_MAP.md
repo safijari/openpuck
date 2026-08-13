@@ -76,8 +76,9 @@ re-add wake mouse + `g_active->mountSlots(k)` + WebUSB in locked instance order,
   (`g_swGyroLegacy` is declared here but lives in `mode_switch_pro.cpp`/`swprocfg.bin`.)
 - `struct Cfg` is serialized to `/cfg.bin` (LittleFS), magic `0xCF`. `rxWin10`,
   `lizKeep`, `landAll87` and the per-type table travel with it; `rsvd0` is the
-  one-shot debug-CDC arm and `rsvd1` the ex-rumble-strength slot (both kept so the
-  on-flash layout is unchanged). New fields are **appended to the tail** (`chordDpad[4]`) —
+  one-shot debug-CDC arm and `rumbScale2` the rumble-strength slot (removed in protocol
+  v19, revived in v21 as percent/2; 0 = never set -> compiled default, so the on-flash
+  layout is unchanged). New fields are **appended to the tail** (`chordDpad[4]`) —
   `loadCfg()` prefills `0xFF` and accepts a file short by only the tail (`CFG_LEN_MIN`),
   so an upgrade keeps every existing setting and unwritten tail bytes fall back to defaults.
 - `loadCfg()` resolves the boot mode policy: one-shot `bootMode` wins once then clears;
@@ -380,9 +381,13 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
 - `g_testHaptic`, `g_hapticStop` (`volatile`), `g_hapticBlockOn`, `g_hapticBlockMs`,
   `g_hapticBlockUntil[NSLOT]`, `g_relayOp`, `g_relaySub`.
 - `hapticSendShutdown()` — bursts 0x9F "off!" (`{6f 66 66 21}`) ×3 broadcast.
-- `hapticSteamRumble(low, high, slot)` — builds a 9-byte 0x80 report (×`RUMBLE_SCALE_PCT`),
-  `relayEnqueue(0x80, p, 9, slot)`; **called from usbd (mode rumble callbacks) and loop**.
-  Per-slot stuck-rumble tracking `g_rumble80On/Ms[NSLOT]`.
+- `hapticSteamRumble(low, high, slot)` — shapes the two amplitudes (`g_rumbleStyle`, then
+  `g_rumbleScale` %; integer-only, this runs in the USB OUT callback), builds a 9-byte 0x80
+  report, `relayEnqueue(0x80, p, 9, slot)`; **called from usbd (mode rumble callbacks) and
+  loop**. Per-slot stuck-rumble tracking `g_rumble80On/Ms[NSLOT]`.
+- `hapticTestRumble()` — one `RUMBLE_TEST_AMP` buzz to every linked slot through the same
+  shaping path (panel op `0x16`, console `TR`); `hapticTask()` sends the stop after
+  `RUMBLE_TEST_MS` — the actuator latches, so the stop is not optional.
 - `haptic82Blocked`/`hapticLinkUp`/`hapticRelaySlotOk` — link-up + block gates (read
   `g_connReplyMs`, `g_slot`).
 - `hapticOnReconnect(slot)` — arms the per-slot block + schedules `g_reinitLeft` re-init
@@ -435,6 +440,7 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
   mutates config tunables (writes `g_type`, `g_mDiv/Fric`, `g_rxWin` (clamped 600..3000),
   `g_hapticBlockMs` (≤60 s), etc., then `applyActiveType`/`saveCfg`/`swProSaveCfg`);
   `0x03 mode`→`saveMode`+reset; `0x07`→`hapticReinit`; `0x08`→`hapticSendShutdown`;
+  `0x16`→`hapticTestRumble`;
   `0x0A` ("ERS")→`factoryErase`+reset; `0x0B/0x0C`→DFU; capture drain (`OPK_LOG`).
   Each reset/DFU path does `delay(40)` then `NVIC_SystemReset()` (harmless — reboots).
 

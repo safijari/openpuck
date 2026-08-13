@@ -78,7 +78,9 @@ static bool boardCommand(uint8_t op)
 //                [v18: p[182..185] chordDpad left/up/right/down (back4+D-pad mode assignments)]
 //                [v19: p[186] swGyroLegacy (Switch Pro gyro mapping: 0 = corrected, 1 = legacy/pre-#189)]
 //                [v20: p[187..194] per-type trackpad->stick map, 4x2B {left pad, right pad} (PS_OFF/LEFT/RIGHT)]
-#define WB_PAYLEN 193
+//                [v21: p[53] rumble strength as PERCENT/2 (field 22, revived); p[195] rumble style
+//                 (field 39, RUMBLE_STYLE_* in haptics.h)]
+#define WB_PAYLEN 194
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -103,17 +105,17 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (20 = +per-type trackpad->stick mapping (fields 80..87, blob p[187..194]);
-	// 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the rumble-strength,
-	// Switch report-rate and Switch gyro-scale settings (fields 22/23/24, blob p[53..55]) are GONE -- those
-	// bytes now read 0; 18 = +configurable back4+D-pad chords (fields 34..37, blob p[182..185]);
+	// protocol version (21 = +rumble style (field 39, blob p[195]) and the REVIVED rumble-strength field 22
+	// at blob p[53], now carrying percent/2; 20 = +per-type trackpad->stick mapping (fields 80..87, blob
+	// p[187..194]); 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the Switch report-rate and
+	// gyro-scale settings (fields 23/24, blob p[54..55]) are GONE -- those bytes read 0; 18 = +configurable back4+D-pad chords (fields 34..37, blob p[182..185]);
 	// 17 = per-type rumble field (TypeCfg k=8), per-type stride 8->9; 16 = +configurable
 	// lizard-map ops 0x11..0x15 / 0xAA frame, payload unchanged -- the panel MUST see >=16 before it dares
 	// send 0x11, or a blocking readLizard() would hang forever against a firmware that silently drops the
 	// unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87 toggle; 13 = +per-slot link
 	// stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type
 	// cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 20;
+	p[2] = 21;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -170,9 +172,10 @@ static void webusbSendBlob()
 		for (uint8_t i = 0; i < 12 && buildId[i]; i++)
 			p[41 + i] = (uint8_t)buildId[i];
 	}
-	// v19: reserved. Were rumble strength % (v5) and the Switch Pro report rate + gyro scale (v6); all three
-	// settings were removed, so these read 0 and the panel ignores them.
-	p[53] = 0;
+	// p[53]: rumble strength as PERCENT/2 (v5 field, removed in v19, revived in v21 -- halved so the full
+	// RUMBLE_SCALE_MAX range fits a byte). p[54]/p[55] were the Switch Pro report rate + gyro scale (v6),
+	// still removed, so they read 0 and the panel ignores them.
+	p[53] = (uint8_t)(g_rumbleScale / 2);
 	p[54] = 0;
 	p[55] = 0;
 	{
@@ -287,6 +290,8 @@ static void webusbSendBlob()
 	p[185] = g_chordDpad[CHD_DOWN];
 	// v19: Switch Pro gyro mapping (0 = corrected/default, 1 = legacy pre-#189 raw axes)
 	p[186] = g_swGyroLegacy;
+	// v21: host-rumble style (RUMBLE_STYLE_* -- see haptics.h)
+	p[195] = g_rumbleStyle;
 	// v20: per-type trackpad->stick mapping, {left pad, right pad} per emulated type
 	for (int et = 0; et < ET_COUNT; et++) {
 		p[187 + et * 2] = g_padStickCfg[et][0];
@@ -627,7 +632,9 @@ void webusbPoll()
 			if (n == 0)
 				break;
 			uint8_t op = buf[0];
-			if ((op < 0x01 || op > 0x15) &&
+			// 0x16 = test rumble (v21); extend this range whenever a new opcode is added, or the
+			// parser drops it as garbage and the handler below never runs.
+			if ((op < 0x01 || op > 0x16) &&
 			    (op < 0x20 || op > 0x25)) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
@@ -702,6 +709,11 @@ void webusbPoll()
 			// clear a stuck/latched haptic buzz on the controller
 			else if (op == 0x07) {
 				hapticReinit();
+			}
+
+			// rumble test buzz: exercises the current style/strength (protocol v21)
+			else if (op == 0x16) {
+				hapticTestRumble();
 			}
 
 			// trigger controller power-off (same path Steam 0x9F / host-suspend use)
@@ -1015,6 +1027,27 @@ void webusbPoll()
 					break;
 				}
 
+				// Host-rumble strength, as PERCENT/2 so the full range fits the
+				// one value byte. Revived in protocol v21; clamped to
+				// RUMBLE_SCALE_MIN..RUMBLE_SCALE_MAX.
+				case 22: {
+					uint16_t pct = (uint16_t)v * 2;
+					if (pct < RUMBLE_SCALE_MIN)
+						pct = RUMBLE_SCALE_MIN;
+					else if (pct > RUMBLE_SCALE_MAX)
+						pct = RUMBLE_SCALE_MAX;
+					g_rumbleScale = pct;
+					break;
+				}
+
+				// Host-rumble style (RUMBLE_STYLE_*). Protocol v21.
+				case 39:
+					g_rumbleStyle =
+						v > RUMBLE_STYLE_MAX ?
+							RUMBLE_STYLE_MAX :
+							v;
+					break;
+
 				// Switch Pro gyro mapping: 0 = corrected (default), 1 = legacy
 				// (pre-#189 raw axes, no sensitivity trim). Protocol v19.
 				case 38:
@@ -1023,7 +1056,6 @@ void webusbPoll()
 					persist = false;
 					break;
 
-					// (field 22, rumble strength, removed -- fixed at RUMBLE_SCALE_PCT)
 					// (fields 23/24, Switch Pro report rate + gyro scale, removed -- rate is
 					//  fixed at full and the gyro mapping is now field 38)
 					// (field 25, poll RX window, removed -- g_rxWin is now FIXED/not configurable)
