@@ -665,15 +665,22 @@ static setcb_t SETCB[NSLOT] = { setcb0, setcb1, setcb2, setcb3 };
 void SteamPuckController::begin()
 {
 	USBDevice.setID(0x28DE, 0x1304);
-	// Distinct bcdDevice so Windows keys a FRESH usbflags entry (cache is VID:PID:bcdDevice) and actually runs
-	// MS OS 2.0 / WinUSB binding for the WebUSB vendor interface, instead of reusing a stale "no WinUSB" entry
-	// tied to the real Steam Controller (28DE:1304, no WebUSB interface). The normal (wake-mouse) and one-shot
-	// debug (CDC) boots present DIFFERENT interface sets, so they need DIFFERENT bcdDevice values or Windows
-	// serves one's cached descriptor for the other across a reboot.
-	USBDevice.setDeviceVersion(
-		g_debugCdcThisBoot ?
-			0x0212 :
-			(g_usbMode == MODE_LIZARD ? 0x0213 : 0x0211));
+	USBDevice.setVersion(0x0201); // bcdUSB 2.01
+	USBDevice.setDeviceVersion(2);
+
+	// Distinct serial number so Windows keys a FRESH usbflags entry.
+	if (g_debugCdcThisBoot) {
+		snprintf(g_usbSerial, sizeof g_usbSerial, "%sC", g_unit);
+		USBDevice.setSerialDescriptor(g_usbSerial);
+	}
+	else if (g_usbMode == MODE_LIZARD) {
+		snprintf(g_usbSerial, sizeof g_usbSerial, "%sL", g_unit);
+		USBDevice.setSerialDescriptor(g_usbSerial);
+	}
+	else {
+		USBDevice.setSerialDescriptor(g_unit);
+	}
+
 	USBDevice.setManufacturerDescriptor("Valve Software");
 	USBDevice.setProductDescriptor("Steam Controller Puck");
 	const uint8_t *desc = (g_usbMode == MODE_LIZARD) ?

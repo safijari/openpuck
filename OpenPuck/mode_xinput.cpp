@@ -479,6 +479,7 @@ void XboxController::usbIdentity()
 {
 	// 045E:028E -> Windows xusb / SDL / Linux xpad all bind it
 	USBDevice.setID(0x045E, 0x028E);
+	USBDevice.setVersion(0x0200);
 	USBDevice.setDeviceVersion(0x0120);
 	USBDevice.setManufacturerDescriptor("Microsoft");
 	USBDevice.setProductDescriptor("Controller");

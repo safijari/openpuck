@@ -564,8 +564,6 @@ void hapticReinit(uint8_t slot)
 		0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 	};
 
-	// TODO: Check if these are actually all haptics commands .....
-
 	// reset action (FUN_0001f554) -- Steam sends this first
 	relayEnqueue(0x81, nullptr, 0, true, slot);
 
