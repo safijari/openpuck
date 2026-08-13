@@ -63,9 +63,6 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 #define LIZKEEP_MS 2000u
 extern uint8_t
 	g_lizKeep; // 1 = hold on (default, persisted); console 'u' toggles for A/B
-// Land Steam's amp/haptic-config 0x87 (regs 0x18/0x2E/0x34/0x35, not gyro 0x30) so haptics play as clean
-// ticks not a default-amp buzz. On by default; console "AMP" toggles.
-extern uint8_t g_landAmp;
 // Master enable for the puck->controller haptic relay (Steam 0x80-0x86 rumble/pad-feedback). Console "HR"
 // toggles it to isolate the drag-smoothness cost of relaying Steam's trackpad haptics. See haptics.cpp.
 extern bool g_hapticRelay;
@@ -159,5 +156,4 @@ void hapticReinit(uint8_t slot = 0xFF);
 // controller out of the degraded/latched haptic state. Reliable -- independent of hapticTask's link heuristic.
 // Per-slot: only the slot that just reconnected is blocked, the others keep relaying.
 void hapticOnReconnect(int slot);
-// Write the controller's global trackpad-haptics enable setting (per active emulated type). slot 0xFF = broadcast.
-void hapticSetPadEnabled(uint8_t slot, bool on);
+

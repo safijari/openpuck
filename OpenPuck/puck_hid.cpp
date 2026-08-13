@@ -401,7 +401,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			       !localAnswer &&
 			       !(haptic82 && (lizardActive() || muted)) &&
 			       !(hapticCmd && !g_hapticRelay);
-		if (relayOk && (!haptic82 || !haptic82Blocked(slot))) {
+		if (relayOk) {
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
 			// 18B cap, and the chopped frames were why those settings never landed on the controller.

@@ -35,12 +35,6 @@ void serialConsolePoll()
 				delay(40);
 				faultDiagArmIntentionalReset();
 				NVIC_SystemReset();
-			} else if (!strcmp(line, "AMP")) {
-				// A/B: land Steam's amp/haptic 0x87 config (0x18/0x2E/0x34/0x35) so haptics play as ticks
-				g_landAmp = !g_landAmp;
-				Serial.printf(
-					"# land amp/haptic 0x87 config %s\n",
-					g_landAmp ? "ON" : "off");
 			} else if (!strcmp(line, "CD")) {
 				// A/B: content dedup on the Steam input forward (drop reports whose body minus the
 				// free-running counter is unchanged) -- caps delivered rate at the controller's real
