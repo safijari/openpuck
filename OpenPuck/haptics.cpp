@@ -641,8 +641,8 @@ void hapticTask()
 	if (g_lizKeep) {
 		static unsigned long lastKeep[NSLOT] = { 0 };
 		static bool landedAuto[NSLOT] = { false };
-		static const uint8_t DATA_LIZARD_OFF[3] = { 0x09, 0x00, 0x00 };
-		static const uint8_t DATA_LIZARD_ON[3] = { 0x09, 0x01, 0x00 };
+		static const uint8_t DATA_LIZARD_OFF[3] = { SETTING_LIZARD_MODE, 0x00, 0x00 };
+		static const uint8_t DATA_LIZARD_ON[3] = { SETTING_LIZARD_MODE, 0x01, 0x00 };
 
 		if (modeIsPuck(g_usbMode)) {
 			// We're in puck mode. Leave the haptics to Steam.
@@ -662,8 +662,8 @@ void hapticTask()
 			if (wantAuto) {
 				if (!landedAuto[s]) {
 					landedAuto[s] = true;
-					relayEnqueue(0x87, DATA_LIZARD_ON, sizeof DATA_LIZARD_ON, true,
-						     (uint8_t)s);
+					relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, 
+						DATA_LIZARD_ON, sizeof DATA_LIZARD_ON, false, (uint8_t)s);
 				}
 			} else {
 				landedAuto[s] = false;
@@ -672,7 +672,8 @@ void hapticTask()
 					    LIZKEEP_MS)
 					continue;
 				lastKeep[s] = millis();
-				relayEnqueue(0x87, DATA_LIZARD_OFF, sizeof DATA_LIZARD_OFF, true, (uint8_t)s);
+				relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, 
+					DATA_LIZARD_OFF, sizeof DATA_LIZARD_OFF, false, (uint8_t)s);
 			}
 		}
 	}

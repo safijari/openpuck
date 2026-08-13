@@ -341,14 +341,13 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	// so only this controller powers off (broadcasting killed all connected controllers at once).
 
 	// TODO: Why do we spam this? Doesn't the controller respond with a TAG4 upon command receival?
-	if (rid == 1 && cmd == 0x9F)
+	if (rid == 1 && cmd == IBEX_CMD_TURN_OFF_CONTROLLER)
 		hapticSendShutdown((uint8_t)slot);
 
 	// report 0x01 = raw passthrough -> queue for RF relay to the controller
 	if (rid == 1 && n >= 2) {
 		// (feature-1 commands -- haptics, LED, 0x87 settings, 0x9F power-off -- are captured by the
 		// general feature-SET hapLogAdd above.)
-		bool haptic82 = false;
 
 		bool muted = g_resumeMs &&
 			     millis() - g_resumeMs < POST_RESUME_MUTE_MS;
@@ -372,35 +371,28 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// ID in neither: Sent to controller, no response expected.
 
 		bool relayQuery = (
-				   cmd == 0x82 || // GET_DIGITAL_MAPPINGS
-				   cmd == 0x83 || // GET_ATTRIBUTES_VALUES
-				   cmd == 0x89 || // GET_SETTINGS_VALUES
-				   cmd == 0x8B || // GET_SETTINGS_MAXS
-				   cmd == 0x8C || // GET_SETTINGS_DEFAULTS
-				   cmd == 0xA1 || // GET_DEVICE_INFO
-				   cmd == 0xAE || // GET_STRING_ATTRIBUTE
-				   cmd == 0xBA || // GET_CHIPID
-				   cmd == 0xED || // TRITON_READ_SETTING
-				   cmd == 0xF2); // GET_SYSTEM_INFO
+				   cmd == IBEX_CMD_GET_DIGITAL_MAPPINGS ||  // 0x82
+				   cmd == IBEX_CMD_GET_ATTRIBUTES_VALUES || // 0x83
+				   cmd == IBEX_CMD_GET_SETTINGS_VALUES ||   // 0x89
+				   cmd == IBEX_CMD_GET_SETTINGS_MAXS ||     // 0x8B
+				   cmd == IBEX_CMD_GET_SETTINGS_DEFAULTS || // 0x8C
+				   cmd == IBEX_CMD_GET_DEVICE_INFO ||       // 0xA1
+				   cmd == IBEX_CMD_GET_STRING_ATTRIBUTE ||  // 0xAE
+				   cmd == IBEX_CMD_GET_CHIPID ||            // 0xBA
+				   cmd == IBEX_CMD_TRITON_READ_SETTING ||   // 0xED
+				   cmd == IBEX_CMD_GET_SYSTEM_INFO);        // 0xF2
 
 
 		bool localAnswer =
-			(cmd == 0xA2 || // TRITON_A2_OBSERVED_PAIRING_RECORD
-			 cmd == 0xA3 || // TRITON_A3_BOND_EVENT_OR_STATUS
-			 cmd == 0xAD || // ENABLE_PAIRING
-			 cmd == 0xB4 || // DONGLE_GET_WIRELESS_STATE (Read puck slot connection state)
-			 cmd == 0xA4);  // ???
-		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop).
-		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
-		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
-		// smoothness. Config (0x87/0x88), get_attributes (0x83) and power-off (0x9F) still relay so nothing else regresses.
-		//bool hapticCmd = (cmd == 0x80 || cmd == 0x81 || cmd == 0x82 || cmd == 0x85);
-		bool hapticCmd = false;
+			(cmd == IBEX_CMD_TRITON_A2_OBSERVED_PAIRING_RECORD || // 0xA2
+			 cmd == IBEX_CMD_TRITON_A3_BOND_EVENT_OR_STATUS ||    // 0xA3
+			 cmd == IBEX_CMD_ENABLE_PAIRING ||                    // 0xAD
+			 cmd == IBEX_CMD_DONGLE_GET_WIRELESS_STATE ||         // 0xB4
+			 cmd == 0xA4);  // Not sure what that's for?
+
+
 		bool queryArmed = false;
-		bool relayOk = hapticRelaySlotOk(slot) && 
-			       !localAnswer &&
-			       !(haptic82 && (lizardActive() || muted)) &&
-			       !(hapticCmd && !g_hapticRelay);
+		bool relayOk = hapticRelaySlotOk(slot) && !localAnswer;
 		if (relayOk) {
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
@@ -414,9 +406,6 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 #endif
 			relayEnqueue(cmd, pl, rl, false, (uint8_t)slot, relayQuery);
 
-			// track from RELAYED frames only (see the OUTPUT path)
-			if (haptic82)
-				haptic82HostReport(pl, len);
 			if (relayQuery && slot >= 0 && slot < NSLOT) {
 				g_slot[slot].pendingQueryCmd = cmd;
 				queryArmed = true;
@@ -457,18 +446,18 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// rid == 1 will be handled by the controller, no need to respond here.
 	}
 	switch (cmd) {
-	case 0x83:
-		S.resp[0] = 0x83;
+	case IBEX_CMD_GET_ATTRIBUTES_VALUES:	// 0x83
+		S.resp[0] = IBEX_CMD_GET_ATTRIBUTES_VALUES;
 		S.resp[1] = sizeof ATTR83;
 		memcpy(S.resp + 2, ATTR83, sizeof ATTR83);
 		S.resp_len = 63;
 		break;
-	case 0xAE: {
+	case IBEX_CMD_GET_STRING_ATTRIBUTE: {	// 0xAE
 		uint8_t idx = pln > 0 ? pl[0] : 1;
 		// Report-id 1 = string attributes of the bonded CONTROLLER, not the puck. Not handled here, this request
 		// will have been forwarded to the controller by earlier code.
-		S.resp[0] = 0xAE;
-		S.resp[1] = 0x14;
+		S.resp[0] = IBEX_CMD_GET_STRING_ATTRIBUTE;
+		S.resp[1] = 0x14;	// todo: is this correct?
 		S.resp[2] = idx;
 		memset(S.resp + 3, 0, 60);
 		// Any other idx -> "NA".
@@ -497,10 +486,10 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	}
 
 	// connection/version state per slot: value 0x02 = controller connected, 0x01 = not
-	case 0xB4:
+	case IBEX_CMD_DONGLE_GET_WIRELESS_STATE:	// 0xB4
 		// SDL Triton polls this on init; treat like Steam contact so we forward 0x45
 		hostStampAlive();
-		S.resp[0] = 0xB4;
+		S.resp[0] = IBEX_CMD_DONGLE_GET_WIRELESS_STATE;
 		S.resp[1] = 0x01;
 		// Report disconnected during the post-power-off hold so B4 agrees with the 0x79 disconnect (they used
 		// different windows -- 500ms here vs the 300ms conn/DOWN edge -- so right after a power-off Steam's B4
@@ -512,17 +501,17 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				    0x01;
 		S.resp_len = 63;
 		break;
-	case 0xAD:
+	case IBEX_CMD_ENABLE_PAIRING:	// 0xAD
 		// TODO: Check if this should be relayed?
 		g_pairing = (pln > 0 && pl[0] != 0);
 #if OPK_LOG
 		Serial.printf("# pairing %s\n", g_pairing ? "ON" : "off");
 #endif
-		S.resp[0] = 0xAD;
+		S.resp[0] = IBEX_CMD_ENABLE_PAIRING;
 		S.resp[1] = 0;
 		S.resp_len = 63;
 		break;
-	case 0xA2: // write/clear THIS interface's slot
+	case IBEX_CMD_TRITON_A2_OBSERVED_PAIRING_RECORD: // 0xA2: write/clear THIS interface's slot
 		if (len >= 24 && pln >= 24) {
 			if (recEmpty(pl)) {
 				S.used = false;
@@ -537,12 +526,12 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				      recEmpty(pl) ? "cleared" : "bonded");
 #endif
 		}
-		S.resp[0] = 0xA2;
+		S.resp[0] = IBEX_CMD_TRITON_A2_OBSERVED_PAIRING_RECORD;
 		S.resp[1] = 0;
 		S.resp_len = 63;
 		break;
-	case 0xA3: // read THIS interface's slot
-		S.resp[0] = 0xA3;
+	case IBEX_CMD_TRITON_A3_BOND_EVENT_OR_STATUS: // 0xA3: read THIS interface's slot
+		S.resp[0] = IBEX_CMD_TRITON_A3_BOND_EVENT_OR_STATUS;
 		S.resp[1] = 0x18;
 		memset(S.resp + 2, 0, 24);
 		if (S.used)
