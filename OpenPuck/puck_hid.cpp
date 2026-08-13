@@ -7,6 +7,7 @@
 #include "rf_link.h"
 #include "triton.h"
 #include "mode_lizard.h"
+#include "steam_commands.h"
 #include "wake_hid.h"
 #include "build_info.h"
 #include "usb_tx.h"
@@ -123,13 +124,6 @@ static const uint8_t PUCK_LIZARD_HID_DESC[] = {
 };
 
 static Adafruit_USBD_HID hid[NSLOT];
-
-// Drop Steam's relayed FEATURE cmd 0x81 = ID_CLEAR_DIGITAL_MAPPINGS in Steam mode (console "S81" toggles; on
-// by default). It's the confirmed amp-clicker in Steam's per-connect config and OpenPuck doesn't need it (own
-// input translation + id9=0 keepalive). Reversible from the console if it regresses.
-// FEATURE-CHANNEL ONLY: the OUTPUT report with id 0x81 is ID_OUT_REPORT_HAPTIC_PULSE, an unrelated command
-// (see handleSet) -- dropping that one costs the trackpad-click / trigger-full-pull haptics (#163, #166).
-bool g_drop81 = true;
 
 // Per-slot shadow of the controller's SET_SETTINGS_VALUES array (id-indexed u16, ids 0..0x52). Steam writes
 // it with 0x87 and READS IT BACK with 0x89 to verify its config "took"; on the real puck the controller
@@ -327,10 +321,20 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	// command flood that (theory) overflows it lands in the post-mortem trail rather than being lost with USB.
 	faultDiagTrace(FR_SET, (uint16_t)((rid << 8) | cmd));
 
-	// settings/haptic/LED report (incl. 0x87 lizard-off heartbeat, SDL Triton lizard-disable)
-	// TODO: this is not related to haptics, find a better condition.
-	if (cmd >= 0x80 && cmd <= 0x89)
-		hostStampAlive();
+	// Disable lizard if requested by host.
+	if (cmd == IBEX_CMD_SET_SETTINGS_VALUES) {
+		// Host sent a settings write. Check if this is a write with the lizard suppression tag.
+		for (int off = 0; off <= len; off += 3) {
+			uint8_t settings_key = pl[off];
+			uint16_t settings_val = pl[off+1] + 256 * pl[off+2];
+			if (settings_key == SETTING_LIZARD_MODE && settings_val == 0) {
+				hostStampAlive();
+				break;
+			}
+		}
+
+	}
+
 	// Controller power-off: Steam's "turn off controller" is feature-0x01 frame 9F 04 6F 66 66 21 ("off!"),
 	// confirmed from a real puck capture. The feature-0x01 relay below forwards it once; hapticSendShutdown
 	// bursts it for NO-ACK reliability. Slot-targeted: the command arrived on THIS controller's interface,
@@ -349,15 +353,6 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		bool muted = g_resumeMs &&
 			     millis() - g_resumeMs < POST_RESUME_MUTE_MS;
 
-		// Steam-mode: DROP the relayed 0x81 CLEAR_DIGITAL_MAPPINGS (g_drop81, console "S81"). It EXECUTES on
-		// the controller (rid<0x87, legacy framing) and each one re-arms the haptic amp (non-idempotent, ibex
-		// func_0x0001bbf0) = the connect click/buzz; Steam sends ~13 in its per-connect config. OpenPuck does
-		// its OWN input translation and holds mappings cleared via the id9=0 keepalive, so it does NOT need the
-		// controller's mapping engine -> Steam's 0x81 is pure downside here. The manual "Clear stuck buzz"
-		// (hapticReinit) sends its own 0x81 via relayEnqueue directly, so that cure path is unaffected.
-		//bool drop =
-		//	(g_drop81 && g_usbMode == MODE_STEAM && cmd == 0x81);
-		bool drop = false;
 
 		// Reports in relayQuery will be forwarded to the controller if rid==1 and may be answered locally
 		// if it makes sense and rid==2.
@@ -402,7 +397,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		//bool hapticCmd = (cmd == 0x80 || cmd == 0x81 || cmd == 0x82 || cmd == 0x85);
 		bool hapticCmd = false;
 		bool queryArmed = false;
-		bool relayOk = hapticRelaySlotOk(slot) && !drop &&
+		bool relayOk = hapticRelaySlotOk(slot) && 
 			       !localAnswer &&
 			       !(haptic82 && (lizardActive() || muted)) &&
 			       !(hapticCmd && !g_hapticRelay);

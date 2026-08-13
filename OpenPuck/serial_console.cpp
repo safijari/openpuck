@@ -77,13 +77,6 @@ void serialConsolePoll()
 				Serial.printf(
 					"# haptic relay (Steam 0x80-0x86) %s\n",
 					g_hapticRelay ? "ON" : "off");
-			} else if (!strcmp(line, "S81")) {
-				// A/B: drop Steam's relayed FEATURE cmd 0x81 CLEAR_DIGITAL_MAPPINGS (the connect
-				// amp-clicker). Does NOT touch OUTPUT report 0x81 = HAPTIC_PULSE (always relayed).
-				g_drop81 = !g_drop81;
-				Serial.printf(
-					"# drop relayed feature 0x81 (Steam mode) %s\n",
-					g_drop81 ? "ON" : "off");
 			} else if (!strcmp(line, "FC")) {
 				// feature-command capture: log Steam's USB SET/GET commands to serial + suppress I45
 				g_cmdCapture = !g_cmdCapture;

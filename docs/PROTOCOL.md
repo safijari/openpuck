@@ -419,14 +419,6 @@ from the feature-`0x01` **command** space even though the numbers overlap. Groun
 | `0x86` | (unnamed) | 3 | `FACTORY_RESET` |
 | `0x87`+ | 63-byte settings/config | 63 | `SET_SETTINGS_VALUES` … |
 
-`0x81` is the trap: the feature-channel `0x81` (`CLEAR_DIGITAL_MAPPINGS`) is dropped in Steam mode on
-purpose (`g_drop81`, console `S81` — it is the connect-time amp-clicker and OpenPuck does its own input
-translation), but the OUTPUT-report `0x81` is `HAPTIC_PULSE` — the left/right pulse Steam fires for
-trackpad **click** feedback ("Regular Press"), the **trigger full-pull** click and GripSense cues.
-Extending the feature-channel drop to the OUTPUT report is what made those haptics missing
-(issues #163 / #166) while "Soft Press" kept working, since that one rides `0x82 HAPTIC_COMMAND`.
-Pulses carry their own `repeat_count`, so they are self-terminating: there is no latch to strand and no
-stop frame that can be lost (unlike the `0x82` on/off pair or `0x80` rumble).
 
 ### 9.2 Xbox mode
 
