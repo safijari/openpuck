@@ -156,4 +156,3 @@ void hapticReinit(uint8_t slot = 0xFF);
 // controller out of the degraded/latched haptic state. Reliable -- independent of hapticTask's link heuristic.
 // Per-slot: only the slot that just reconnected is blocked, the others keep relaying.
 void hapticOnReconnect(int slot);
-

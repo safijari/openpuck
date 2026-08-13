@@ -4,11 +4,11 @@
 // See SDL src/joystick/hidapi/steam/controller_constants.h
 // enum FeatureReportMessageIDs
 
-#define IBEX_CMD_SET_DIGITAL_MAPPINGS   0x80
+#define IBEX_CMD_SET_DIGITAL_MAPPINGS 0x80
 #define IBEX_CMD_CLEAR_DIGITAL_MAPPINGS 0x81
-#define IBEX_CMD_GET_DIGITAL_MAPPINGS   0x82
-#define IBEX_CMD_GET_ATTRIBUTES_VALUES  0x83
-#define IBEX_CMD_GET_ATTRIBUTE_LABEL    0x84
+#define IBEX_CMD_GET_DIGITAL_MAPPINGS 0x82
+#define IBEX_CMD_GET_ATTRIBUTES_VALUES 0x83
+#define IBEX_CMD_GET_ATTRIBUTE_LABEL 0x84
 #define IBEX_CMD_SET_DEFAULT_DIGITAL_MAPPINGS 0x85
 #define IBEX_CMD_FACTORY_RESET 0x86
 #define IBEX_CMD_SET_SETTINGS_VALUES 0x87
@@ -69,7 +69,6 @@
 #define IBEX_CMD_GET_SYSTEM_INFO 0xF2
 #define IBEX_CMD_WRITE_PROVISIONING 0xFE
 
-
 // Controller setting IDs
 // See SDL src/joystick/hidapi/steam/controller_constants.h
 // enum ControllerSettings
@@ -77,12 +76,11 @@
 #define SETTING_LEFT_TRACKPAD_MODE 7
 #define SETTING_RIGHT_TRACKPAD_MODE 8
 #define SETTING_LIZARD_MODE 9
-#define SETTING_SMOOTH_ABSOLUTE_MOUSE 24            // 0x18
-#define SETTING_LED_USER_BRIGHTNESS 45              // 0x2d
-#define SETTING_ENABLE_RAW_JOYSTICK 46              // 0x2e
-#define SETTING_IMU_MODE 48                         // 0x30
-#define SETTING_WIRELESS_PACKET_VERSION 49          // 0x31
-#define SETTING_LEFT_TRACKPAD_CLICK_PRESSURE 52     // 0x34
-#define SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE 53    // 0x35
-#define SETTING_COUNT 82                            // 0x52 - todo: is this really correct?
-
+#define SETTING_SMOOTH_ABSOLUTE_MOUSE 24 // 0x18
+#define SETTING_LED_USER_BRIGHTNESS 45 // 0x2d
+#define SETTING_ENABLE_RAW_JOYSTICK 46 // 0x2e
+#define SETTING_IMU_MODE 48 // 0x30
+#define SETTING_WIRELESS_PACKET_VERSION 49 // 0x31
+#define SETTING_LEFT_TRACKPAD_CLICK_PRESSURE 52 // 0x34
+#define SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE 53 // 0x35
+#define SETTING_COUNT 82 // 0x52 - todo: is this really correct?

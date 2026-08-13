@@ -51,7 +51,8 @@ void hapticSendShutdown(uint8_t slot)
 	// the panel/test power-off button.
 	faultDiagTrace(FR_OFF, slot);
 	for (uint8_t i = 0; i < HAPTIC_SHUTDOWN_SHOTS; i++)
-		relayEnqueue(IBEX_CMD_TURN_OFF_CONTROLLER, OFF, sizeof OFF, false, slot);
+		relayEnqueue(IBEX_CMD_TURN_OFF_CONTROLLER, OFF, sizeof OFF,
+			     false, slot);
 	// Tell the puck presentation layer to show this slot (or all, for 0xFF broadcast) cleanly DISCONNECTED to
 	// Steam and hold it there through the controller's post-off F1 tail -- otherwise the dying replies bounce
 	// the connection state (phantom reconnect / never-removed). Covers every power-off path (Steam 0x9F, the
@@ -108,7 +109,7 @@ bool relayPending()
 	return g_rqHead[cur] != g_rqTail[cur];
 }
 bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
-		   bool isHaptic, uint8_t slot, bool expectReply)
+		  bool isHaptic, uint8_t slot, bool expectReply)
 {
 	if (plen > RELAY_MAXP)
 		plen = RELAY_MAXP;
@@ -305,7 +306,6 @@ void haptic82HostReport(const uint8_t *p, uint16_t n)
 	if (n < 3)
 		return;
 	g_haptic82Ms = millis();
-
 }
 bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 {
@@ -502,7 +502,8 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				usbTxBoost();
 				Serial.printf("# TX t=%lu slot%d %s rid=%02X:",
 					      (unsigned long)millis(), cur,
-					      m.isHaptic ? "L05" : "L01", m.rid);
+					      m.isHaptic ? "L05" : "L01",
+					      m.rid);
 				for (uint8_t i = 0; i < rl && i < 8; i++)
 					Serial.printf(" %02X", m.data[i]);
 				Serial.println();
@@ -530,14 +531,14 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 	return have; // true = a relay frame went out this cycle (its reply is harvested as input, above)
 }
 
-
 void hapticReinit(uint8_t slot)
 {
 	// TODO: This function is only ever called from WebUSB in debug mode
-	// when the user clicks the "Clear stuck buzz" button. 
-	// I believe with MR 230 the haptics issues should be gone, 
+	// when the user clicks the "Clear stuck buzz" button.
+	// I believe with MR 230 the haptics issues should be gone,
 	// so this can probably be removed?
 
+	// clang-format off
 	static const uint8_t haptic_reset_data_1[] = { 
 			SETTING_IMU_MODE, 0x00, 0x00, 
 			SETTING_LEFT_TRACKPAD_MODE, 0x07, 0x00, 
@@ -556,6 +557,7 @@ void hapticReinit(uint8_t slot)
 			SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE, 0xff, 0xff, 
 			SETTING_ENABLE_RAW_JOYSTICK, 0x00, 0x00 };
 
+	// clang-format on
 
 	static const uint8_t T81A[] = {
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
@@ -569,9 +571,12 @@ void hapticReinit(uint8_t slot)
 
 	// This is probably split into three commands because you can only update
 	// five parameters in one batch.
-	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, haptic_reset_data_1, sizeof haptic_reset_data_1, false, slot);
-	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, haptic_reset_data_2, sizeof haptic_reset_data_2, false, slot);
-	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, haptic_reset_data_3, sizeof haptic_reset_data_3, false, slot);
+	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, haptic_reset_data_1,
+		     sizeof haptic_reset_data_1, false, slot);
+	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, haptic_reset_data_2,
+		     sizeof haptic_reset_data_2, false, slot);
+	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, haptic_reset_data_3,
+		     sizeof haptic_reset_data_3, false, slot);
 
 	// explicitly trigger an empty HAPTIC_PULSE: the part that clears a latch
 	relayEnqueue(0x81, T81A, sizeof T81A, true, slot);
@@ -582,8 +587,10 @@ void hapticReinit(uint8_t slot)
 	// full brightness. 0 = no override (preserve controller default).
 	// TODO: This has nothing to do with haptics, why is this here?
 	if (g_etype < ET_COUNT && g_ledBright > 0) {
-		uint8_t pl[3] = { SETTING_LED_USER_BRIGHTNESS, g_ledBright, 0x00 };
-		relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, pl, sizeof pl, false, slot);
+		uint8_t pl[3] = { SETTING_LED_USER_BRIGHTNESS, g_ledBright,
+				  0x00 };
+		relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, pl, sizeof pl, false,
+			     slot);
 	}
 }
 void hapticInit()
@@ -639,15 +646,17 @@ void hapticTask()
 	if (g_lizKeep) {
 		static unsigned long lastKeep[NSLOT] = { 0 };
 		static bool landedAuto[NSLOT] = { false };
-		static const uint8_t DATA_LIZARD_OFF[3] = { SETTING_LIZARD_MODE, 0x00, 0x00 };
-		static const uint8_t DATA_LIZARD_ON[3] = { SETTING_LIZARD_MODE, 0x01, 0x00 };
+		static const uint8_t DATA_LIZARD_OFF[3] = { SETTING_LIZARD_MODE,
+							    0x00, 0x00 };
+		static const uint8_t DATA_LIZARD_ON[3] = { SETTING_LIZARD_MODE,
+							   0x01, 0x00 };
 
 		if (modeIsPuck(g_usbMode)) {
 			// We're in puck mode. Leave the haptics to Steam.
 			return;
 		}
 
-		// We're in emulated controller mode. 
+		// We're in emulated controller mode.
 		bool wantAuto = (g_padHaptics != 0);
 		for (int s = 0; s < NSLOT; s++) {
 			if (!g_slot[s].used || !hapticLinkUp(s)) {
@@ -660,8 +669,11 @@ void hapticTask()
 			if (wantAuto) {
 				if (!landedAuto[s]) {
 					landedAuto[s] = true;
-					relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, 
-						DATA_LIZARD_ON, sizeof DATA_LIZARD_ON, false, (uint8_t)s);
+					relayEnqueue(
+						IBEX_CMD_SET_SETTINGS_VALUES,
+						DATA_LIZARD_ON,
+						sizeof DATA_LIZARD_ON, false,
+						(uint8_t)s);
 				}
 			} else {
 				landedAuto[s] = false;
@@ -670,8 +682,10 @@ void hapticTask()
 					    LIZKEEP_MS)
 					continue;
 				lastKeep[s] = millis();
-				relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, 
-					DATA_LIZARD_OFF, sizeof DATA_LIZARD_OFF, false, (uint8_t)s);
+				relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES,
+					     DATA_LIZARD_OFF,
+					     sizeof DATA_LIZARD_OFF, false,
+					     (uint8_t)s);
 			}
 		}
 	}
