@@ -125,13 +125,6 @@ static const uint8_t PUCK_LIZARD_HID_DESC[] = {
 
 static Adafruit_USBD_HID hid[NSLOT];
 
-// Per-slot shadow of the controller's SET_SETTINGS_VALUES array (id-indexed u16, ids 0..0x52). Steam writes
-// it with 0x87 and READS IT BACK with 0x89 to verify its config "took"; on the real puck the controller
-// answers 0x89 from this array. OpenPuck can't relay-and-return over the NO-ACK RF link, so it maintains the
-// shadow here and answers 0x89 from it -- WITHOUT this, Steam's verify never matches and it re-clears (0x81)
-// + re-writes (0x87) forever = the connect config storm that buzzes the amp and floods the usbd task.
-static uint16_t g_setShadow[NSLOT][0x53];
-
 // ---- feature-command capture (diagnostic) ---------------------------------------------------------------
 // Log the USB feature command channel (Steam's SET/GET) to serial to see the connect handshake -- WITHOUT a
 // Serial.printf on the fragile 800B usbd task (that path can blow the stack -> LOCKUP; it's why production
@@ -281,11 +274,6 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 							       RELAY_MAXP :
 							       n),
 					     true, (uint8_t)slot);
-				// Track on/off from what was actually RELAYED (= the controller's believed state): a
-				// BLOCKED stop must leave "on" set (controller may be latched -> reconnect stop-burst),
-				// a blocked ON must not set it (nothing reached the controller -> no spurious clicks).
-				if (rid == 0x82)
-					haptic82HostReport(b, n);
 			}
 		}
 

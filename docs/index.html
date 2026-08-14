@@ -239,9 +239,6 @@
       <div class="row" style="margin:10px 0 0"><button id="ctlrOff">Turn off controller</button>
         <span class="note" style="flex:1">Fires the controller power-off (0x9F "off!", x3) — the same path Steam's "turn off controller" and host-suspend use. Watch the link status to see it disconnect.</span>
       </div>
-      <div class="row debugonly" style="margin:10px 0 0"><button id="landAll87">off</button>
-        <span class="note" style="flex:1"><strong>Land all 0x87 (experiment).</strong> Relay Steam's full haptic/settings config to the controller verbatim (like the real puck) instead of discarding it. Testing whether the connect buzz is caused by the controller's haptic engine being left misconfigured. If the <em>gyro freezes</em> in Steam, turn this back off.</span>
-      </div>
       <div class="row debugonly" style="margin:10px 0 0;border-top:1px solid #272d3d;padding-top:14px"><button id="stabBtn">Test stability</button>
         <span class="v" id="stabStatus" style="flex:0 0 auto;min-width:120px">—</span>
         <span class="note" style="flex:1">Buzzes the controllers every 10 s (keeps them awake) and times how long the puck stays up. On a reset it records the uptime and shows it by <em>Last reset</em>; it auto-resumes after the puck reconnects. The count is kept in this tab (a page refresh clears it).</span>
@@ -1070,8 +1067,6 @@ function applyBlob(p){
   checkUpdateNotice(); // needs BOTH the installed version (this blob) and relCache (fetched on connect)
   setSlider("mDiv",mDiv); setSlider("mFric",mFric);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
-  // land-all-0x87 experiment toggle (blob v14/v17, firmware p[181] -> JS p[179])
-  { const la=(p.length>179?p[179]:0); $("#landAll87").textContent = la?"on":"off"; $("#landAll87").classList.toggle("active",!!la); }
   // per-type button config (blob v10/v17): 4 types x 9 bytes. readBlob() strips the 2-byte [0xA5][len] header, so
   // the firmware's buffer index 75 lands at JS index 73 here.
   if(p.length>=73+TYPE_DEFS.length*9){
@@ -2207,7 +2202,6 @@ $("#wipeBoard").onclick=async()=>{
   log("FULL BOARD WIPE sent — the board is erasing firmware + all data (~15–20 s), then reboots as a blank UF2 drive. Flash OpenPuck (.uf2) to restore it.");
 };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
-$("#landAll87").onclick=async()=>{ const on=$("#landAll87").classList.contains("active"); await setField(29, on?0:1); log("land-all-0x87 "+(on?"disabled":"enabled")); };
 // Connection tuning: post-connect haptic block on (field 27) + seconds (field 28). (poll RX window is fixed.)
 for(const id of ["mDiv","mFric"]){
   const field={mDiv:1,mFric:2}[id];

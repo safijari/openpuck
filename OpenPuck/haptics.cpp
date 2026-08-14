@@ -60,9 +60,6 @@ void hapticSendShutdown(uint8_t slot)
 	puckNotePowerOff(slot);
 }
 
-// millis of last 0x82 haptic OUTPUT relayed (Steam mode)
-static unsigned long g_haptic82Ms = 0;
-
 // millis of last translated host rumble (0x80), per-slot (4 XInput interfaces each have their own stream)
 static unsigned long g_rumble80Ms[NSLOT] = { 0 };
 
@@ -134,9 +131,7 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 			memcpy(g_rq[s][h].data, payload, plen);
 		g_rqHead[s] = nx;
 	}
-	// Track last-haptic time for the Steam-mode quiet timeout (marks the 0x82 stream inactive after silence).
-	if (isHaptic)
-		g_haptic82Ms = millis();
+
 	__set_PRIMASK(pm);
 	faultDiagTrace(FR_RELAY, (uint16_t)((slot << 8) | rid));
 	return true;
@@ -301,12 +296,7 @@ static void hapticCancelPendingOn(int slot)
 	}
 	__set_PRIMASK(pm);
 }
-void haptic82HostReport(const uint8_t *p, uint16_t n)
-{
-	if (n < 3)
-		return;
-	g_haptic82Ms = millis();
-}
+
 bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 {
 	if (slot >= NSLOT)

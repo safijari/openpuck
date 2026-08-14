@@ -118,7 +118,6 @@ static inline bool hapLogPull(uint32_t *, uint8_t *, uint8_t *, uint8_t *,
 bool hapticLinkUp(int slot = -1);
 bool haptic82Blocked(int slot = -1);
 bool hapticRelaySlotOk(int slot);
-void haptic82HostReport(const uint8_t *p, uint16_t n);
 // queue a Steam/Triton 0x80 rumble frame. `slot` = bond slot of the originating controller (0..NSLOT-1);
 // defaults to 0 for the legacy single-controller callers. Per-slot so each connected controller can have its
 // own active rumble stream when the host presents multiple gamepads (e.g. 4 XInput devices).
