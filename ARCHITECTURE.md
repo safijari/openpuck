@@ -86,7 +86,7 @@ just points at the `OpenPuck` directory). Modules are layered low → high:
 | `webusb_config.{h,cpp}` | The WebUSB binary config channel for the browser panel. |
 | `serial_console.{h,cpp}` | The CDC single-letter debug command line. |
 | `wake_hid.{h,cpp}` | A boot-mouse HID interface added to the clean controller modes so the host honors USB remote-wakeup (see "Wake from sleep"). |
-| `status_led.{h,cpp}` | Wake-sent LED indicator: dark in all steady states; flashes 500 ms at each `remoteWakeup()`. Drives both the Feather user LED (P1.15) and the SuperMini clone's blue LED (P0.15); pins/polarity overridable. |
+| `status_led.{h,cpp}` | Wake-sent LED indicator: dark in all steady states; flashes 500 ms at each `remoteWakeup()`. Drives both the Feather user LED (P1.15) and the SuperMini clone's blue LED (P0.15); pins/polarity overridable. On RGB boards (Seeed XIAO — `OPK_RGB_LED`) it additionally shows a steady per-mode color (white/green/red/blue). |
 
 ## The controller abstraction
 

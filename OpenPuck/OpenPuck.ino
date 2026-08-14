@@ -165,6 +165,9 @@ void setup()
 	g_xbox = !modeIsPuck(g_usbMode);
 	g_active = controllerFor(g_usbMode);
 
+	// mode is final -- light the board RGB mode color (no-op without RGB)
+	ledShowMode();
+
 	// ---- USB descriptor rebuild ----
 	// Puck mode drops the CDC serial console (clearConfiguration) to free a USB endpoint for the wake-mouse
 	// interface that wakes a sleeping Windows host. The one-shot debug arm (g_debugCdcThisBoot, set via WebUSB

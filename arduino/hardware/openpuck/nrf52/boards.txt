@@ -1,0 +1,58 @@
+# Seeed XIAO nRF52840, built against the installed Adafruit nRF52 core via a
+# core reference (build.core=adafruit:nRF5). See platform.txt for why the
+# runtime-path flag there is mandatory. FQBN: openpuck:nrf52:xiao_nrf52840.
+
+xiao_nrf52840.name=Seeed XIAO nRF52840 (OpenPuck)
+
+# DFU / upload identity of the Seeed UF2 bootloader (double-tap RST). Listed so
+# arduino-cli recognises the bootloader port for `make flash-xiao`.
+xiao_nrf52840.vid.0=0x2886
+xiao_nrf52840.pid.0=0x0044
+xiao_nrf52840.vid.1=0x2886
+xiao_nrf52840.pid.1=0x8044
+xiao_nrf52840.vid.2=0x2886
+xiao_nrf52840.pid.2=0x8045
+
+xiao_nrf52840.bootloader.tool=bootburn
+xiao_nrf52840.upload.tool=nrfutil
+xiao_nrf52840.upload.protocol=nrfutil
+xiao_nrf52840.upload.use_1200bps_touch=true
+xiao_nrf52840.upload.wait_for_upload_port=true
+# App region 0x27000..0xED000 = 0xC6000 = 811008 bytes (Feather is 0x26000 =
+# 815104). Data size matches the shared 256K RAM budget.
+xiao_nrf52840.upload.maximum_size=811008
+xiao_nrf52840.upload.maximum_data_size=237568
+
+# Core reference: the nRF5 core from the installed adafruit:nrf52 platform. The
+# vendored platform's architecture folder MUST be 'nrf52' for this to resolve.
+xiao_nrf52840.build.core=adafruit:nRF5
+xiao_nrf52840.build.variant=xiao_nrf52840
+xiao_nrf52840.build.mcu=cortex-m4
+xiao_nrf52840.build.f_cpu=64000000
+# -> -DARDUINO_XIAO_NRF52840, the token OpenPuck's status_led.h and fw_update.cpp
+# gate on for the XIAO's LED pins/polarity and the 0x27000 updater base.
+xiao_nrf52840.build.board=XIAO_NRF52840
+xiao_nrf52840.build.usb_manufacturer="Seeed"
+xiao_nrf52840.build.usb_product="XIAO nRF52840"
+xiao_nrf52840.build.vid=0x2886
+xiao_nrf52840.build.pid=0x8045
+# The USB flags are the same shape as Adafruit's boards; `make build-xiao`
+# overrides build.extra_flags with the required CFG_TUD_* values (a bare
+# arduino-cli compile without them #errors on purpose).
+xiao_nrf52840.build.extra_flags=-DNRF52840_XXAA {build.flags.usb}
+xiao_nrf52840.build.uf2_family=0xADA52840
+
+# Link at 0x27000 (S140 v7 layout). Variant-local script; its
+# INCLUDE "nrf52_common.ld" resolves through the inherited -L{build.core.path}/linker.
+xiao_nrf52840.build.ldscript={build.variant.path}/nrf52840_s140_v7.ld
+# sd_* only select the SoftDevice API headers on the include path (the core
+# ships s140 7.3.0) and the DFU zip's --sd-req; the SoftDevice is never started.
+xiao_nrf52840.build.sd_name=s140
+xiao_nrf52840.build.sd_version=7.3.0
+xiao_nrf52840.build.sd_fwid=0x0123
+
+# No board menus: supply the flags the Adafruit recipe would otherwise take from
+# a menu selection, at Adafruit's release defaults (no debug, serial logger).
+xiao_nrf52840.build.debug_flags=-DCFG_DEBUG=0
+xiao_nrf52840.build.logger_flags=-DCFG_LOGGER=0
+xiao_nrf52840.build.sysview_flags=

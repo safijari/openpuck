@@ -61,6 +61,17 @@ The easiest way to install is to grab a uf2 file from the GitHub releases and dr
 
 See [build instructions document](./docs/BUILD_AND_DEPLOY.md) for  details on how to flash the MCU during development.
 
+### Supported boards
+
+OpenPuck runs on nRF52840 "Pro Micro" boards (the common SuperMini clones and the Adafruit Feather nRF52840) and on the **[Seeed XIAO nRF52840](https://www.amazon.de/dp/B09T9VVQG7)** (including the Sense). Grab the UF2 that matches your board from the releases:
+
+- Pro Micro / SuperMini / Feather → `OpenPuck-<version>-standard.uf2`
+- Seeed XIAO nRF52840 → `OpenPuck-<version>-xiao-standard.uf2`
+
+> ⚠️ **Flash the image that matches your board.** The XIAO's bootloader starts the app at a different flash address (S140 v7 → `0x27000`) than the Pro Micro/Feather (S140 v6 → `0x26000`), so the images are not interchangeable. Flashing the wrong one leaves the board app-less until you re-enter its UF2 bootloader (double-tap RST) and flash the correct image — always recoverable, never a hard brick. The WebUSB updater and its releases list already pick the right image for the connected board.
+
+On the XIAO the onboard RGB LED also indicates the current mode: white = Steam/Lizard, green = Xbox, red = Switch, blue = PlayStation (toggleable in the config UI).
+
 # Pairing
 Both OpenPuck and the controller need to be hooked up to the same machine with a data capable USB C cable at the same time and Steam must be running. Steam should in most cases automatically pop up a menu to pair the controller. If not, you can go to Settings -> Controllers and press "Add Controller".
 
@@ -80,6 +91,10 @@ You can copy configurations between OpenPucks using the export/import card in th
 - [BOT-Yanni](https://www.reddit.com/user/BOT-Yanni/) designed a slim case with OpenPuck written on it and a cute little glyph of the Steam Controller. You can find that [here](https://www.thingiverse.com/thing:7379316).
 - [StonnedModder](https://www.printables.com/model/1760684-openpuck-promicro-nrf52840-case) built a case meant to accomodate a USB C to USB A adapter which you can find [here](https://www.printables.com/model/1760684-openpuck-promicro-nrf52840-case).
 - Another plain case for these pro micros can be found [here](https://www.printables.com/model/1285346-pro-micro-nicenano-nrf52840-dongle-case/collections).
+
+For the **Seeed XIAO nRF52840**, these general-purpose XIAO cases fit:
+- A basic XIAO BLE case, [here](https://www.printables.com/model/522586-seeed-xiao-ble-case).
+- A snap-fit case with an **LED diffuser** (pairs nicely with the onboard RGB mode LED), [here](https://www.printables.com/model/1431328-seeed-xiao-nrf52840-snap-fit-case-with-led-diffuse).
 
 # ReversePuck
 This is a tool to emulate a Steam Controller 2 with almost all of its inputs (except grip) using a Steam Deck and allow it to connect over a low latency 2.4ghz connection to OpenPuck (this does not work with the official puck yet). Flash the firmware onto an NRF52840 Pro Micro and copy over the ReversePuck folder onto the Steam Deck (you might need to install UV). Then add the ReversePuck script as a non steam game. Attach both the dongle and OpenPuck to the same machine and do pairing through Steam (which will say pairing has failed but it's actually fine). Then connect the OpenPuck to whatever machine you want to use your controllers on and the dongle to the Steam Deck. Launch the ReversePuck app in gamemode and you'll see the serial number of the OpenPuck show up in green. Press it and it'll turn blue at which point the Deck will show up as a controller on the host device. See video below for a demonstration of this in action (yes, other Steam Controllers can be connected to the same OpenPuck at the same time).

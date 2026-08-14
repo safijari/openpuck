@@ -51,6 +51,15 @@ void fwupAbort(
 uint32_t fwupNextOff(
 	void); // next expected chunk offset (returned in every ack for panel resync)
 
+// This board's app-region base: 0x26000 (S140 v6, Feather/SuperMini) or 0x27000
+// (S140 v7, XIAO). vectorsPlausible() rejects a staged reset vector below base, so
+// a lower-linked Feather image is refused on the XIAO -- but a higher-linked XIAO
+// image still lands inside the wider [base, app end) range, so the firmware check
+// is not a symmetric cross-board guard. The real gate is the panel, which reads
+// this base (blob board byte) to offer per-board release assets and reject a
+// cross-board .uf2 before it ever streams.
+uint32_t fwupAppBase(void);
+
 // Apply a committed staged update. Call FIRST in setup(): if a valid meta page is present this never returns
 // (copies staged->app from RAM and resets). Invalid/stale meta is erased and ignored.
 void fwupApplyIfArmed(void);
