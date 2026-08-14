@@ -861,6 +861,10 @@ async function readBlob(){ return readFrame(0xA5, 12); }
 function applyBlob(p){
   lastP=p; // remember for Export (carries every config field the panel shows)
   window._lastBlobTs=Date.now(); // feeds the host-side heartbeat watchdog (hard-wedge detection)
+  // Pre-rebase XIAO builds used v19 with a shorter payload and placed the
+  // mode-LED and board bytes before upstream claimed v19/v20.
+  const legacyXiaoLayout=p[0]===19 && p.length===182 &&
+    (p[181]===0x26 || p[181]===0x27);
   // Lazy, capability-gated lizard-map load: only after a blob proves the puck speaks v16+ (the op-0x11 dump).
   // On older firmware 0x11 is dropped silently and readLizard() would block the endpoint forever, so we must
   // NEVER send it blind at connect. One-shot per connection (reset in openDevice).
@@ -1077,10 +1081,10 @@ function applyBlob(p){
   // land-all-0x87 experiment toggle (blob v14/v17, firmware p[181] -> JS p[179])
   { const la=(p.length>179?p[179]:0); $("#landAll87").textContent = la?"on":"off"; $("#landAll87").classList.toggle("active",!!la); }
   // board RGB mode-color LED toggle (blob v21, firmware p[195] -> JS p[193]; default on for older firmware)
-  { const ml=(p.length>193?p[193]:1); $("#modeLed").textContent = ml?"on":"off"; $("#modeLed").classList.toggle("active",!!ml); }
+  { const ml=(p.length>193?p[193]:(legacyXiaoLayout?p[180]:1)); $("#modeLed").textContent = ml?"on":"off"; $("#modeLed").classList.toggle("active",!!ml); }
   // board id (blob v22, firmware p[196] -> JS p[194]; default legacy 0x26000 for older firmware). Selects the
   // per-board release asset and the accepted local .uf2 base, so a cross-board image can't be flashed.
-  { const bb=(p.length>194?p[194]:0x26); curAppBase=(bb===0x27)?0x27000:0x26000; }
+  { const bb=(p.length>194?p[194]:(legacyXiaoLayout?p[181]:0x26)); curAppBase=(bb===0x27)?0x27000:0x26000; }
   // per-type button config (blob v10/v17): 4 types x 9 bytes. readBlob() strips the 2-byte [0xA5][len] header, so
   // the firmware's buffer index 75 lands at JS index 73 here.
   if(p.length>=73+TYPE_DEFS.length*9){
