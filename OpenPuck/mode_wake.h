@@ -48,9 +48,19 @@
 // comfortably longer than anySlotLinkUp()'s 300 ms window so an ordinary RF hiccup can't arm us.
 #define WAKE_ARM_DOWN_MS 3000u
 
+// Press shaping. A combined Alt+P report held 60 ms was read but IGNORED by the
+// ThinkCentre M90q Gen 6 EC (it drained both repeats off the endpoint, so the
+// reports arrived; a real keyboard on the same port woke the machine). Shaping
+// the press like a human types it -- modifier alone first, long hold, restate
+// the held chord -- makes the same EC fire. Which ingredient is load-bearing is
+// untested (each attempt costs an S5 power cycle); all three are what a real
+// keyboard produces anyway.
+#define WAKE_MOD_LEAD_MS \
+	150u // Alt alone before Alt+P (EC may edge-detect modifier-then-key)
+#define WAKE_RESEND_MS 100u // restate the held report (slow-sampling ECs)
 #define WAKE_HOLD_MS \
-	60u // key-down duration (EC samples HID reports, not edges)
-#define WAKE_REPEAT 2 // how many Alt+P presses to send
+	450u // key-down duration (EC samples HID reports, not edges)
+#define WAKE_REPEAT 4 // how many Alt+P presses to send
 #define WAKE_REPEAT_MS 600u // gap between them
 // Quiet time after the last key-up before we detach and re-enumerate as the puck. The EC latches power-on
 // immediately; this only needs to outlast the key-up transfer. POST enumeration is seconds later, so

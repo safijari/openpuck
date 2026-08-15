@@ -24,8 +24,9 @@ static Adafruit_USBD_HID g_kbd;
 enum {
 	W_WAIT_DOWN, // link must go quiet before we arm (see WAKE_ARM_DOWN_MS)
 	W_ARMED, // waiting for a controller to connect
-	W_PRESS, // send key-down
-	W_RELEASE, // hold, then send key-up
+	W_PRESS, // send modifier-down
+	W_MODLEAD, // modifier alone, then add the key
+	W_RELEASE, // hold (re-sending), then send key-up
 	W_GAP, // spacing between repeats
 	W_SETTLE, // let the key-up land before we tear the device down
 	W_DONE // reboot issued (modeSwitchReboot does not return)
@@ -33,6 +34,7 @@ enum {
 static uint8_t s_st = W_WAIT_DOWN;
 static uint32_t s_t = 0; // start of the current timed phase
 static uint32_t s_dl = 0; // press-sequence start, for WAKE_SEQ_DEADLINE_MS
+static uint32_t s_resend = 0; // last held-report re-send (WAKE_RESEND_MS)
 static uint8_t s_shots = 0;
 
 // One boot-keyboard report. Queued for the usbTx drain like every other report in this firmware -- loop()
@@ -111,16 +113,36 @@ void WakeController::task()
 		}
 		if (!g_kbd.ready())
 			break;
+		// Stage the press like a human types it: Alt down alone first. A
+		// minimal EC hotkey parser may track modifier-then-key transitions
+		// rather than accepting a combined report out of nowhere.
+		kbdSend(WAKE_MOD, 0);
+		s_t = now;
+		s_st = W_MODLEAD;
+		break;
+
+	case W_MODLEAD:
+		if (now - s_t < WAKE_MOD_LEAD_MS)
+			break;
 		kbdSend(WAKE_MOD, WAKE_KEY);
 		// wake-debugger convention: flash = a wake was actually sent
 		ledWakePulse();
+		s_resend = now;
 		s_t = now;
 		s_st = W_RELEASE;
 		break;
 
 	case W_RELEASE:
-		if (now - s_t < WAKE_HOLD_MS)
+		if (now - s_t < WAKE_HOLD_MS) {
+			// Keep restating the held chord: an EC that samples the
+			// current report (rather than edge-detecting) can miss a
+			// single transfer.
+			if (now - s_resend >= WAKE_RESEND_MS && g_kbd.ready()) {
+				kbdSend(WAKE_MOD, WAKE_KEY);
+				s_resend = now;
+			}
 			break;
+		}
 		kbdSend(0, 0);
 		s_t = now;
 		s_st = (++s_shots < WAKE_REPEAT) ? W_GAP : W_SETTLE;
