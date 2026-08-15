@@ -243,16 +243,6 @@ bool hapticRelaySlotOk(int slot)
 {
 	return slot >= 0 && slot < NSLOT && hapticLinkUp(slot);
 }
-static bool haptic82PayloadOn(const uint8_t *p, uint16_t n)
-{
-	if (n < 3)
-		return false;
-	for (uint16_t i = 2; i < n; i++)
-		if (p[i])
-			// observed form is [01 01 gain], but treat any trailing non-zero as active
-			return true;
-	return false;
-}
 static void hapticCancelPendingOn(int slot)
 {
 	// void queued ON entries (stale haptics / rumble across a reconnect). Per-slot: only the reconnected

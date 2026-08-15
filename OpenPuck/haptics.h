@@ -18,25 +18,13 @@
 #include "config.h" // OPK_LOG
 #include "bonds.h" // NSLOT
 
-// after this much host silence, consider the current 0x82 haptic stream inactive
-#define HAPTIC_QUIET_MS 300u
 // Post-(re)connect haptic block default. While armed, ALL Steam haptic relays to that slot are dropped: a
 // just-powered-on controller's haptic engine isn't ready, and feeding it haptics in that window leaves it in a
 // degraded/latched state (slow/stuck/missing haptics until a re-init). Runtime-adjustable (g_hapticBlockMs) and
 // toggleable (g_hapticBlockOn) from the WebUSB panel; this is the boot default.
 #define HAPTIC_BLOCK_MS_DEFAULT 10000u
-// 0x82-zero relays per stop event (sent at poll cadence -- not loop rate)
-#define HAPTIC_STOP_BURST 4u
 // max relayed payload bytes per entry: RF frame = [E3][len][05][rid][payload] and MAXLEN=64 -> 60
 #define RELAY_MAXP 60u
-// Proactive post-(re)connect haptic re-init: this many shots, this far apart, starting ~200ms after the link
-// comes up -- covers ~0.2s..3s so the brief controller-side connect buzz gets reset before it can sustain.
-#define HAPTIC_REINIT_SHOTS 8u
-#define HAPTIC_REINIT_GAP_MS 350u
-// After haptic activity, if it's been idle this long, fire one clear-re-init -- kills a latch that engaged
-// during use (a buzz that starts seconds after connect and won't self-clear). Long enough not to fire between
-// rapid in-game haptics; short enough to clear a stuck buzz soon after the user pauses.
-#define HAPTIC_CLEAR_IDLE_MS 1200u
 // Controller power-off: hapticSendShutdown() relays Steam's confirmed "turn off controller" command (feature-0x01
 // cmd 0x9F, payload "off!" -- captured from the real puck). Sent as a small burst because the RF relay is NO-ACK.
 #define HAPTIC_SHUTDOWN_SHOTS 3u
