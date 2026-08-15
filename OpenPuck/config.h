@@ -121,6 +121,9 @@ extern uint8_t g_chordDpad[4];
 // instead remembers the last selected mode across reboots.
 // false (default) = always boot Steam; true = boot into last mode
 extern bool g_persistMode;
+// one-shot post-wake-fire handoff flag (see Cfg.wakeHandoff in config.cpp)
+extern uint8_t g_wakeHandoffArm;
+extern bool g_wakeHandoffBoot;
 // one-shot: boot into this mode once then clear (!persistMode + explicit switch)
 extern uint8_t g_bootMode;
 

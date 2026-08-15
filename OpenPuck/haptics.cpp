@@ -6,6 +6,7 @@
 #include "puck_hid.h" // puckLizardActive() -- gate the lizard-suppression keepalive
 
 #include "fault_diag.h" // faultDiagTrace() -- flight recorder
+#include "mode_wake.h" // wakeHandoffActive() -- post-fire boot grace
 // USBDevice.suspended() -> autonomous controller power-off on host sleep
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
@@ -744,7 +745,17 @@ void hapticTask()
 			faultDiagTrace(FR_RESUME, 0);
 		suspArmed = false;
 	}
-	if (suspArmed && vbus && (millis() - suspSinceMs) >= SUSPEND_OFF_MS) {
+	// Two wake-flow windows where "suspend persisted" does NOT mean "host went to sleep" and firing here
+	// kills the controller that just triggered the wake (the double-power-on symptom):
+	//   - MODE_WAKE itself: the EC hands the port to the chipset the moment the hotkey lands, so the bus
+	//     suspends WHILE the press sequence is still running. A down/POSTing host is this mode's normal
+	//     operating environment -- never auto-off here.
+	//   - the post-fire return boot: POST has not enumerated the reborn puck yet. The handoff grace
+	//     resolves when a host mounts us or after WAKE_HANDOFF_GRACE_MS; if the machine truly never
+	//     boots, the timer keeps running and this fires then -- the battery still gets saved.
+	if (suspArmed && vbus && !modeIsWake(g_usbMode) &&
+	    !wakeHandoffActive() &&
+	    (millis() - suspSinceMs) >= SUSPEND_OFF_MS) {
 		hapticSendShutdown();
 		suspArmed = false; // fire once per suspend
 	}

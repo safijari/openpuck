@@ -21,6 +21,33 @@ WakeController g_wakeCtl;
 static const uint8_t WAKE_KBD_DESC[] = { TUD_HID_REPORT_DESC_KEYBOARD() };
 static Adafruit_USBD_HID g_kbd;
 
+// Post-fire handoff grace (see mode_wake.h). The arm is PERSISTED (Cfg.wakeHandoff, one-shot consumed by
+// loadCfg like bootMode) because this board class's bootloader wipes .noinit RAM on every reset -- a RAM
+// flag simply does not survive the return reboot. The flash write costs nothing extra: the return mode
+// switch already rewrites cfg for its own one-shot bootMode.
+void wakeHandoffMark()
+{
+	g_wakeHandoffArm =
+		1; // persisted by the modeSwitchReboot save that follows
+}
+
+bool wakeHandoffActive()
+{
+	static bool checked = false, active = false;
+	static uint32_t t0 = 0;
+	if (!checked) {
+		checked = true;
+		if (g_wakeHandoffBoot) {
+			active = true;
+			t0 = millis();
+		}
+	}
+	if (active &&
+	    (USBDevice.mounted() || millis() - t0 >= WAKE_HANDOFF_GRACE_MS))
+		active = false;
+	return active;
+}
+
 enum {
 	W_WAIT_DOWN, // link must go quiet before we arm (see WAKE_ARM_DOWN_MS)
 	W_ARMED, // waiting for a controller to connect
@@ -159,6 +186,9 @@ void WakeController::task()
 		if (now - s_t < WAKE_SETTLE_MS)
 			break;
 		s_st = W_DONE;
+		// The machine is now powering on but will look bus-suspended until POST enumerates the reborn
+		// puck; hold the suspend policies off across that window (see mode_wake.h).
+		wakeHandoffMark();
 		// Clean detach + reboot into the puck. Does not return.
 		modeSwitchReboot(WAKE_RETURN_MODE);
 		break;
@@ -179,6 +209,10 @@ void wakeAutoRearmTask()
 #if WAKE_AUTO_REARM
 	static uint32_t downAt = 0;
 	static bool wasSusp = false;
+	// A machine POSTing after our own wake fire looks suspended; re-arming now would swap the puck out
+	// from under the boot. Hold off until the handoff grace resolves (host mounts us, or deadline).
+	if (wakeHandoffActive())
+		return;
 	const bool susp = USBDevice.suspended();
 	if (susp && !wasSusp)
 		downAt = millis();

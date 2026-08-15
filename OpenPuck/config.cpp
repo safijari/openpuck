@@ -19,6 +19,10 @@ uint8_t g_chordDpad[4] = { MODE_PS3, MODE_DS4_GAME, MODE_PS5_GAME,
 			   MODE_SW_HORI };
 bool g_persistMode = false;
 uint8_t g_bootMode = 0xFF;
+// One-shot post-wake-fire handoff (Cfg.wakeHandoff): arm = persisted by the wake fire's saveMode; boot =
+// this boot came from a wake fire (consumed like bootMode/debugCdc so the next boot is normal).
+uint8_t g_wakeHandoffArm = 0;
+bool g_wakeHandoffBoot = false;
 
 bool g_debugCdcThisBoot = false;
 
@@ -91,9 +95,11 @@ uint32_t g_pollUs = POLL_US_DEFAULT;
 #define CFG_MAGIC 0xCF
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
-		bootMode, chordBtn[3], rsvd1;
-	// rsvd1: legacy rumble-strength slot (strength now fixed at RUMBLE_SCALE_PCT; ignored -- kept so the
-	// on-flash layout is unchanged and an existing cfg.bin still loads).
+		bootMode, chordBtn[3], wakeHandoff;
+	// wakeHandoff: ex rumble-strength slot (same offset, so an existing cfg.bin still loads; old files
+	// hold 0 = unarmed). Now the one-shot post-wake-fire handoff arm: MODE_WAKE sets 1 right before its
+	// return reboot, loadCfg honors it for that boot and consumes it. In FLASH, not .noinit, because this
+	// board class's bootloader wipes .noinit RAM on every reset.
 	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
 	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
 	uint8_t rxWin10, lizKeep, landAll87;
@@ -121,7 +127,7 @@ void saveCfg()
 		  (uint8_t)(g_persistMode ? 1 : 0),
 		  g_bootMode,
 		  { g_chordBtn[0], g_chordBtn[1], g_chordBtn[2] },
-		  0, // rsvd1 (ex rumble strength)
+		  g_wakeHandoffArm,
 		  (uint8_t)(g_rxWin / 10),
 		  g_lizKeep,
 		  g_landAll87,
@@ -165,6 +171,13 @@ void loadCfg()
 			g_debugCdcThisBoot = c.rsvd0 ? true : false;
 			if (c.rsvd0) {
 				g_debugCdc = 0;
+				consume = true;
+			}
+			// one-shot wake handoff: this boot follows a MODE_WAKE fire; honored (grace + fast RF
+			// bring-up) then consumed. ==1 exactly: 0xFF here means a corrupt/short file, not an arm.
+			if (c.wakeHandoff == 1) {
+				g_wakeHandoffBoot = true;
+				g_wakeHandoffArm = 0;
 				consume = true;
 			}
 			// poll rate is fixed; rewrite cfg so the persisted byte matches the new default.

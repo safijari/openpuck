@@ -263,8 +263,15 @@ void setup()
 		USBDevice.attach();
 	}
 	Serial.begin(115200);
-	for (int i = 0; i < 300 && !USBDevice.mounted(); i++)
-		delay(10); // wait up to 3s for USB mount, but NEVER hang
+	// Post-wake-fire boot: the machine is POSTing and will not mount us for many seconds -- waiting here
+	// just extends the RF outage for the controller that triggered the wake (it gives up and powers off).
+	// Skip straight to bringing the RF side up; opening the connect cooldown makes the first beacons go
+	// out on the first loop() pass instead of at t=2.5 s.
+	if (wakeHandoffActive())
+		g_connCooldown = millis() - 2600u;
+	else
+		for (int i = 0; i < 300 && !USBDevice.mounted(); i++)
+			delay(10); // wait up to 3s for USB mount, but NEVER hang
 	if (USBDevice.suspended()) {
 		USBDevice.remoteWakeup();
 		ledWakePulse();

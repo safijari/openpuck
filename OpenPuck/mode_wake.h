@@ -64,8 +64,10 @@
 #define WAKE_REPEAT_MS 600u // gap between them
 // Quiet time after the last key-up before we detach and re-enumerate as the puck. The EC latches power-on
 // immediately; this only needs to outlast the key-up transfer. POST enumeration is seconds later, so
-// there is a lot of slack here in both directions.
-#define WAKE_SETTLE_MS 1200u
+// there is a lot of slack here in both directions. Kept short: every ms here extends the RF outage the
+// triggering controller must ride out before the reborn puck answers it again (M90q: the controller gives
+// up somewhere between ~2.5 s and ~5 s of silence).
+#define WAKE_SETTLE_MS 600u
 
 // Give up on the press sequence this long after it starts. If the EC deconfigures us mid-way (port reset
 // as POST takes the bus over), ready() goes false and the machine would otherwise stall in W_PRESS until
@@ -83,6 +85,21 @@
 #define WAKE_AUTO_REARM 0
 #endif
 #define WAKE_AUTO_REARM_MS 15000u
+
+// Post-fire handoff grace. After the hotkey is sent the machine spends tens of seconds in POST + OS boot
+// with the bus suspended (nothing has enumerated the reborn puck yet) -- which is indistinguishable from
+// "the host went to sleep". Two standing policies misfire on that state: the suspend-persisted controller
+// power-off (haptics.cpp, SUSPEND_OFF_MS) shuts down the controller that just triggered the wake, and
+// WAKE_AUTO_REARM would yank the puck back into the wake personality mid-boot. wakeHandoffMark() arms a
+// PERSISTED one-shot (Cfg.wakeHandoff -- flash, because this board class's bootloader wipes .noinit RAM
+// on reset) right before the return reboot; wakeHandoffActive() then holds both policies off until a USB
+// host actually mounts us, or this deadline passes (machine never booted -> the normal power-saving
+// behavior is correct after all). The handoff boot also skips setup()'s mount wait and opens the RF
+// connect cooldown immediately, so the reborn puck answers the triggering controller ~3 s sooner --
+// before it gives up searching and powers itself off.
+#define WAKE_HANDOFF_GRACE_MS 90000u
+void wakeHandoffMark();
+bool wakeHandoffActive();
 
 class WakeController : public IController {
     public:
