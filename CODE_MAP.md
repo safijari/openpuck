@@ -423,6 +423,18 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
   (buttons always 0). Poll interval 10 ms. No buffers/delays/loops; only shared state is
   the one flag set once at begin.
 
+### `mode_wake.cpp` / `mode_wake.h`  (`g_wakeCtl`, MODE_WAKE)
+Boot-keyboard-only wake personality (28DE:574B): powers on a shut-down (S5) host whose
+firmware watches the port for a keyboard hotkey (Lenovo Smart Power On = Alt+P).
+- **loop task only**: `task()` state machine -- RF link quiet >= `WAKE_ARM_DOWN_MS` arms it;
+  the first `anySlotLinkUp()` up-edge sends Alt+P (`WAKE_REPEAT` presses via `usbTxHid`),
+  then `modeSwitchReboot(WAKE_RETURN_MODE)`. Registers no report callbacks and forwards no
+  controller input. `WAKE_SEQ_DEADLINE_MS` bails the sequence if the EC deconfigures us.
+- `wakeAutoRearmTask()` (called from `loop()` in every mode): `WAKE_AUTO_REARM` opt-in --
+  a persistent suspend anywhere reboots into MODE_WAKE so the wake re-arms itself.
+- Enumerates bare -- single boot-protocol keyboard, no wake mouse / WebUSB / CDC (`bareHid`
+  in `setup()`) -- because the S5 embedded controller runs a minimal USB host stack.
+
 ### `webusb_config.cpp` / `webusb_config.h` — browser config channel (loop task)
 - `Adafruit_USBD_WebUSB usb_web`. **No vendor callbacks** — fully **polled from
   `webusbPoll()` in `loop()`** (the library buffers the vendor RX). So nothing here runs
