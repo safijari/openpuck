@@ -7,6 +7,7 @@
 #include "mode_ps5.h"
 #include "mode_hidgyro.h"
 #include "mode_ps3.h"
+#include "mode_wake.h"
 
 IController *g_active = nullptr;
 
@@ -39,6 +40,8 @@ IController *controllerFor(uint8_t mode)
 		return &g_hidGyroCtl;
 	case MODE_PS3:
 		return &g_ps3Ctl;
+	case MODE_WAKE:
+		return &g_wakeCtl;
 	default:
 		return &g_steamPuck;
 	}

@@ -41,7 +41,12 @@
 // console wants a bare Sixaxis HID, not a composite). Answers the PS3's GET_REPORT(0xF2/0xF5/0xEF/0x01)
 // enable handshake. + gyro/accel + rumble.
 #define MODE_PS3 9
-#define MODE_MAX 9
+// Boot-keyboard-only wake personality: sends the firmware smart-power-on hotkey (Alt+P on Lenovo
+// ThinkCentre) when a controller connects, then reboots into WAKE_RETURN_MODE. Presents a single clean HID
+// keyboard -- no wake mouse, no WebUSB, no CDC -- because the EC that watches this port while the machine
+// is in S5 runs a minimal USB stack. See mode_wake.h.
+#define MODE_WAKE 10
+#define MODE_MAX 10
 
 // The two "game" personalities drop the wake-mouse + WebUSB interfaces so the device is a genuine single-HID PS
 // controller (some PC games -- e.g. Fortnite/UE GameInput -- refuse PS classification when extra interfaces are
@@ -49,6 +54,13 @@
 static inline bool modeIsCleanPS(uint8_t m)
 {
 	return m == MODE_PS5_GAME || m == MODE_DS4_GAME || m == MODE_PS3;
+}
+
+// Wake mode is a one-shot utility personality, not a controller: it forwards no input and enumerates as a
+// bare keyboard, so setup() gates it out of the wake-mouse / WebUSB interfaces like the clean-PS modes.
+static inline bool modeIsWake(uint8_t m)
+{
+	return m == MODE_WAKE;
 }
 
 static inline bool modeIsPuck(uint8_t m)
