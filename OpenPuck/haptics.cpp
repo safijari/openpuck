@@ -72,6 +72,21 @@ void hapticSendShutdown(uint8_t slot)
 	puckNotePowerOff(slot);
 }
 
+// ---- suspend/lost-bus power-off retry state (see the off region in hapticTask) -----------------------
+// Every off send snapshots the currently-linked slots; a down edge removes a slot (delivered); retries
+// target exactly mask-and-still-linked. Centralized in offArm() so a future off path CANNOT forget the
+// snapshot -- per-site ad-hoc copies of this state are precisely how earlier review rounds' bugs arose.
+static unsigned long g_offSentMs = 0;
+static uint8_t g_offRetries = 0;
+static uint8_t g_offMask =
+	0; // slots linked at the last off send, minus down edges since
+static void offArm(uint8_t linkedMask)
+{
+	g_offMask = linkedMask;
+	g_offSentMs = millis();
+	g_offRetries = SUSPEND_OFF_RETRIES;
+}
+
 // millis of last 0x82 haptic OUTPUT relayed (Steam mode)
 static unsigned long g_haptic82Ms = 0;
 
@@ -732,10 +747,6 @@ void hapticTask()
 	static bool wasSusp = true;
 	static unsigned long suspSinceMs = 0;
 	static bool suspArmed = false;
-	static unsigned long s_offSentMs = 0;
-	static uint8_t s_offRetries = 0;
-	static uint8_t s_offMask =
-		0; // slots linked at the last off send, minus down edges since
 	bool susp = USBDevice.suspended();
 	bool vbus = (NRF_POWER->USBREGSTATUS &
 		     POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
@@ -759,7 +770,7 @@ void hapticTask()
 	//   - the post-fire return boot: POST has not enumerated the reborn puck yet; hold through the
 	//     handoff grace (deadline-only -- see mode_wake.h).
 	// ---- suspend/lost-bus power-off + per-slot retry bookkeeping ---------------------------------
-	// Every off send SNAPSHOTS which slots were linked at that moment (s_offMask). A slot leaves the
+	// Every off send SNAPSHOTS which slots were linked at that moment (g_offMask). A slot leaves the
 	// mask the moment its link drops (the off was delivered -- or the slot vanished, in which case a
 	// resend is moot); a retry may only target a slot that was linked at the send AND has been linked
 	// continuously since. A controller that connects LATER -- the wake gesture, or one the user just
@@ -769,11 +780,14 @@ void hapticTask()
 	{
 		static uint8_t prevLinked = 0;
 		uint8_t linked = 0;
+		// Deliberately NOT hapticLinkUp(): that helper lacks the != 0 guard, and a used-but-never-
+		// replied slot must not read linked in the first 300 ms of uptime (it would seed the mask
+		// with phantom slots). Same 300 ms recency window as anySlotLinkUp().
 		for (int ls = 0; ls < NSLOT; ls++)
 			if (g_slot[ls].used && g_connReplyMs[ls] != 0 &&
 			    millis() - g_connReplyMs[ls] < 300)
 				linked |= (uint8_t)(1u << ls);
-		s_offMask &= (uint8_t) ~(prevLinked &
+		g_offMask &= (uint8_t) ~(prevLinked &
 					 ~linked); // down edges leave the mask
 		prevLinked = linked;
 		// Suspend-edge off (host went to sleep / suspend-style shutdown).
@@ -782,9 +796,7 @@ void hapticTask()
 		    (millis() - suspSinceMs) >= SUSPEND_OFF_MS) {
 			hapticSendShutdown();
 			suspArmed = false; // fire once per suspend
-			s_offMask = linked;
-			s_offSentMs = millis();
-			s_offRetries = linked ? SUSPEND_OFF_RETRIES : 0;
+			offArm(linked);
 		}
 		// Reset-style shutdown off (SUSPEND_OFF_LOST_MS): some EC takeovers RESET the bus instead
 		// of suspending; connected clears, so suspended() never reads true and the edge path above
@@ -796,28 +808,35 @@ void hapticTask()
 		{
 			static bool everMounted = false;
 			static unsigned long lostMs = 0;
+			static unsigned long lostOpenMs = 0;
 			static bool lostDone = false;
 			if (USBDevice.mounted()) {
 				everMounted = true;
 				lostMs = 0;
+				lostOpenMs = 0;
 				lostDone = false;
 			} else if (everMounted && !susp) {
 				if (!lostMs)
 					lostMs = millis();
-				unsigned long since = millis() - lostMs;
-				if (!lostDone && since >= SUSPEND_OFF_LOST_MS &&
+				// The re-check window is anchored at the first pass where the
+				// gates are actually OPEN (like the fallback's fbExpiredMs),
+				// not at lostMs: a deadline that elapses while the handoff
+				// grace holds the gates shut must still get its full window
+				// at gate-open, not a degenerate single-instant sample.
+				if (!lostDone &&
+				    (unsigned long)(millis() - lostMs) >=
+					    SUSPEND_OFF_LOST_MS &&
 				    !wakeFireInFlight() &&
 				    !wakeHandoffActive()) {
+					if (!lostOpenMs)
+						lostOpenMs = millis();
 					if (vbus && linked) {
 						hapticSendShutdown();
 						lostDone = true;
-						s_offMask = linked;
-						s_offSentMs = millis();
-						s_offRetries =
-							SUSPEND_OFF_RETRIES;
-					} else if (since >=
-						   SUSPEND_OFF_LOST_MS +
-							   SUSPEND_OFF_RETRY_MS) {
+						offArm(linked);
+					} else if ((unsigned long)(millis() -
+								   lostOpenMs) >=
+						   SUSPEND_OFF_RETRY_MS) {
 						lostDone =
 							true; // window closed
 					}
@@ -840,9 +859,7 @@ void hapticTask()
 				if (vbus && linked) {
 					hapticSendShutdown();
 					fbDone = true;
-					s_offMask = linked;
-					s_offSentMs = millis();
-					s_offRetries = SUSPEND_OFF_RETRIES;
+					offArm(linked);
 				} else if ((unsigned long)(millis() -
 							   fbExpiredMs) >=
 					   SUSPEND_OFF_RETRY_MS) {
@@ -853,22 +870,25 @@ void hapticTask()
 		// Per-slot retries: at SUSPEND_OFF_RETRY_MS after a send the post-off F1 tail (<1 s) is
 		// long over, so a mask slot still continuously linked missed its burst -- resend to exactly
 		// those slots. Wake-flow exemptions match the fire paths.
-		if (s_offRetries && s_offMask &&
-		    (unsigned long)(millis() - s_offSentMs) >=
+		if (g_offRetries && g_offMask &&
+		    (unsigned long)(millis() - g_offSentMs) >=
 			    SUSPEND_OFF_RETRY_MS) {
 			bool hostDown = susp || !USBDevice.mounted();
-			uint8_t targets = (uint8_t)(s_offMask & linked);
+			// After the top-of-pass down-edge clear, g_offMask is provably a
+			// subset of `linked`; the & is kept as cheap armor, not a filter.
+			uint8_t targets = (uint8_t)(g_offMask & linked);
 			if (hostDown && vbus && !wakeFireInFlight() &&
 			    !wakeHandoffActive() && targets) {
 				for (int rs = 0; rs < NSLOT; rs++)
 					if (targets & (1u << rs))
 						hapticSendShutdown((uint8_t)rs);
-				s_offSentMs = millis();
-				s_offRetries--;
+				g_offSentMs = millis();
+				g_offRetries--;
 			} else {
-				// no targets (every masked slot dropped: delivered), or the
-				// host came back / the wake flow owns the bus
-				s_offRetries = 0;
+				// host came back, vbus dropped, or the wake flow owns the
+				// bus (an emptied mask cannot reach here: the outer gate
+				// requires it nonzero)
+				g_offRetries = 0;
 			}
 		}
 	}
