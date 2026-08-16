@@ -97,10 +97,12 @@ with the puck ever again. Two triggers, whichever comes first:
   boots — your press already was the gesture), answers the controller
   before it gives up searching, and fires. One press, machine on.
 - **The timer.** With no press, a persistent suspend (≥15 s) re-arms by
-  itself; the wake mode then arms ~8 s later through the normal quiet
-  clock (deliberately not instantly: with no press behind the re-arm,
-  nothing may fire without a fresh, human-shaped connect), and any later
-  press lands on the armed keyboard.
+  itself. When the controller has been off for 3 s+ at that point (the
+  normal case) the wake mode arms instantly — so a press *racing* the
+  timer still fires first try — and any later press lands on the armed
+  keyboard. Only if something was still linked at the re-arm does the
+  mode fall back to the ~8 s quiet-clock arming, so a controller that
+  somehow missed its power-off can never boot the machine by itself.
 
 Press *too* early (in the first ~10 s, while the puck is still deciding
 sleep-vs-shutdown) and the controller is powered back off by the normal

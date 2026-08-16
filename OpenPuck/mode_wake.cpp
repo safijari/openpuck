@@ -119,12 +119,12 @@ void WakeController::begin()
 	// 10 ms, a real keyboard's cadence; nothing here is latency-sensitive
 	g_kbd.setPollInterval(10);
 	g_kbd.begin();
-	// Connect-triggered rearm boot (0xC3, the ONLY marked rearm -- see WAKE_REARM_FIRE_WINDOW_MS):
-	// the user's press already happened and the host was proven down, so the link-quiet clock's job
-	// -- keeping a mode switch from typing into a live session -- is already done. Arm immediately:
-	// the connect that triggered the rearm must be answerable the moment it relinks. Timer/dead-bus
-	// rearm boots are unmarked and go through W_WAIT_DOWN like a manual entry, so a controller that
-	// survived its power-off can never fire the hotkey without a human gesture.
+	// Marked rearm boot (0xC3 -- see WAKE_REARM_FIRE_WINDOW_MS): the host was proven down and
+	// nothing was on the air at the reboot, so the link-quiet clock's job -- keeping a mode switch
+	// from typing into a live session -- is already done, and any prompt connect is a fresh human
+	// press. Arm immediately so that press is answerable the moment it (re)links. Rearm boots that
+	// had a link up (or only freshly down) are unmarked and go through W_WAIT_DOWN like a manual
+	// entry, so a controller that survived its power-off can never fire without a human gesture.
 	s_bootMs = millis();
 	if (g_wakeRearmBoot)
 		s_st = W_ARMED;
@@ -303,11 +303,12 @@ extern "C" void tud_suspend_cb(bool remote_wakeup_en)
 	s_suspWkArmed = remote_wakeup_en;
 }
 
-// CONNECT-TRIGGERED rearm reboot only: carries the persisted one-shot gesture marker (Cfg.wakeHandoff
-// 0xC3, flash for the same reason as the fire handoff: this board class's bootloader wipes .noinit
-// RAM). saveCfg runs inside modeSwitchReboot's saveMode, so the marker rides the same flash write.
-// Timer/dead-bus rearms call modeSwitchReboot(MODE_WAKE) bare -- no gesture, no marker, normal
-// quiet-clock arming. Does not return.
+// Marked rearm reboot: carries the persisted one-shot marker (Cfg.wakeHandoff 0xC3, flash for the
+// same reason as the fire handoff: this board class's bootloader wipes .noinit RAM) attesting that
+// nothing was on the air (see WAKE_REARM_FIRE_WINDOW_MS in mode_wake.h). saveCfg runs inside
+// modeSwitchReboot's saveMode, so the marker rides the same flash write. Callers with a link up (or
+// only freshly down) call modeSwitchReboot(MODE_WAKE) bare instead -- no marker, normal quiet-clock
+// arming. Does not return.
 static void wakeRearmReboot()
 {
 	g_wakeHandoffArm = 0xC3;
@@ -399,8 +400,7 @@ void wakeAutoRearmTask()
 		// and making the user wait out the timer. Runs before rfLinkTask/hapticTask in loop(), and
 		// the power-off frame only leaves on rfLinkTask's poll replies, so this reboot always
 		// preempts a same-pass power-off. A sleep episode (epArmed) never lands here: its connect
-		// edge did the S3 remote wakeup in rf_link instead. This is the ONLY marked (0xC3) rearm:
-		// the marker attests a user gesture.
+		// edge did the S3 remote wakeup in rf_link instead.
 		if (!epArmed && connGesture &&
 		    (uint32_t)(millis() - suspSince) >= WAKE_REARM_FLAP_MS)
 			wakeRearmReboot();
@@ -408,12 +408,21 @@ void wakeAutoRearmTask()
 		// flaps continue the shutdown episode, and counting from its start would fire the re-arm
 		// in the middle of a boot the user started by hand. Every flap restarts the clock; only
 		// WAKE_AUTO_REARM_MS of CONTINUOUS suspension (and a shutdown-decided episode) re-arms.
-		// UNMARKED reboot: with no gesture behind it, the wake mode must take the normal quiet-
-		// clock arming, or a controller that survived its power-off would relink into a pre-armed
-		// no-edge window and power the machine back on by itself.
+		// Marked (instant-arm) only when nothing is on the air and hasn't been for
+		// WAKE_REARM_CONN_DOWN_MS -- then a prompt connect on the wake boot must be a fresh human
+		// press, and a press RACING this timer fires first try instead of connecting into an
+		// unarmed quiet wait. With a link up (or only just dropped, i.e. possibly a fade of a
+		// controller that survived its power-off), boot UNMARKED: quiet-clock arming, so the
+		// survivor can never power the machine back on by itself.
 		if (!epArmed &&
-		    (uint32_t)(millis() - suspSince) >= WAKE_AUTO_REARM_MS)
-			modeSwitchReboot(MODE_WAKE);
+		    (uint32_t)(millis() - suspSince) >= WAKE_AUTO_REARM_MS) {
+			if (!linkUp && linkDownMs &&
+			    (uint32_t)(millis() - linkDownMs) >=
+				    WAKE_REARM_CONN_DOWN_MS)
+				wakeRearmReboot();
+			else
+				modeSwitchReboot(MODE_WAKE);
+		}
 		return;
 	}
 	// Dead-bus path (see WAKE_DEADBUS_REARM_MS): the bus is neither mounted nor suspended -- a
@@ -422,10 +431,19 @@ void wakeAutoRearmTask()
 	// uptime clock fired mid-shutdown and rebooted the puck out from under the pending power-off.
 	// No connect fast path here ON PURPOSE: a dead bus is also what a manually-rebooting PC looks
 	// like during POST, and a controller powered on during a normal boot must not swap the puck for
-	// the wake keyboard -- only the (deliberately long) timer may act on a dead bus. UNMARKED
-	// reboot for the same reason as the suspend timer above: no gesture, so no pre-armed window.
+	// the wake keyboard -- only the (deliberately long) timer may act on a dead bus. Marked
+	// (instant-arm) under the same nothing-on-the-air condition as the suspend timer above; with a
+	// link up the boot stays unmarked and quiet-clock arming keeps a standing link from ever
+	// firing without a human gesture (a controller off for 3 s+ arms via the quiet clock ~8 s
+	// later anyway, so the marker changes timing, not exposure).
 	if (busLostMs &&
-	    (uint32_t)(millis() - busLostMs) >= WAKE_DEADBUS_REARM_MS)
-		modeSwitchReboot(MODE_WAKE);
+	    (uint32_t)(millis() - busLostMs) >= WAKE_DEADBUS_REARM_MS) {
+		if (!linkUp && linkDownMs &&
+		    (uint32_t)(millis() - linkDownMs) >=
+			    WAKE_REARM_CONN_DOWN_MS)
+			wakeRearmReboot();
+		else
+			modeSwitchReboot(MODE_WAKE);
+	}
 #endif
 }

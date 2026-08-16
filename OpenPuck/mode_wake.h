@@ -117,16 +117,18 @@
 // ~15 s after shutdown connected to a Steam-mode puck on a suspended bus and was (correctly, for the
 // S3 case) powered straight back off by the suspend policy -- a press-timing trap users hit in
 // practice. A sleep episode (remote wakeup armed) never takes this path: its connect edge does the
-// normal S3 remote wakeup instead. CONNECT-TRIGGERED rearm boots -- and only those -- carry a
-// persisted one-shot marker (Cfg.wakeHandoff 0xC3 sentinel -> g_wakeRearmBoot): the marker attests a
-// USER GESTURE, so MODE_WAKE arms instantly (no link-quiet wait, RF cooldown pre-opened), and for
-// this long after the boot a link that is simply UP when the keyboard turns ready() fires without a
-// fresh up-edge -- the EC's enumeration of the reborn keyboard can outlast WAKE_FIRE_LATCH_MS, and
-// the connect that caused the boot IS the gesture. Past the window the strict edge-latch rules
-// return. Timer and dead-bus rearms deliberately boot UNMARKED into the normal quiet-clock arming: a
-// controller that survived its power-off (best-effort delivery) relinks right after any rearm
-// reboot, and against a pre-armed no-edge window that standing link would power the machine back on
-// with nobody at the button.
+// normal S3 remote wakeup instead. The persisted one-shot marker (Cfg.wakeHandoff 0xC3 sentinel ->
+// g_wakeRearmBoot) attests "NO CONTROLLER WAS ON THE AIR -- any prompt connect is a fresh human
+// press": connect-triggered rearms always carry it (the gesture already happened), and timer/
+// dead-bus rearms carry it only when the link has been continuously down >= WAKE_REARM_CONN_DOWN_MS
+// at the reboot. A marked boot arms instantly (no link-quiet wait, RF cooldown pre-opened), and for
+// this long after it a link that is simply UP when the keyboard turns ready() fires without a fresh
+// up-edge -- the EC's enumeration of the reborn keyboard can outlast WAKE_FIRE_LATCH_MS. This is
+// what makes a press RACING the timer (landing in the reboot's first seconds) fire first try
+// instead of connecting into an unarmed quiet wait. Past the window the strict edge-latch rules
+// return. A timer/dead-bus rearm with a link UP (or only just dropped -- an RF fade of a controller
+// that survived its best-effort power-off) boots UNMARKED into the normal quiet-clock arming, so a
+// standing or fade-flapping link can never power the machine back on with nobody at the button.
 #define WAKE_REARM_FIRE_WINDOW_MS 15000u
 // A connect edge only counts as a wake gesture if the link was continuously DOWN this long first: a
 // real press follows seconds-to-hours of controller-off, while an RF fade of a still-on controller
