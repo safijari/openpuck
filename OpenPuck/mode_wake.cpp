@@ -249,21 +249,35 @@ void wakeAutoRearmTask()
 {
 #if WAKE_AUTO_REARM
 	static uint32_t downAt = 0;
+	static uint32_t lastResumeMs = 0;
 	static bool wasSusp = false;
+	static bool epArmed =
+		false; // this down-episode's sleep-vs-shutdown decision
 	// A machine POSTing after our own wake fire looks suspended; re-arming now would swap the puck out
 	// from under the boot. Hold off until the handoff grace resolves (host mounts us, or deadline).
 	if (wakeHandoffActive())
 		return;
 	const bool susp = USBDevice.suspended();
-	if (susp && !wasSusp)
-		downAt = millis();
+	if (susp && !wasSusp) {
+		// Suspend edge. A fresh episode (bus was up >= WAKE_REARM_FLAP_MS, or first ever) samples
+		// the OS's intent NOW: armed remote wakeup = sleeping, clear = shutting down. A short flap
+		// (the EC's S5 port takeover) continues the current episode -- keep both the decision and
+		// the countdown start, or the EC's own arming would masquerade as a sleeping OS.
+		if (downAt == 0 ||
+		    (uint32_t)(millis() - lastResumeMs) >= WAKE_REARM_FLAP_MS) {
+			epArmed = s_suspWkArmed;
+			downAt = millis();
+		}
+	}
+	if (!susp && wasSusp)
+		lastResumeMs = millis();
 	wasSusp = susp;
 	if (!susp || modeIsWake(g_usbMode))
 		return;
-	// Host armed remote wakeup for this suspend => it is SLEEPING and expects to find the puck on
-	// resume; do not swap in the keyboard. (A boot into an already-suspended bus never saw a
-	// SET_FEATURE, so the flag is false and the plugged-into-a-dead-host re-arm still works.)
-	if (s_suspWkArmed)
+	// A sleeping host expects to find the puck on resume; do not swap in the keyboard. (A boot into an
+	// already-suspended bus never saw a SET_FEATURE, so the decision reads shutdown and the
+	// plugged-into-a-dead-host re-arm still works.)
+	if (epArmed)
 		return;
 	if (millis() - downAt >= WAKE_AUTO_REARM_MS)
 		modeSwitchReboot(MODE_WAKE);

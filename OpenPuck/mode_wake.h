@@ -97,6 +97,11 @@
 #define WAKE_AUTO_REARM 0
 #endif
 #define WAKE_AUTO_REARM_MS 15000u
+// A bus resume shorter than this does NOT start a new down-episode: during poweroff the smart-port EC
+// takes the bus over with a brief resume (~2.4 s captured on the M90q) and re-suspends WITH remote
+// wakeup armed -- its own listening mechanism, not the OS's sleep intent. The sleep-vs-shutdown decision
+// is sampled once, at the first suspend edge of the episode, and EC flaps cannot overwrite it.
+#define WAKE_REARM_FLAP_MS 5000u
 
 // Post-fire handoff grace. After the hotkey is sent the machine spends tens of seconds in POST + OS boot
 // with the bus suspended (nothing has enumerated the reborn puck yet) -- which is indistinguishable from
