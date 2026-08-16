@@ -96,7 +96,9 @@
 #ifndef WAKE_AUTO_REARM
 #define WAKE_AUTO_REARM 0
 #endif
+#ifndef WAKE_AUTO_REARM_MS
 #define WAKE_AUTO_REARM_MS 15000u
+#endif
 // A bus resume shorter than this does NOT start a new down-episode: during poweroff the smart-port EC
 // takes the bus over with a brief resume (~2.4 s captured on the M90q) and re-suspends WITH remote
 // wakeup armed -- its own listening mechanism, not the OS's sleep intent. The sleep-vs-shutdown decision
@@ -106,11 +108,12 @@
 // resume right before a genuine sleep, and inheriting an hours-old "shutdown" decision there would
 // re-arm under a sleeping host. The EC takeover flap arrives ~3 s into its episode, far under this cap.
 #define WAKE_REARM_EPISODE_MS 60000u
-// Dead-bus re-arm: TinyUSB only reports suspend on a bus that got a SETUP packet, so a failed wake's
-// return boot (EC cannot enumerate the composite) and a plug into an already-off host read neither
-// mounted nor suspended -- ever. Never-mounted this long after boot cannot be a live host (any real
-// boot's USB is up in well under this), so treat it as a shutdown and re-arm.
-#define WAKE_DEADBUS_REARM_MS 90000u
+// Dead-bus re-arm: TinyUSB only reports suspend on a bus that got a SETUP packet, so a bus that was
+// RESET at shutdown (one of the M90q EC's two takeover styles), a failed wake's return boot, and a plug
+// into an already-off host all read neither mounted nor suspended -- ever. Measured from when the bus
+// was LOST (or boot, if never mounted): long past a normal boot's re-enumeration gap and past the
+// SUSPEND_OFF_LOST_MS controller power-off, which must land first.
+#define WAKE_DEADBUS_REARM_MS 45000u
 
 // Post-fire handoff grace. After the hotkey is sent the machine spends tens of seconds in POST + OS boot
 // with the bus suspended (nothing has enumerated the reborn puck yet) -- which is indistinguishable from
@@ -127,6 +130,12 @@
 // skips setup()'s mount wait and opens the RF connect cooldown immediately, so the reborn puck answers
 // the triggering controller in <0.5 s -- before it gives up searching and powers itself off.
 #define WAKE_HANDOFF_GRACE_MS 90000u
+// Early end: once the bus has been CONTINUOUSLY mounted and active for this long, the OS is genuinely up
+// (BIOS legacy-HID mounts last a few seconds and end in the boot-handoff reset/suspend, never this) and
+// the grace's job is done. Without this, a shutdown within 90 s of a wake-boot found the suspend
+// power-off still suppressed: the controller stayed on, the re-arm swapped the puck mid-power-down, and
+// the controller reconnected to the wake keyboard it could then never arm against.
+#define WAKE_HANDOFF_MOUNTED_MS 20000u
 void wakeHandoffMark();
 bool wakeHandoffActive();
 // True from this boot's grace expiry onward (false on non-handoff boots): haptics' never-booted fallback.

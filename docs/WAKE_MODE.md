@@ -130,9 +130,10 @@ Everything the EC sees is a `#define` at the top of `mode_wake.h`:
 Full flow: arm (~5 s of observed RF-link silence, so switching modes with the
 controller still connected can't type into a live session) → fire on the
 first controller connect → settle → reboot into the return mode with a
-persisted one-shot **handoff grace**. During the grace (a fixed 90 s window —
-deliberately *not* ended by USB enumeration, which BIOSes perform during POST
-long before the OS is up), two standing behaviors that would otherwise
+persisted one-shot **handoff grace**. During the grace (up to 90 s; it ends
+early once the OS has been stably up for 20 s — a bar BIOS POST enumeration
+never clears — so a quick shutdown after a wake behaves normally), two
+standing behaviors that would otherwise
 misread a POSTing machine as "host went to sleep" hold their fire: the
 suspend-triggered controller power-off, and `WAKE_AUTO_REARM` itself. If the
 machine never boots, the grace expires and the controller is powered off

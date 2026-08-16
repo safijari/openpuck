@@ -767,15 +767,48 @@ void hapticTask()
 		s_offSentMs = millis();
 		s_offRetries = SUSPEND_OFF_RETRIES;
 	}
+	// Reset-style shutdown fallback (SUSPEND_OFF_LOST_MS): some EC takeovers RESET the bus instead of
+	// suspending it; that clears TinyUSB's connected state, so suspended() never reads true again and
+	// the suspend-edge path above cannot fire. "Was mounted, then the bus died and stayed dead 30 s"
+	// is the equivalent signal -- far past a normal boot's re-enumeration gap. Latched per loss.
+	{
+		static bool everMounted = false;
+		static unsigned long lostMs = 0;
+		static bool lostFired = false;
+		if (USBDevice.mounted()) {
+			everMounted = true;
+			lostMs = 0;
+			lostFired = false;
+		} else if (everMounted && !susp) {
+			if (!lostMs)
+				lostMs = millis();
+			if (!lostFired && vbus && !wakeFireInFlight() &&
+			    !wakeHandoffActive() && anySlotLinkUp() &&
+			    (unsigned long)(millis() - lostMs) >=
+				    SUSPEND_OFF_LOST_MS) {
+				hapticSendShutdown();
+				lostFired = true;
+				s_offSentMs = millis();
+				s_offRetries = SUSPEND_OFF_RETRIES;
+			}
+		}
+	}
 	if (s_offRetries &&
 	    (unsigned long)(millis() - s_offSentMs) >= SUSPEND_OFF_RETRY_MS) {
-		if (susp && vbus && anySlotLinkUp()) {
+		// Retry ONLY a controller that is provably still alive: continuously linked AND no 0xF2
+		// disconnect since the send (g_connCooldown timestamps the 0xF2). A dying controller's F1
+		// tail can hold anySlotLinkUp() true past the send, and a retry volley's poll+relay TX into
+		// that power-down window RE-WAKES it -- the exact hazard the post-disconnect cooldown
+		// exists to avoid.
+		bool discSinceSend = (long)(g_connCooldown - s_offSentMs) >= 0;
+		bool hostDown = susp || !USBDevice.mounted();
+		if (hostDown && vbus && anySlotLinkUp() && !discSinceSend) {
 			hapticSendShutdown();
 			s_offSentMs = millis();
 			s_offRetries--;
 		} else {
 			s_offRetries =
-				0; // delivered (link down) or host came back
+				0; // delivered (0xF2/link down) or host back
 		}
 	}
 	// Never-booted fallback: a failed wake's return boot never gets a SETUP packet, and TinyUSB only

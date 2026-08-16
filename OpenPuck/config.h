@@ -209,6 +209,12 @@ void swProSaveCfg();
 // enough to clear the dying controller's ~1 s F1 tail plus the 2.5 s post-disconnect cooldown, so a
 // retry can never transmit into the power-down window and re-wake it.
 #define SUSPEND_OFF_RETRY_MS 4000u
+// Reset-style shutdowns: some ECs RESET the bus when taking the port for S5 (observed on the M90q,
+// intermixed with suspend-style takeovers). A reset clears TinyUSB's connected state, so suspended()
+// never reads true again and the suspend-edge power-off above can never fire. "Was mounted, then the bus
+// died and stayed dead this long" is the equivalent signal -- long past any normal boot's ~10-20 s
+// re-enumeration gap, so it can never kill the controller during a reboot.
+#define SUSPEND_OFF_LOST_MS 30000u
 #define SUSPEND_OFF_RETRIES 2u
 // RF poll cadence (us). Defaults to POLL_US_DEFAULT; live-adjustable via the console "PR<hz>" command
 // (session-only -- NOT persisted; loadCfg always forces the default on boot) so the sweet spot can be
