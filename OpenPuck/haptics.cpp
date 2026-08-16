@@ -732,6 +732,8 @@ void hapticTask()
 	static bool wasSusp = true;
 	static unsigned long suspSinceMs = 0;
 	static bool suspArmed = false;
+	static unsigned long s_offSentMs = 0;
+	static uint8_t s_offRetries = 0;
 	bool susp = USBDevice.suspended();
 	bool vbus = (NRF_POWER->USBREGSTATUS &
 		     POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
@@ -758,6 +760,23 @@ void hapticTask()
 	    (millis() - suspSinceMs) >= SUSPEND_OFF_MS) {
 		hapticSendShutdown();
 		suspArmed = false; // fire once per suspend
+		// The off relay is a NO-ACK burst of HAPTIC_SHUTDOWN_SHOTS packets inside ~10 ms -- one bad
+		// RF moment loses all of them and the controller stays on all night (observed once on the
+		// M90q). A controller that actually received it drops its link within a second, so "still
+		// linked a while later" IS the missed-delivery signal; resend a bounded number of times.
+		s_offSentMs = millis();
+		s_offRetries = SUSPEND_OFF_RETRIES;
+	}
+	if (s_offRetries &&
+	    (unsigned long)(millis() - s_offSentMs) >= SUSPEND_OFF_RETRY_MS) {
+		if (susp && vbus && anySlotLinkUp()) {
+			hapticSendShutdown();
+			s_offSentMs = millis();
+			s_offRetries--;
+		} else {
+			s_offRetries =
+				0; // delivered (link down) or host came back
+		}
 	}
 	// Never-booted fallback: a failed wake's return boot never gets a SETUP packet, and TinyUSB only
 	// reports suspend on a CONNECTED bus -- so neither the suspArmed edge above nor suspended() itself

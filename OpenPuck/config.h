@@ -204,6 +204,10 @@ void swProSaveCfg();
 // (host idle power-management) resumes in <1s and must not trigger a self-inflicted power-off -> the
 // resulting disconnect/reconnect churn looked like random controller drops. Real host sleep persists.
 #define SUSPEND_OFF_MS 4000u
+// The suspend power-off relay is NO-ACK RF; if a controller is still linked this long after the off was
+// sent, the burst was lost -- resend, at most SUSPEND_OFF_RETRIES times.
+#define SUSPEND_OFF_RETRY_MS 2000u
+#define SUSPEND_OFF_RETRIES 2u
 // RF poll cadence (us). Defaults to POLL_US_DEFAULT; live-adjustable via the console "PR<hz>" command
 // (session-only -- NOT persisted; loadCfg always forces the default on boot) so the sweet spot can be
 // swept on hardware while watching the delivered report rate.
