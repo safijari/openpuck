@@ -102,6 +102,15 @@
 // wakeup armed -- its own listening mechanism, not the OS's sleep intent. The sleep-vs-shutdown decision
 // is sampled once, at the first suspend edge of the episode, and EC flaps cannot overwrite it.
 #define WAKE_REARM_FLAP_MS 5000u
+// ...but an episode older than this always re-samples: USB selective-suspend churn can put a sub-5 s
+// resume right before a genuine sleep, and inheriting an hours-old "shutdown" decision there would
+// re-arm under a sleeping host. The EC takeover flap arrives ~3 s into its episode, far under this cap.
+#define WAKE_REARM_EPISODE_MS 60000u
+// Dead-bus re-arm: TinyUSB only reports suspend on a bus that got a SETUP packet, so a failed wake's
+// return boot (EC cannot enumerate the composite) and a plug into an already-off host read neither
+// mounted nor suspended -- ever. Never-mounted this long after boot cannot be a live host (any real
+// boot's USB is up in well under this), so treat it as a shutdown and re-arm.
+#define WAKE_DEADBUS_REARM_MS 90000u
 
 // Post-fire handoff grace. After the hotkey is sent the machine spends tens of seconds in POST + OS boot
 // with the bus suspended (nothing has enumerated the reborn puck yet) -- which is indistinguishable from

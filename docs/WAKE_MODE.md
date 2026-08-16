@@ -51,12 +51,19 @@ still on can't type into your live session.
    normal puck again and the controller has reconnected by itself —
    single press, end to end.
 
-The escape hatch from wake mode without firing is the **all-four-back-paddles
-+ A** chord on a connected controller: it reboots straight back to Steam
-mode, and works whether the machine is on or off (wake mode is exempt from
-the usual no-mode-switch-while-suspended rule — it has no other exit). Note
-the wake trigger is *any* bonded controller connecting; with two controllers,
-one left powered on prevents arming until it, too, goes quiet.
+**Leaving wake mode.** The **all-four-back-paddles + A** chord on a connected
+controller reboots straight back to Steam mode, and works whether the machine
+is on or off (wake mode is exempt from the usual
+no-mode-switch-while-suspended rule in both directions — the chord is also
+how you *enter* mode 10 with the machine already off). Timing matters,
+though: the chord only escapes **without firing** while the controller that
+was connected at the mode switch stays connected (the mode never arms with a
+link up). Once armed, a *fresh* controller connect is the wake gesture and
+fires immediately — on a running machine that types the hotkey once into the
+session and bounces back to the normal puck by itself, which is the other,
+cruder way out. Note the trigger is *any* bonded controller connecting; with
+two controllers, one left powered on prevents arming until it, too, goes
+quiet.
 
 ## 4. The LED tells you what happened
 
@@ -68,7 +75,7 @@ diagnostic story:
 
 | You see | It means |
 | --- | --- |
-| No pulses when the controller connects | The EC never enumerated/configured the keyboard: wrong port, BIOS feature off, or the machine's EC doesn't service USB in S5. |
+| No pulses when the controller connects | First rule out timing: the mode arms ~8 s after the link goes quiet (2.5 s radio bring-up + 5 s observed quiet), so a power-press within ~8 s of shutdown, or a second bonded controller still powered on, means it simply was not armed yet — power the controller off, wait ~10 s, try again. If timing is ruled out: the EC never enumerated/configured the keyboard — wrong port, BIOS feature off, or the machine's EC doesn't service USB in S5. |
 | Pulses, machine stays off | Reports were delivered but the hotkey parser rejected them: wrong hotkey for your vendor (§6), or the EC wants different press shaping (`WAKE_*` timings in `mode_wake.h`). |
 | Pulses, machine powers on | Working as intended. |
 
@@ -90,11 +97,17 @@ an OS going to sleep arms USB remote wakeup on the puck first (that's what
 makes the existing wake-from-S3 feature work), and such suspends never
 re-arm, so sleeping the machine leaves the puck a normal puck and
 controller-wake-from-sleep keeps working. A shutdown never arms remote
-wakeup, so it re-arms as intended. Caveat: if your OS has wakeup *disabled*
+wakeup, so it re-arms as intended — even though some ECs (the M90q's
+included) re-arm the feature themselves when they take the port over in S5;
+the decision is sampled from the OS's own suspend, so that doesn't confuse
+it. A wake that *fails* (machine never boots) re-arms again 90 s later, so
+the next press still works. Two caveats: if your OS has wakeup *disabled*
 for the device (Linux: `power/wakeup` in sysfs), its sleep looks like a
 shutdown and the puck will re-arm mid-sleep — recover with the escape chord
-or a replug, or enable device wakeup. Validated end-to-end on the M90q
-Gen 6.
+or a replug, or enable device wakeup. And a host that arms remote wakeup
+once but never clears it (Linux clears on resume; other OSes untested) would
+make shutdowns look like sleeps — if auto-rearm silently stops re-arming on
+your machine, that's the signature. Validated end-to-end on the M90q Gen 6.
 
 ## 6. Other vendors / tuning the press
 

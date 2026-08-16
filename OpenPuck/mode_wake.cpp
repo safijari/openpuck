@@ -27,7 +27,9 @@ static Adafruit_USBD_HID g_kbd;
 // modeSwitchReboot(0xFF) ("keep current"), which intentionally skips its own saveMode.
 void wakeHandoffMark()
 {
-	g_wakeHandoffArm = 1;
+	// 0xA5, not 1: this byte is the repurposed legacy rumble-strength slot (0..100), so a plausible
+	// legacy value must not read as an arm after a firmware upgrade. 0xA5 is outside that range.
+	g_wakeHandoffArm = 0xA5;
 	saveCfg();
 }
 
@@ -248,23 +250,23 @@ extern "C" void tud_suspend_cb(bool remote_wakeup_en)
 void wakeAutoRearmTask()
 {
 #if WAKE_AUTO_REARM
-	static uint32_t downAt = 0;
+	static uint32_t suspSince = 0; // last suspend EDGE (flaps included)
+	static uint32_t downAt = 0; // episode start (0 = none yet)
 	static uint32_t lastResumeMs = 0;
 	static bool wasSusp = false;
-	static bool epArmed =
-		false; // this down-episode's sleep-vs-shutdown decision
-	// A machine POSTing after our own wake fire looks suspended; re-arming now would swap the puck out
-	// from under the boot. Hold off until the handoff grace resolves (host mounts us, or deadline).
-	if (wakeHandoffActive())
-		return;
+	static bool epArmed = false; // episode's sleep-vs-shutdown decision
 	const bool susp = USBDevice.suspended();
+	// Track episodes UNCONDITIONALLY -- only the reboot action is gated below. Skipping the tracking
+	// during the handoff grace left a shutdown-inside-the-grace unrecorded, so the first post-grace
+	// edge sampled the EC's stale remote-wakeup arming as if it were the OS sleeping.
 	if (susp && !wasSusp) {
-		// Suspend edge. A fresh episode (bus was up >= WAKE_REARM_FLAP_MS, or first ever) samples
-		// the OS's intent NOW: armed remote wakeup = sleeping, clear = shutting down. A short flap
-		// (the EC's S5 port takeover) continues the current episode -- keep both the decision and
-		// the countdown start, or the EC's own arming would masquerade as a sleeping OS.
+		suspSince = millis();
+		// Fresh episode: bus was up >= WAKE_REARM_FLAP_MS (a real host session, however brief), no
+		// episode yet, or the current one aged past WAKE_REARM_EPISODE_MS. Otherwise this edge is
+		// a flap continuing the current episode: keep its decision.
 		if (downAt == 0 ||
-		    (uint32_t)(millis() - lastResumeMs) >= WAKE_REARM_FLAP_MS) {
+		    (uint32_t)(millis() - lastResumeMs) >= WAKE_REARM_FLAP_MS ||
+		    (uint32_t)(millis() - downAt) >= WAKE_REARM_EPISODE_MS) {
 			epArmed = s_suspWkArmed;
 			downAt = millis();
 		}
@@ -272,14 +274,24 @@ void wakeAutoRearmTask()
 	if (!susp && wasSusp)
 		lastResumeMs = millis();
 	wasSusp = susp;
-	if (!susp || modeIsWake(g_usbMode))
+	// A machine POSTing after our own wake fire looks suspended (or dead); re-arming now would swap
+	// the puck out from under the boot. Track above, act only past the grace.
+	if (wakeHandoffActive() || modeIsWake(g_usbMode))
 		return;
-	// A sleeping host expects to find the puck on resume; do not swap in the keyboard. (A boot into an
-	// already-suspended bus never saw a SET_FEATURE, so the decision reads shutdown and the
-	// plugged-into-a-dead-host re-arm still works.)
-	if (epArmed)
+	if (susp) {
+		// Countdown from the LAST suspend edge, not the episode start: a manual power-on's POST
+		// flaps continue the shutdown episode, and counting from its start would fire the re-arm
+		// in the middle of a boot the user started by hand. Every flap restarts the clock; only
+		// WAKE_AUTO_REARM_MS of CONTINUOUS suspension (and a shutdown-decided episode) re-arms.
+		if (!epArmed &&
+		    (uint32_t)(millis() - suspSince) >= WAKE_AUTO_REARM_MS)
+			modeSwitchReboot(MODE_WAKE);
 		return;
-	if (millis() - downAt >= WAKE_AUTO_REARM_MS)
+	}
+	// Dead-bus path (see WAKE_DEADBUS_REARM_MS): never enumerated => never mounted AND never
+	// suspended. A failed wake's return boot and a plug into an off host both land here; a live
+	// host mounts us long before the deadline and never enters this branch.
+	if (!USBDevice.mounted() && millis() >= WAKE_DEADBUS_REARM_MS)
 		modeSwitchReboot(MODE_WAKE);
 #endif
 }

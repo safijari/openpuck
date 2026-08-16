@@ -759,15 +759,14 @@ void hapticTask()
 		hapticSendShutdown();
 		suspArmed = false; // fire once per suspend
 	}
-	// Never-booted fallback: the grace boot lands on an ALREADY-suspended bus (machine off / POST hung),
-	// so the false->true edge above never arms. When the grace expires with the bus still suspended
-	// since boot, power the controller off once -- the wake failed; save its battery.
+	// Never-booted fallback: a failed wake's return boot never gets a SETUP packet, and TinyUSB only
+	// reports suspend on a CONNECTED bus -- so neither the suspArmed edge above nor suspended() itself
+	// can see that state. "Handoff grace expired and no host ever configured us" is the workable
+	// signal: a machine that actually booted mounts the puck long before the 90 s grace runs out.
 	{
-		static bool bootSusp = true;
 		static bool expiredFired = false;
-		if (!susp)
-			bootSusp = false;
-		if (bootSusp && vbus && !expiredFired && wakeHandoffExpired()) {
+		if (!expiredFired && vbus && !USBDevice.mounted() &&
+		    wakeHandoffExpired()) {
 			hapticSendShutdown();
 			expiredFired = true;
 		}

@@ -501,7 +501,10 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 									    .suspended()) {
 									USBDevice
 										.remoteWakeup();
-									ledWakePulse();
+									// wake mode: LED = presses only
+									if (!modeIsWake(
+										    g_usbMode))
+										ledWakePulse();
 									if (g_active)
 										g_active->wakeEvent();
 								}
@@ -761,13 +764,15 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						// host never resumes to a different device -- but a
 						// suspended bus is MODE_WAKE's normal environment (host
 						// off / wrong port), and the chord is that mode's ONLY
-						// exit (no WebUSB, no CDC). Exempt it, like
-						// wakeAutoRearmTask already does.
+						// exit (no WebUSB, no CDC) AND its only panel-less entry
+						// once the machine is already off. Exempt both
+						// directions, like wakeAutoRearmTask already does.
 						if (++chCnt[g_curSlot] >= 12 &&
 						    want != g_usbMode &&
 						    modeValid(want) &&
 						    (!USBDevice.suspended() ||
-						     modeIsWake(g_usbMode))) {
+						     modeIsWake(g_usbMode) ||
+						     modeIsWake(want))) {
 							// clean detach + reboot into the new mode (releases any held
 							// input on the outgoing device -- see modeSwitchReboot)
 							modeSwitchReboot(want);

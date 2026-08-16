@@ -101,11 +101,12 @@ struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
 		bootMode, chordBtn[3], wakeHandoff;
 	// wakeHandoff: ex rumble-strength slot (same offset and magic, so an existing cfg.bin still loads --
-	// which also means a pre-rework file can hold a live rumble VALUE here, not 0). Now the one-shot
-	// post-wake-fire handoff arm: MODE_WAKE sets exactly 1 right before its return reboot, loadCfg honors
-	// ==1 for that boot and consumes ANY nonzero (so a legacy value, or a 1 stranded by flashing an old
-	// firmware between the fire and the consume, is scrubbed rather than read as an arm later). In FLASH,
-	// not .noinit, because this board class's bootloader wipes .noinit RAM on every reset.
+	// which also means a pre-rework file can hold a live rumble VALUE here, 0..100). Now the one-shot
+	// post-wake-fire handoff arm: MODE_WAKE writes the 0xA5 sentinel (outside the legacy range) right
+	// before its return reboot; loadCfg honors ==0xA5 for that boot and consumes ANY nonzero (so a
+	// legacy value, or a sentinel stranded by flashing an old firmware between the fire and the consume,
+	// is scrubbed rather than read as an arm later). In FLASH, not .noinit, because this board class's
+	// bootloader wipes .noinit RAM on every reset.
 	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
 	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
 	uint8_t rxWin10, lizKeep, landAll87;
@@ -180,10 +181,11 @@ void loadCfg()
 				consume = true;
 			}
 			// one-shot wake handoff: this boot follows a MODE_WAKE fire; honored (grace + fast RF
-			// bring-up) then consumed. Honor ==1 exactly (the only value the fire writes) but consume
-			// any nonzero so legacy rumble-era values in this byte are scrubbed, not resurrected.
+			// bring-up) then consumed. Honor the 0xA5 sentinel exactly -- this byte is the legacy
+			// rumble-strength slot (0..100), so a real legacy value can never fake an arm -- and
+			// consume any nonzero so stale values are scrubbed, not resurrected.
 			if (c.wakeHandoff != 0) {
-				g_wakeHandoffBoot = (c.wakeHandoff == 1);
+				g_wakeHandoffBoot = (c.wakeHandoff == 0xA5);
 				g_wakeHandoffArm = 0;
 				consume = true;
 			}
