@@ -283,24 +283,39 @@ void wakeAutoRearmTask()
 		if (downAt == 0 ||
 		    (uint32_t)(millis() - lastResumeMs) >= WAKE_REARM_FLAP_MS ||
 		    (uint32_t)(millis() - downAt) >= WAKE_REARM_EPISODE_MS) {
-			epArmed = s_suspWkArmed;
+			// The arming only counts as the OS's sleep intent if a real host is actually
+			// CONFIGURED on the bus: a reset-then-suspend EC takeover clears the config and
+			// then SET_FEATUREs remote wakeup itself before suspending -- with no resume edge
+			// since the reset, that reads as a fresh episode, and sampling the bare flag there
+			// classified every such shutdown as a sleeping host and vetoed the re-arm. An OS
+			// entering S3 is always mounted at its suspend edge.
+			epArmed = s_suspWkArmed && USBDevice.mounted();
 			downAt = millis();
 		}
 	}
 	if (!susp && wasSusp)
 		lastResumeMs = millis();
 	wasSusp = susp;
+	// Track the bus-lost clock UNCONDITIONALLY (like the episode tracking above): latching it below
+	// the grace gate made a failed wake's 45 s dead-bus countdown start only after the 90 s grace,
+	// re-arming at ~140 s instead of the documented ~grace-end.
+	static uint32_t busLostMs = 0;
+	if (USBDevice.mounted())
+		busLostMs = 0;
+	else if (!busLostMs)
+		busLostMs = millis() ? millis() : 1;
 	// A machine POSTing after our own wake fire looks suspended (or dead); re-arming now would swap
 	// the puck out from under the boot. Track above, act only past the grace -- and give haptics'
-	// suspend power-off (ripe at suspend+4 s, vs our 15 s) a head start when the grace ends with the
-	// bus already down, so the re-arm reboot can never preempt the controller's off.
+	// suspend power-off AND its full retry schedule (ripe through send + RETRIES x RETRY_MS = 12 s)
+	// a head start when the grace ends with the bus already down, so the re-arm reboot can never
+	// destroy a pending resend.
 	if (wakeHandoffActive() || modeIsWake(g_usbMode))
 		return;
 	static uint32_t graceClearMs = 0;
 	if (g_wakeHandoffBoot) {
 		if (!graceClearMs)
 			graceClearMs = millis();
-		if ((uint32_t)(millis() - graceClearMs) < 5000u)
+		if ((uint32_t)(millis() - graceClearMs) < 15000u)
 			return;
 	}
 	if (susp) {
@@ -314,17 +329,11 @@ void wakeAutoRearmTask()
 		return;
 	}
 	// Dead-bus path (see WAKE_DEADBUS_REARM_MS): the bus is neither mounted nor suspended -- a
-	// reset-style shutdown, a failed wake's return boot, or a plug into an off host. Measured from
-	// the moment the bus was lost (boot, if it was never mounted), NOT puck uptime: an uptime clock
-	// fired mid-shutdown and rebooted the puck out from under the pending controller power-off.
-	static uint32_t busLostMs = 0;
-	if (USBDevice.mounted()) {
-		busLostMs = 0;
-	} else {
-		if (!busLostMs)
-			busLostMs = millis() ? millis() : 1;
-		if ((uint32_t)(millis() - busLostMs) >= WAKE_DEADBUS_REARM_MS)
-			modeSwitchReboot(MODE_WAKE);
-	}
+	// reset-style shutdown, a failed wake's return boot, or a plug into an off host. The clock runs
+	// from the moment the bus was lost (tracked above, through the grace), NOT puck uptime: an
+	// uptime clock fired mid-shutdown and rebooted the puck out from under the pending power-off.
+	if (busLostMs &&
+	    (uint32_t)(millis() - busLostMs) >= WAKE_DEADBUS_REARM_MS)
+		modeSwitchReboot(MODE_WAKE);
 #endif
 }

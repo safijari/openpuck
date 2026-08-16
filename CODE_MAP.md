@@ -446,7 +446,8 @@ firmware watches the port for a keyboard hotkey (Lenovo Smart Power On = Alt+P).
   once per down-episode (flap filter `WAKE_REARM_FLAP_MS` vs the EC's S5 port-takeover
   re-arm, age cap `WAKE_REARM_EPISODE_MS`); armed = sleeping host, never re-arm. The
   countdown runs from the last suspend edge (`WAKE_AUTO_REARM_MS` continuous), plus a
-  never-enumerated dead-bus path (`WAKE_DEADBUS_REARM_MS`).
+  dead-bus path (`WAKE_DEADBUS_REARM_MS` from the moment the bus was lost) covering
+  reset-style EC takeovers, failed wakes, and plugs into an off host.
 - Enumerates bare -- single boot-protocol keyboard, no wake mouse / WebUSB / CDC (`bareHid`
   in `setup()`) -- because the S5 embedded controller runs a minimal USB host stack.
 

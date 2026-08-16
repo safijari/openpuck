@@ -100,14 +100,19 @@ controller-wake-from-sleep keeps working. A shutdown never arms remote
 wakeup, so it re-arms as intended — even though some ECs (the M90q's
 included) re-arm the feature themselves when they take the port over in S5;
 the decision is sampled from the OS's own suspend, so that doesn't confuse
-it. A wake that *fails* (machine never boots) re-arms again 90 s later, so
-the next press still works. Two caveats: if your OS has wakeup *disabled*
-for the device (Linux: `power/wakeup` in sysfs), its sleep looks like a
-shutdown and the puck will re-arm mid-sleep — recover with the escape chord
-or a replug, or enable device wakeup. And a host that arms remote wakeup
-once but never clears it (Linux clears on resume; other OSes untested) would
-make shutdowns look like sleeps — if auto-rearm silently stops re-arming on
-your machine, that's the signature. Validated end-to-end on the M90q Gen 6.
+it. A wake that *fails* (machine never boots) re-arms again when the 90 s
+handoff grace runs out (~90–105 s after the fire), so a later press still
+works. Three caveats: if your OS has wakeup *disabled* for the device
+(Linux: `power/wakeup` in sysfs), its sleep looks like a shutdown and the
+puck will re-arm mid-sleep — recover with the escape chord or a replug, or
+enable device wakeup. A host that arms remote wakeup once but never clears
+it (Linux clears on resume; other OSes untested) would make shutdowns look
+like sleeps — if auto-rearm silently stops re-arming on your machine, that's
+the signature. And if the *puck itself* restarts while the host is asleep
+(replug, firmware flash, watchdog reset), a sleeping host is indistinguishable
+from an off one — the puck re-arms ~45 s later and the resumed session finds
+the wake keyboard instead of a controller; escape-chord or replug recovers.
+Validated end-to-end on the M90q Gen 6.
 
 ## 6. Other vendors / tuning the press
 
@@ -132,8 +137,9 @@ controller still connected can't type into a live session) → fire on the
 first controller connect → settle → reboot into the return mode with a
 persisted one-shot **handoff grace**. During the grace (up to 90 s; it ends
 early once the OS has been stably up for 20 s — a bar BIOS POST enumeration
-never clears — so a quick shutdown after a wake behaves normally), two
-standing behaviors that would otherwise
+never clears, so a quick shutdown after a wake behaves normally; the one
+exception is parking in BIOS setup for 20 s+ right after a wake, which also
+ends the grace early), two standing behaviors that would otherwise
 misread a POSTing machine as "host went to sleep" hold their fire: the
 suspend-triggered controller power-off, and `WAKE_AUTO_REARM` itself. If the
 machine never boots, the grace expires and the controller is powered off
