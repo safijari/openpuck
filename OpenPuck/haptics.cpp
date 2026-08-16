@@ -734,6 +734,8 @@ void hapticTask()
 	static bool suspArmed = false;
 	static unsigned long s_offSentMs = 0;
 	static uint8_t s_offRetries = 0;
+	static uint8_t s_offMask =
+		0; // slots linked at the last off send, minus down edges since
 	bool susp = USBDevice.suspended();
 	bool vbus = (NRF_POWER->USBREGSTATUS &
 		     POWER_USBREGSTATUS_VBUSDETECT_Msk) != 0;
@@ -756,92 +758,118 @@ void hapticTask()
 	//     mode arm at all.
 	//   - the post-fire return boot: POST has not enumerated the reborn puck yet; hold through the
 	//     handoff grace (deadline-only -- see mode_wake.h).
-	if (suspArmed && vbus && !wakeFireInFlight() && !wakeHandoffActive() &&
-	    (millis() - suspSinceMs) >= SUSPEND_OFF_MS) {
-		hapticSendShutdown();
-		suspArmed = false; // fire once per suspend
-		// The off relay is a NO-ACK burst of HAPTIC_SHUTDOWN_SHOTS packets inside ~10 ms -- one bad
-		// RF moment loses all of them and the controller stays on all night. Arm retries only if a
-		// controller was actually linked at the send: an off broadcast into vacuum needs no retry,
-		// and a pending retry must never target a controller that connects LATER (that connect is
-		// the wake gesture or a fresh session, not a missed delivery).
-		if (anySlotLinkUp()) {
-			s_offSentMs = millis();
-			s_offRetries = SUSPEND_OFF_RETRIES;
-		}
-	}
-	// Reset-style shutdown fallback (SUSPEND_OFF_LOST_MS): some EC takeovers RESET the bus instead of
-	// suspending it; that clears TinyUSB's connected state, so suspended() never reads true again and
-	// the suspend-edge path above cannot fire. "Was mounted, then the bus died and stayed dead 30 s"
-	// is the equivalent signal -- far past a normal boot's re-enumeration gap. EDGE-triggered: the
-	// decision is made exactly once, when the 30 s deadline passes -- a controller powered on hours
-	// into the dead-bus night must not be executed on sight by stale state.
+	// ---- suspend/lost-bus power-off + per-slot retry bookkeeping ---------------------------------
+	// Every off send SNAPSHOTS which slots were linked at that moment (s_offMask). A slot leaves the
+	// mask the moment its link drops (the off was delivered -- or the slot vanished, in which case a
+	// resend is moot); a retry may only target a slot that was linked at the send AND has been linked
+	// continuously since. A controller that connects LATER -- the wake gesture, or one the user just
+	// re-powered after the off -- was never in the mask and can never be targeted; a slot that drops
+	// and relinks left the mask at the drop. Interference that drops a link without delivery reads as
+	// delivered and the controller stays on: the safe failure (battery) over the harmful one.
 	{
-		static bool everMounted = false;
-		static unsigned long lostMs = 0;
-		static bool lostChecked = false;
-		if (USBDevice.mounted()) {
-			everMounted = true;
-			lostMs = 0;
-			lostChecked = false;
-		} else if (everMounted && !susp) {
-			if (!lostMs)
-				lostMs = millis();
-			if (!lostChecked &&
-			    (unsigned long)(millis() - lostMs) >=
-				    SUSPEND_OFF_LOST_MS) {
-				lostChecked = true;
-				if (vbus && !wakeFireInFlight() &&
-				    !wakeHandoffActive() && anySlotLinkUp()) {
-					hapticSendShutdown();
-					s_offSentMs = millis();
-					s_offRetries = SUSPEND_OFF_RETRIES;
+		static uint8_t prevLinked = 0;
+		uint8_t linked = 0;
+		for (int ls = 0; ls < NSLOT; ls++)
+			if (g_slot[ls].used && g_connReplyMs[ls] != 0 &&
+			    millis() - g_connReplyMs[ls] < 300)
+				linked |= (uint8_t)(1u << ls);
+		s_offMask &= (uint8_t) ~(prevLinked &
+					 ~linked); // down edges leave the mask
+		prevLinked = linked;
+		// Suspend-edge off (host went to sleep / suspend-style shutdown).
+		if (suspArmed && vbus && !wakeFireInFlight() &&
+		    !wakeHandoffActive() &&
+		    (millis() - suspSinceMs) >= SUSPEND_OFF_MS) {
+			hapticSendShutdown();
+			suspArmed = false; // fire once per suspend
+			s_offMask = linked;
+			s_offSentMs = millis();
+			s_offRetries = linked ? SUSPEND_OFF_RETRIES : 0;
+		}
+		// Reset-style shutdown off (SUSPEND_OFF_LOST_MS): some EC takeovers RESET the bus instead
+		// of suspending; connected clears, so suspended() never reads true and the edge path above
+		// cannot fire. "Was mounted, then the bus stayed dead" is the equivalent signal. The
+		// decision holds a RE-CHECK WINDOW (deadline .. +SUSPEND_OFF_RETRY_MS) rather than one
+		// sample instant, and the one-shot is only consumed once the decision was actually
+		// takeable -- a deadline spent inside the handoff grace or a fire sequence, or a transient
+		// reply gap at one instant, must not forfeit the episode's only off.
+		{
+			static bool everMounted = false;
+			static unsigned long lostMs = 0;
+			static bool lostDone = false;
+			if (USBDevice.mounted()) {
+				everMounted = true;
+				lostMs = 0;
+				lostDone = false;
+			} else if (everMounted && !susp) {
+				if (!lostMs)
+					lostMs = millis();
+				unsigned long since = millis() - lostMs;
+				if (!lostDone && since >= SUSPEND_OFF_LOST_MS &&
+				    !wakeFireInFlight() &&
+				    !wakeHandoffActive()) {
+					if (vbus && linked) {
+						hapticSendShutdown();
+						lostDone = true;
+						s_offMask = linked;
+						s_offSentMs = millis();
+						s_offRetries =
+							SUSPEND_OFF_RETRIES;
+					} else if (since >=
+						   SUSPEND_OFF_LOST_MS +
+							   SUSPEND_OFF_RETRY_MS) {
+						lostDone =
+							true; // window closed
+					}
 				}
 			}
 		}
-	}
-	// Retries are PER-SLOT: at SUSPEND_OFF_RETRY_MS after a send the post-off F1 tail (<1 s) is long
-	// over, so a slot still linked missed the burst and a slot whose link dropped received it -- the
-	// link itself is the per-controller delivery receipt (the global g_connCooldown 0xF2 stamp cannot
-	// attribute receipts with two controllers, and its 0-means-idle sentinel breaks the comparison on
-	// multi-week uptimes). Slot-targeted resends never re-enter a delivered controller's power-down,
-	// and the wake-flow exemptions match the initial-fire paths so a retry can never execute the
-	// controller whose connect is the wake gesture.
-	if (s_offRetries &&
-	    (unsigned long)(millis() - s_offSentMs) >= SUSPEND_OFF_RETRY_MS) {
-		bool resent = false;
-		bool hostDown = susp || !USBDevice.mounted();
-		if (hostDown && vbus && !wakeFireInFlight() &&
-		    !wakeHandoffActive()) {
-			for (int rs = 0; rs < NSLOT; rs++)
-				if (g_slot[rs].used && g_connReplyMs[rs] != 0 &&
-				    millis() - g_connReplyMs[rs] < 300) {
-					hapticSendShutdown((uint8_t)rs);
-					resent = true;
+		// Never-booted fallback: a failed wake's return boot never gets a SETUP packet, so neither
+		// mounted() nor suspended() can ever read true and both paths above are dead. Fires in a
+		// re-check window after the grace expires, only if the bus never mounted THIS boot -- on a
+		// successful wake a later transient unmount must not detonate a stale broadcast.
+		{
+			static bool fbEverMounted = false;
+			static bool fbDone = false;
+			static unsigned long fbExpiredMs = 0;
+			if (USBDevice.mounted())
+				fbEverMounted = true;
+			if (!fbDone && !fbEverMounted && wakeHandoffExpired()) {
+				if (!fbExpiredMs)
+					fbExpiredMs = millis();
+				if (vbus && linked) {
+					hapticSendShutdown();
+					fbDone = true;
+					s_offMask = linked;
+					s_offSentMs = millis();
+					s_offRetries = SUSPEND_OFF_RETRIES;
+				} else if ((unsigned long)(millis() -
+							   fbExpiredMs) >=
+					   SUSPEND_OFF_RETRY_MS) {
+					fbDone = true; // window closed
 				}
+			}
 		}
-		if (resent) {
-			s_offSentMs = millis();
-			s_offRetries--;
-		} else {
-			s_offRetries = 0; // all delivered, or host came back
-		}
-	}
-	// Never-booted fallback: a failed wake's return boot never gets a SETUP packet, and TinyUSB only
-	// reports suspend on a CONNECTED bus -- so neither the suspArmed edge above nor suspended() itself
-	// can see that state. Gated on the bus NEVER having mounted THIS BOOT: on a successful wake the
-	// grace also expires (early-end) and a later transient unmount -- usbReenumerate's detach window,
-	// a warm reboot, an S3 resume reset -- must not detonate a stale broadcast mid-session.
-	{
-		static bool fbEverMounted = false;
-		static bool expiredFired = false;
-		if (USBDevice.mounted())
-			fbEverMounted = true;
-		if (!expiredFired && !fbEverMounted && vbus &&
-		    wakeHandoffExpired()) {
-			expiredFired = true;
-			if (anySlotLinkUp())
-				hapticSendShutdown();
+		// Per-slot retries: at SUSPEND_OFF_RETRY_MS after a send the post-off F1 tail (<1 s) is
+		// long over, so a mask slot still continuously linked missed its burst -- resend to exactly
+		// those slots. Wake-flow exemptions match the fire paths.
+		if (s_offRetries && s_offMask &&
+		    (unsigned long)(millis() - s_offSentMs) >=
+			    SUSPEND_OFF_RETRY_MS) {
+			bool hostDown = susp || !USBDevice.mounted();
+			uint8_t targets = (uint8_t)(s_offMask & linked);
+			if (hostDown && vbus && !wakeFireInFlight() &&
+			    !wakeHandoffActive() && targets) {
+				for (int rs = 0; rs < NSLOT; rs++)
+					if (targets & (1u << rs))
+						hapticSendShutdown((uint8_t)rs);
+				s_offSentMs = millis();
+				s_offRetries--;
+			} else {
+				// no targets (every masked slot dropped: delivered), or the
+				// host came back / the wake flow owns the bus
+				s_offRetries = 0;
+			}
 		}
 	}
 	wasSusp = susp;
