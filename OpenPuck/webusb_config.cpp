@@ -12,6 +12,7 @@
 #include "fw_update.h"
 #include "usb_tx.h"
 #include "usb_mount.h" // modeSwitchReboot()
+#include "status_led.h" // ledShowMode() on the mode-LED toggle
 #include <Arduino.h>
 #include <string.h>
 
@@ -78,7 +79,8 @@ static bool boardCommand(uint8_t op)
 //                [v18: p[182..185] chordDpad left/up/right/down (back4+D-pad mode assignments)]
 //                [v19: p[186] swGyroLegacy (Switch Pro gyro mapping: 0 = corrected, 1 = legacy/pre-#189)]
 //                [v20: p[187..194] per-type trackpad->stick map, 4x2B {left pad, right pad} (PS_OFF/LEFT/RIGHT)]
-#define WB_PAYLEN 193
+//                [v21: p[195] modeLed (board RGB mode-color LED enable)]
+#define WB_PAYLEN 194
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -103,7 +105,8 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (20 = +per-type trackpad->stick mapping (fields 80..87, blob p[187..194]);
+	// protocol version (21 = +board mode-LED toggle (field 30, blob p[195]);
+	// 20 = +per-type trackpad->stick mapping (fields 80..87, blob p[187..194]);
 	// 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the rumble-strength,
 	// Switch report-rate and Switch gyro-scale settings (fields 22/23/24, blob p[53..55]) are GONE -- those
 	// bytes now read 0; 18 = +configurable back4+D-pad chords (fields 34..37, blob p[182..185]);
@@ -113,7 +116,7 @@ static void webusbSendBlob()
 	// unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87 toggle; 13 = +per-slot link
 	// stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type
 	// cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 20;
+	p[2] = 21;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -292,6 +295,8 @@ static void webusbSendBlob()
 		p[187 + et * 2] = g_padStickCfg[et][0];
 		p[188 + et * 2] = g_padStickCfg[et][1];
 	}
+	// v21: board RGB mode-color LED enable (panel reflects + toggles it)
+	p[195] = g_modeLed;
 	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
 	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
 	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
@@ -1033,6 +1038,13 @@ void webusbPoll()
 				// instead of the discard-whitelist. Persisted; blob p[181] reflects state.
 				case 29:
 					g_landAll87 = v ? 1 : 0;
+					break;
+
+				// board RGB mode-color LED: steady color per USB mode (no-op on
+				// boards without an RGB LED). Persisted; blob p[195] reflects state.
+				case 30:
+					g_modeLed = v ? 1 : 0;
+					ledShowMode();
 					break;
 				}
 				if (persist)

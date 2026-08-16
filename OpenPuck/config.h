@@ -165,6 +165,9 @@ extern uint8_t g_rumble;
 extern uint8_t g_ledBright;
 // Live mirror of g_padStickCfg[g_etype]: {left pad, right pad} -> stick (PS_*).
 extern uint8_t g_padStick[2];
+// Board RGB mode-color LED (XIAO etc.): 1 = steady color for the current USB
+// mode, 0 = dark. No effect on boards without an RGB LED (see status_led.h).
+extern uint8_t g_modeLed;
 
 // Copy g_type[g_etype] into the live mirrors above (safe defaults when g_etype == ET_NONE).
 void applyActiveType();

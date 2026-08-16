@@ -51,6 +51,9 @@ uint8_t g_padHaptics = 1;
 uint8_t g_rumble = 1;
 uint8_t g_ledBright = 0;
 
+// board RGB mode-color LED enable (status_led.cpp); default on
+uint8_t g_modeLed = 1;
+
 void applyActiveType()
 {
 	g_etype = etypeForMode(g_usbMode);
@@ -103,6 +106,8 @@ struct Cfg {
 	uint8_t chordDpad[4];
 	// per-type trackpad->stick mapping: [et][0] = left pad, [et][1] = right pad (PS_*)
 	uint8_t padStick[ET_COUNT][2];
+	// modeLed: the board RGB mode-color LED enable (status_led.h g_modeLed).
+	uint8_t modeLed;
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 // Shortest cfg.bin we still accept: the layout as of CFG_MAGIC 0xCF, i.e. everything before the appended tail.
@@ -128,7 +133,8 @@ void saveCfg()
 		  {},
 		  { g_chordDpad[0], g_chordDpad[1], g_chordDpad[2],
 		    g_chordDpad[3] },
-		  {} };
+		  {},
+		  g_modeLed };
 	for (int i = 0; i < ET_COUNT; i++) {
 		c.type[i] = g_type[i];
 		c.padStick[i][0] = g_padStickCfg[i][0];
@@ -199,6 +205,10 @@ void loadCfg()
 					if (c.padStick[i][k] <= PS_MAX)
 						g_padStickCfg[i][k] =
 							c.padStick[i][k];
+			// Board RGB mode-color LED: 0xFF (a file predating this tail field) or anything
+			// other than 0/1 keeps the compiled default (on).
+			if (c.modeLed <= 1)
+				g_modeLed = c.modeLed;
 			// grow a short file to the current layout on the next save
 			if (got < (int)sizeof c)
 				consume = true;
