@@ -1,6 +1,8 @@
 #include "config.h"
 #include "rf_link.h" // g_rxWin (poll RX window persisted here)
 #include "haptics.h" // g_hapticBlockOn, g_hapticBlockMs
+#include "mode_wake.h" // WAKE_MOD_DEFAULT/WAKE_KEY_DEFAULT (g_wakeMod/g_wakeKey factory values)
+#include <Adafruit_TinyUSB.h> // KEYBOARD_MODIFIER_*/HID_KEY_* (wake-hotkey defaults + validation)
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 #include <string.h>
@@ -23,6 +25,9 @@ uint8_t g_bootMode = 0xFF;
 // this boot came from a wake fire (consumed like bootMode/debugCdc so the next boot is normal).
 uint8_t g_wakeHandoffArm = 0;
 bool g_wakeHandoffBoot = false;
+// MODE_WAKE hotkey (modifier bitmask + HID key usage), panel-settable per vendor; default Lenovo Alt+P.
+uint8_t g_wakeMod = WAKE_MOD_DEFAULT;
+uint8_t g_wakeKey = WAKE_KEY_DEFAULT;
 // The mode saveCfg persists as Cfg.mode. Tracks the last REAL (non-wake) personality: while the live mode
 // is MODE_WAKE, any saveCfg (the loadCfg consume-save included) must not leak 10 into the persisted mode,
 // or persist-last-mode users would boot into the panel-less keyboard on every replug.
@@ -116,6 +121,9 @@ struct Cfg {
 	uint8_t chordDpad[4];
 	// per-type trackpad->stick mapping: [et][0] = left pad, [et][1] = right pad (PS_*)
 	uint8_t padStick[ET_COUNT][2];
+	// MODE_WAKE hotkey (tail): modifier bitmask + HID key usage. 0xFF (short pre-tail file) = unset ->
+	// compiled defaults (Alt+P).
+	uint8_t wakeMod, wakeKey;
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 // Shortest cfg.bin we still accept: the layout as of CFG_MAGIC 0xCF, i.e. everything before the appended tail.
@@ -141,7 +149,9 @@ void saveCfg()
 		  {},
 		  { g_chordDpad[0], g_chordDpad[1], g_chordDpad[2],
 		    g_chordDpad[3] },
-		  {} };
+		  {},
+		  g_wakeMod,
+		  g_wakeKey };
 	for (int i = 0; i < ET_COUNT; i++) {
 		c.type[i] = g_type[i];
 		c.padStick[i][0] = g_padStickCfg[i][0];
@@ -224,6 +234,15 @@ void loadCfg()
 					if (c.padStick[i][k] <= PS_MAX)
 						g_padStickCfg[i][k] =
 							c.padStick[i][k];
+			// MODE_WAKE hotkey. Modifier: any bitmask incl. 0 (a bare key is a legal chord);
+			// only 0xFF (pre-tail file) means unset. Key: must be a defined keyboard usage
+			// (HID_KEY_A..GUI_RIGHT) so a stray byte can never make the wake press type garbage
+			// -- anything else keeps the compiled Alt+P default.
+			if (c.wakeMod != 0xFF)
+				g_wakeMod = c.wakeMod;
+			if (c.wakeKey >= HID_KEY_A &&
+			    c.wakeKey <= HID_KEY_GUI_RIGHT)
+				g_wakeKey = c.wakeKey;
 			// grow a short file to the current layout on the next save
 			if (got < (int)sizeof c)
 				consume = true;

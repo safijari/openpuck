@@ -6,7 +6,7 @@
 // resume -- the only thing listening on the port is the board's embedded controller, and on Lenovo
 // ThinkCentre (BIOS: Power > Smart Power On) it powers the machine on when it sees Alt+P from a USB
 // keyboard on the designated always-on port. Dell/others have the same feature under different names and
-// different chords; see WAKE_MOD / WAKE_KEY below.
+// different chords; the hotkey is configurable from the WebUSB panel (see WAKE_MOD_DEFAULT below).
 //
 // WHY A SEPARATE MODE RATHER THAN ONE MORE INTERFACE ON THE PUCK. Two reasons:
 //   1. The EC's S5 USB stack is minimal. A real keyboard is what it was written against, so the safest
@@ -41,9 +41,11 @@
 // wake never overwrites the user's chosen personality. Set a concrete mode to force one instead.
 #define WAKE_RETURN_MODE 0xFF
 
-// The hotkey itself. Lenovo ThinkCentre Smart Power On = Alt+P.
-#define WAKE_MOD KEYBOARD_MODIFIER_LEFTALT
-#define WAKE_KEY HID_KEY_P
+// The hotkey DEFAULTS. Lenovo ThinkCentre Smart Power On = Alt+P. The live hotkey is runtime config
+// (g_wakeMod / g_wakeKey, config.h): settable from the WebUSB panel (fields 30/31) for vendors whose
+// EC wants a different chord, persisted in cfg.bin, falling back to these when unset.
+#define WAKE_MOD_DEFAULT KEYBOARD_MODIFIER_LEFTALT
+#define WAKE_KEY_DEFAULT HID_KEY_P
 
 // How long the RF link must be continuously down before an up-edge counts as a wake gesture. Must be
 // comfortably longer than anySlotLinkUp()'s 300 ms window so an ordinary RF hiccup can't arm us -- and

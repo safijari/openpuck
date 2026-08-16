@@ -28,7 +28,7 @@ fails.
 
 Any of the usual mode-switch paths, to mode **10**:
 
-- **WebUSB panel**: the *Wake (Alt+P)* mode button. Note the panel cannot
+- **WebUSB panel**: the *Keyboard wake (power-on)* mode button. Note the panel cannot
   connect while the puck **is** in wake mode (a bare keyboard has no WebUSB);
   it returns to the puck automatically after firing, or via the escape chord.
 - **CDC serial console**: `x10`.
@@ -116,12 +116,14 @@ Validated end-to-end on the M90q Gen 6.
 
 ## 6. Other vendors / tuning the press
 
-Everything the EC sees is a `#define` at the top of `mode_wake.h`:
-
-- `WAKE_MOD` / `WAKE_KEY` — the hotkey (default `LEFTALT` + `P`, Lenovo).
-  Change these for Dell/HP/etc. equivalents.
-- `WAKE_MOD_LEAD_MS`, `WAKE_HOLD_MS`, `WAKE_RESEND_MS`, `WAKE_REPEAT`,
-  `WAKE_REPEAT_MS` — press shaping. The defaults imitate a human keystroke
+- **The hotkey is runtime config**: the *Wake hotkey* row on the WebUSB
+  panel sets the modifier(s) + key the mode types (default `Alt+P`, Lenovo).
+  Change it there for Dell/HP/etc. equivalents — no rebuild needed. The
+  setting persists on the puck, and the compiled default lives in
+  `mode_wake.h` (`WAKE_MOD_DEFAULT` / `WAKE_KEY_DEFAULT`).
+- Press *shaping* stays a `#define` at the top of `mode_wake.h`:
+  `WAKE_MOD_LEAD_MS`, `WAKE_HOLD_MS`, `WAKE_RESEND_MS`, `WAKE_REPEAT`,
+  `WAKE_REPEAT_MS`. The defaults imitate a human keystroke
   (modifier first, long held chord, restated while held) because the M90q's
   EC **ignores** a minimal combined report even though it reads it; other ECs
   are likely no less picky.

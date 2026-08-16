@@ -180,7 +180,7 @@ void WakeController::task()
 		// Stage the press like a human types it: Alt down alone first. A
 		// minimal EC hotkey parser may track modifier-then-key transitions
 		// rather than accepting a combined report out of nowhere.
-		kbdSend(WAKE_MOD, 0);
+		kbdSend(g_wakeMod, 0);
 		s_t = now;
 		s_st = W_MODLEAD;
 		break;
@@ -188,7 +188,7 @@ void WakeController::task()
 	case W_MODLEAD:
 		if (now - s_t < WAKE_MOD_LEAD_MS)
 			break;
-		kbdSend(WAKE_MOD, WAKE_KEY);
+		kbdSend(g_wakeMod, g_wakeKey);
 		// wake-debugger convention: flash = a wake was actually sent
 		ledWakePulse();
 		s_resend = now;
@@ -202,7 +202,7 @@ void WakeController::task()
 			// current report (rather than edge-detecting) can miss a
 			// single transfer.
 			if (now - s_resend >= WAKE_RESEND_MS && g_kbd.ready()) {
-				kbdSend(WAKE_MOD, WAKE_KEY);
+				kbdSend(g_wakeMod, g_wakeKey);
 				s_resend = now;
 			}
 			break;
