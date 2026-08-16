@@ -747,17 +747,30 @@ void hapticTask()
 	}
 	// Two wake-flow windows where "suspend persisted" does NOT mean "host went to sleep" and firing here
 	// kills the controller that just triggered the wake (the double-power-on symptom):
-	//   - MODE_WAKE itself: the EC hands the port to the chipset the moment the hotkey lands, so the bus
-	//     suspends WHILE the press sequence is still running. A down/POSTing host is this mode's normal
-	//     operating environment -- never auto-off here.
-	//   - the post-fire return boot: POST has not enumerated the reborn puck yet. The handoff grace
-	//     resolves when a host mounts us or after WAKE_HANDOFF_GRACE_MS; if the machine truly never
-	//     boots, the timer keeps running and this fires then -- the battery still gets saved.
-	if (suspArmed && vbus && !modeIsWake(g_usbMode) &&
-	    !wakeHandoffActive() &&
+	//   - a press sequence in flight (wakeFireInFlight): the EC hands the port to the chipset the moment
+	//     the hotkey lands, so the bus suspends WHILE the sequence is still running. Only the in-flight
+	//     window is exempt -- in W_WAIT_DOWN/W_ARMED this power-off is still wanted: it is both the
+	//     battery saver AND what quiets the link so a controller left on across a shutdown lets the
+	//     mode arm at all.
+	//   - the post-fire return boot: POST has not enumerated the reborn puck yet; hold through the
+	//     handoff grace (deadline-only -- see mode_wake.h).
+	if (suspArmed && vbus && !wakeFireInFlight() && !wakeHandoffActive() &&
 	    (millis() - suspSinceMs) >= SUSPEND_OFF_MS) {
 		hapticSendShutdown();
 		suspArmed = false; // fire once per suspend
+	}
+	// Never-booted fallback: the grace boot lands on an ALREADY-suspended bus (machine off / POST hung),
+	// so the false->true edge above never arms. When the grace expires with the bus still suspended
+	// since boot, power the controller off once -- the wake failed; save its battery.
+	{
+		static bool bootSusp = true;
+		static bool expiredFired = false;
+		if (!susp)
+			bootSusp = false;
+		if (bootSusp && vbus && !expiredFired && wakeHandoffExpired()) {
+			hapticSendShutdown();
+			expiredFired = true;
+		}
 	}
 	wasSusp = susp;
 	// Steam-mode quiet timeout: mark 0x82 stream inactive. No synthesized stop -- Steam forwards its own.

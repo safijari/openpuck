@@ -36,17 +36,27 @@
 #pragma once
 #include "controllers.h"
 
-// Where to land after the hotkey has been sent. MODE_STEAM is the normal puck; change if you live in
-// another personality.
-#define WAKE_RETURN_MODE MODE_STEAM
+// Where to land after the hotkey has been sent. 0xFF = modeSwitchReboot's "keep current" sentinel, which
+// boots by the normal policy: the persisted mode for persist-last-mode users, Steam otherwise -- so a
+// wake never overwrites the user's chosen personality. Set a concrete mode to force one instead.
+#define WAKE_RETURN_MODE 0xFF
 
 // The hotkey itself. Lenovo ThinkCentre Smart Power On = Alt+P.
 #define WAKE_MOD KEYBOARD_MODIFIER_LEFTALT
 #define WAKE_KEY HID_KEY_P
 
 // How long the RF link must be continuously down before an up-edge counts as a wake gesture. Must be
-// comfortably longer than anySlotLinkUp()'s 300 ms window so an ordinary RF hiccup can't arm us.
-#define WAKE_ARM_DOWN_MS 3000u
+// comfortably longer than anySlotLinkUp()'s 300 ms window so an ordinary RF hiccup can't arm us -- and
+// long enough that a controller briefly walking out of range while the host is LIVE can't re-arm a
+// keyboard pointed at the session. The quiet clock only runs once the RF side is on air (rfConnectOpen()),
+// so with a controller off at the mode switch, arming lands ~WAKE_ARM_DOWN_MS after the cooldown opens.
+#define WAKE_ARM_DOWN_MS 5000u
+
+// An up-EDGE seen while the keyboard is not yet ready() stays a valid gesture for this long. Long enough
+// for the EC's resume-then-configure lag after our remote wakeup (milliseconds), far shorter than a human
+// power-on: a controller that connected against a dead port must NOT fire hours later when a manually
+// booted OS finally enumerates the keyboard.
+#define WAKE_FIRE_LATCH_MS 2000u
 
 // Press shaping. A combined Alt+P report held 60 ms was read but IGNORED by the
 // ThinkCentre M90q Gen 6 EC (it drained both repeats off the endpoint, so the
@@ -92,14 +102,22 @@
 // power-off (haptics.cpp, SUSPEND_OFF_MS) shuts down the controller that just triggered the wake, and
 // WAKE_AUTO_REARM would yank the puck back into the wake personality mid-boot. wakeHandoffMark() arms a
 // PERSISTED one-shot (Cfg.wakeHandoff -- flash, because this board class's bootloader wipes .noinit RAM
-// on reset) right before the return reboot; wakeHandoffActive() then holds both policies off until a USB
-// host actually mounts us, or this deadline passes (machine never booted -> the normal power-saving
-// behavior is correct after all). The handoff boot also skips setup()'s mount wait and opens the RF
-// connect cooldown immediately, so the reborn puck answers the triggering controller ~3 s sooner --
-// before it gives up searching and powers itself off.
+// on reset) right before the return reboot; wakeHandoffActive() then holds both policies off for this
+// full window. Deadline-only ON PURPOSE -- USBDevice.mounted() is NOT "the OS is up": BIOS legacy-HID
+// support SET_CONFIGURATIONs keyboard-bearing devices during POST, and the BIOS->kernel handoff right
+// after is exactly the suspend gap the grace exists to cover. Nobody sleeps a machine within 90 s of
+// waking it, so nothing is lost by holding the two policies for the whole window; if the machine never
+// boots, haptics' expiry fallback still powers the controller off (battery saved). The handoff boot also
+// skips setup()'s mount wait and opens the RF connect cooldown immediately, so the reborn puck answers
+// the triggering controller in <0.5 s -- before it gives up searching and powers itself off.
 #define WAKE_HANDOFF_GRACE_MS 90000u
 void wakeHandoffMark();
 bool wakeHandoffActive();
+// True from this boot's grace expiry onward (false on non-handoff boots): haptics' never-booted fallback.
+bool wakeHandoffExpired();
+// True while a press sequence is in flight (first press queued .. return reboot): the only wake-mode
+// window where haptics' suspend power-off must hold its fire (it would kill the triggering controller).
+bool wakeFireInFlight();
 
 class WakeController : public IController {
     public:

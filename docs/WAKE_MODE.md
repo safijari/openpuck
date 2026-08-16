@@ -35,8 +35,12 @@ Any of the usual mode-switch paths, to mode **10**:
 - **A configurable chord**: assign mode 10 to one of the back-4 + D-pad
   chords from the panel.
 
-With the default "always boot Steam" policy this is a **one-shot**: one wake,
-then the puck is back to normal. See §5 for making it automatic.
+Entering wake mode is always a **one-shot**: one wake, then the puck returns
+to your normal personality (the persisted mode if you use *persist last
+mode*, Steam otherwise). See §5 for making it automatic. Arming takes a few
+seconds — the mode requires ~5 s of observed controller-radio silence before
+a connect counts as a wake gesture, so switching modes with the controller
+still on can't type into your live session.
 
 ## 3. Using it
 
@@ -48,13 +52,19 @@ then the puck is back to normal. See §5 for making it automatic.
    single press, end to end.
 
 The escape hatch from wake mode without firing is the **all-four-back-paddles
-+ A** chord: reboots straight back to Steam mode.
++ A** chord on a connected controller: it reboots straight back to Steam
+mode, and works whether the machine is on or off (wake mode is exempt from
+the usual no-mode-switch-while-suspended rule — it has no other exit). Note
+the wake trigger is *any* bonded controller connecting; with two controllers,
+one left powered on prevents arming until it, too, goes quiet.
 
 ## 4. The LED tells you what happened
 
 The wake-mode LED is **dark in every steady state** and pulses ~½ s per
-hotkey report actually sent (default: 4 pulses over ~5 s). That makes it the
-whole diagnostic story:
+hotkey press (default: 4 pulses over ~5 s). In wake mode the LED is reserved
+for presses — the connect-time remote-wakeup pulse other modes show is
+suppressed so it can't be mistaken for a fire. That makes it the whole
+diagnostic story:
 
 | You see | It means |
 | --- | --- |
@@ -91,18 +101,23 @@ Everything the EC sees is a `#define` at the top of `mode_wake.h`:
   (modifier first, long held chord, restated while held) because the M90q's
   EC **ignores** a minimal combined report even though it reads it; other ECs
   are likely no less picky.
-- `WAKE_RETURN_MODE` — which personality to return to after firing (default
-  Steam).
+- `WAKE_RETURN_MODE` — which personality to return to after firing. The
+  default (`0xFF`) means "the normal boot policy": your persisted mode if
+  *persist last mode* is on, Steam otherwise. Set a concrete mode to force
+  one.
 
 ## 7. What happens behind the scenes (and what was hard)
 
-Full flow: arm (3 s of RF-link silence, so switching modes with the
+Full flow: arm (~5 s of observed RF-link silence, so switching modes with the
 controller still connected can't type into a live session) → fire on the
 first controller connect → settle → reboot into the return mode with a
-persisted one-shot **handoff grace**. During the grace (until the OS actually
-enumerates the puck, or 90 s), two standing behaviors that would otherwise
+persisted one-shot **handoff grace**. During the grace (a fixed 90 s window —
+deliberately *not* ended by USB enumeration, which BIOSes perform during POST
+long before the OS is up), two standing behaviors that would otherwise
 misread a POSTing machine as "host went to sleep" hold their fire: the
-suspend-triggered controller power-off, and `WAKE_AUTO_REARM` itself. The
+suspend-triggered controller power-off, and `WAKE_AUTO_REARM` itself. If the
+machine never boots, the grace expires and the controller is powered off
+after all — the battery is still saved. The
 post-fire boot also skips the USB mount wait and starts RF beacons
 immediately, so the controller that triggered the wake reconnects in well
 under a second instead of giving up during POST. Design details and the

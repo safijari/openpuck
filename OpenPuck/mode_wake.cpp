@@ -23,29 +23,30 @@ static Adafruit_USBD_HID g_kbd;
 
 // Post-fire handoff grace (see mode_wake.h). The arm is PERSISTED (Cfg.wakeHandoff, one-shot consumed by
 // loadCfg like bootMode) because this board class's bootloader wipes .noinit RAM on every reset -- a RAM
-// flag simply does not survive the return reboot. The flash write costs nothing extra: the return mode
-// switch already rewrites cfg for its own one-shot bootMode.
+// flag simply does not survive the return reboot. saveCfg() here because the return reboot goes through
+// modeSwitchReboot(0xFF) ("keep current"), which intentionally skips its own saveMode.
 void wakeHandoffMark()
 {
-	g_wakeHandoffArm =
-		1; // persisted by the modeSwitchReboot save that follows
+	g_wakeHandoffArm = 1;
+	saveCfg();
 }
 
 bool wakeHandoffActive()
 {
-	static bool checked = false, active = false;
+	// Deadline-only (mode_wake.h): a POST-time SET_CONFIGURATION reads mounted() long before the OS is
+	// up, so an early exit on mount would re-expose the suspend power-off during the BIOS->kernel gap.
+	static bool init = false;
 	static uint32_t t0 = 0;
-	if (!checked) {
-		checked = true;
-		if (g_wakeHandoffBoot) {
-			active = true;
-			t0 = millis();
-		}
+	if (!init) {
+		init = true;
+		t0 = millis();
 	}
-	if (active &&
-	    (USBDevice.mounted() || millis() - t0 >= WAKE_HANDOFF_GRACE_MS))
-		active = false;
-	return active;
+	return g_wakeHandoffBoot && millis() - t0 < WAKE_HANDOFF_GRACE_MS;
+}
+
+bool wakeHandoffExpired()
+{
+	return g_wakeHandoffBoot && !wakeHandoffActive();
 }
 
 enum {
@@ -105,11 +106,28 @@ void WakeController::task()
 	const uint32_t now = millis();
 	const bool up = anySlotLinkUp();
 
+	// The wake gesture is the connect up-EDGE, latched briefly: an EC that suspends the port between
+	// enumeration and the press only reads ready() a few ms after the connect (rf_link's remoteWakeup has
+	// to resume the bus first). The latch EXPIRES (WAKE_FIRE_LATCH_MS): a controller that connected
+	// against a dead port must not fire hours later when a manually booted OS enumerates the keyboard.
+	static bool s_wasUp = false;
+	static bool s_pend = false;
+	static uint32_t s_pendMs = 0;
+	if (up && !s_wasUp) {
+		s_pend = true;
+		s_pendMs = now;
+	}
+	if (!up || now - s_pendMs >= WAKE_FIRE_LATCH_MS)
+		s_pend = false;
+	s_wasUp = up;
+
 	switch (s_st) {
 	case W_WAIT_DOWN:
-		// Any link activity restarts the quiet timer. s_t starts at 0, so a boot with no controller
-		// already gets the full WAKE_ARM_DOWN_MS of grace before arming.
-		if (up) {
+		// Link activity restarts the quiet timer -- and so does a closed connect cooldown: before
+		// rfConnectOpen() nothing is on air, so a controller that was linked at the mode switch cannot
+		// have shown itself yet, and counting that silence would arm us just in time to type Alt+P
+		// into the live session it then relinks into.
+		if (up || !rfConnectOpen()) {
 			s_t = now;
 			break;
 		}
@@ -118,10 +136,11 @@ void WakeController::task()
 		break;
 
 	case W_ARMED:
-		// The wake gesture. ready() means the host has actually configured our interface -- on a machine
-		// in S5 that is the EC's minimal stack having enumerated us. If it never goes true we simply never
-		// fire, and the LED never flashes, which is the diagnostic.
-		if (up && g_kbd.ready()) {
+		// ready() means the host has actually configured our interface -- on a machine in S5 that is
+		// the EC's minimal stack having enumerated us. If it never goes true we simply never fire, and
+		// the LED never flashes, which is the diagnostic.
+		if (s_pend && g_kbd.ready()) {
+			s_pend = false;
 			s_shots = 0;
 			s_dl = now;
 			s_st = W_PRESS;
@@ -189,7 +208,8 @@ void WakeController::task()
 		// The machine is now powering on but will look bus-suspended until POST enumerates the reborn
 		// puck; hold the suspend policies off across that window (see mode_wake.h).
 		wakeHandoffMark();
-		// Clean detach + reboot into the puck. Does not return.
+		// Clean detach + reboot into the return personality (0xFF = the boot-policy default:
+		// the user's persisted mode, or Steam). Does not return.
 		modeSwitchReboot(WAKE_RETURN_MODE);
 		break;
 
@@ -197,6 +217,13 @@ void WakeController::task()
 	default:
 		break;
 	}
+}
+
+// True while a press sequence is in flight (haptics' suspend power-off must not kill the triggering
+// controller mid-wake; every other wake-mode state keeps the battery-saving power-off).
+bool wakeFireInFlight()
+{
+	return modeIsWake(g_usbMode) && s_st >= W_PRESS;
 }
 
 // Auto-re-arm watcher, called from loop() in every mode (compiled to nothing unless the WAKE_AUTO_REARM

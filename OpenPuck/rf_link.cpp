@@ -157,10 +157,26 @@ static unsigned long g_lastStream = 0;
 // Used for the "we're connected to at least one controller" decisions (beacon pacing, wake detect).
 bool anySlotLinkUp()
 {
+	// The != 0 guard matches the six sibling call sites (usb_mount, webusb, ps3, puck_hid, haptics): a
+	// bonded slot that has never replied since boot holds g_connReplyMs == 0, which would otherwise read
+	// "up" for 300 ms after every millis() wrap (~49.7 days) -- and MODE_WAKE turns that glitch into an
+	// unattended Alt+P power-on.
 	for (int s = 0; s < NSLOT; s++)
-		if (g_slot[s].used && millis() - g_connReplyMs[s] < 300)
+		if (g_slot[s].used && g_connReplyMs[s] != 0 &&
+		    millis() - g_connReplyMs[s] < 300)
 			return true;
 	return false;
+}
+
+bool rfConnectOpen()
+{
+	return millis() - g_connCooldown > 2500;
+}
+
+void rfConnectOpenNow()
+{
+	// Backdate instead of zeroing: wrap-safe against the same unsigned arithmetic the gate uses.
+	g_connCooldown = millis() - 2501u;
 }
 
 static void rfHostFrameOnce(int slot, bool discovery)
@@ -741,10 +757,17 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					}
 					if (want != 0xFF &&
 					    want == chWant[g_curSlot]) {
+						// The no-switch-while-suspended rule exists so a SLEEPING
+						// host never resumes to a different device -- but a
+						// suspended bus is MODE_WAKE's normal environment (host
+						// off / wrong port), and the chord is that mode's ONLY
+						// exit (no WebUSB, no CDC). Exempt it, like
+						// wakeAutoRearmTask already does.
 						if (++chCnt[g_curSlot] >= 12 &&
 						    want != g_usbMode &&
 						    modeValid(want) &&
-						    !USBDevice.suspended()) {
+						    (!USBDevice.suspended() ||
+						     modeIsWake(g_usbMode))) {
 							// clean detach + reboot into the new mode (releases any held
 							// input on the outgoing device -- see modeSwitchReboot)
 							modeSwitchReboot(want);
@@ -966,7 +989,7 @@ void rfLinkTask()
 	// Poll before beacons: the cycle gate must fire as close to its
 	// 4 ms deadline as possible; beacon TX (up to 3.6 ms for 4 slots)
 	// runs after so it never delays the current poll.
-	if (g_connOn && millis() - g_connCooldown > 2500) {
+	if (g_connOn && rfConnectOpen()) {
 		rfConnStep();
 	} // connected-mode: poll controller, read input
 
@@ -974,7 +997,7 @@ void rfLinkTask()
 	// real puck's per-hop-cycle announce) to stay synced and keep answering polls at full rate; suppressing it
 	// drops the reply rate from ~210/s to ~38/s. Paused only during the post-disconnect cooldown so a controller
 	// that's powering off isn't immediately re-woken/reconnected.
-	if (g_rfHost && millis() - g_connCooldown > 2500) {
+	if (g_rfHost && rfConnectOpen()) {
 		bool connNow = anySlotLinkUp();
 		// session keepalive on the clean channel: every loop while connecting (fast), every 25ms once connected
 		// (every-loop beaconing also hammers the session ch and steals reply slots from the poll). The real puck
@@ -1044,7 +1067,7 @@ void rfLinkTask()
 	// connected slot being stalled, so one controller walking off (others still live) never trips it; the
 	// cooldown gate keeps it from firing while a controller is intentionally powering off; rate-limited so it
 	// cannot thrash. g_rfStallRecover is surfaced to the panel so the wedge -- and its recovery -- is observable.
-	if (g_connOn && g_curSlot >= 0 && millis() - g_connCooldown > 2500) {
+	if (g_connOn && g_curSlot >= 0 && rfConnectOpen()) {
 		static unsigned long lastRecoverMs = 0;
 		static uint8_t consecStall = 0;
 		unsigned long nowMs2 = millis();
@@ -1092,7 +1115,11 @@ void rfLinkTask()
 		bool nowRfConn = anySlotLinkUp();
 		if (nowRfConn && !wasRfConn && USBDevice.suspended()) {
 			USBDevice.remoteWakeup();
-			ledWakePulse();
+			// Wake mode reserves the LED for hotkey presses (the
+			// WAKE_MODE.md diagnostic table); the resume itself is still
+			// wanted -- a real keyboard also resumes before typing.
+			if (!modeIsWake(g_usbMode))
+				ledWakePulse();
 			// post-resume nudge (host needs real input to actually wake)
 			if (g_active)
 				g_active->wakeEvent();

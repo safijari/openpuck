@@ -69,6 +69,8 @@ static uint8_t g_usbCfgDesc[512];
 // Per-mode USB serial suffix (modes 1..10: X=xbox N=hori L=lizard P=swpro S=ps5 G=hidgyro Q=ps5game D=ds4game 3=ps3 W=wake).
 static const char MODE_SUFFIX[] = { 'X', 'N', 'L', 'P', 'S',
 				    'G', 'Q', 'D', '3', 'W' };
+static_assert(sizeof MODE_SUFFIX == MODE_MAX,
+	      "MODE_SUFFIX must have one entry per mode 1..MODE_MAX");
 // Fixed-interface flags captured at boot so usbReenumerate (dynamic mount, no reboot) replays them.
 static bool s_dynWantWebusb = false, s_dynWantWakeMouse = false;
 
@@ -268,13 +270,15 @@ void setup()
 	// Skip straight to bringing the RF side up; opening the connect cooldown makes the first beacons go
 	// out on the first loop() pass instead of at t=2.5 s.
 	if (wakeHandoffActive())
-		g_connCooldown = millis() - 2600u;
+		rfConnectOpenNow();
 	else
 		for (int i = 0; i < 300 && !USBDevice.mounted(); i++)
-			delay(10); // wait up to 3s for USB mount, but NEVER hang
+			delay(10); // up to 3s for USB mount, NEVER hang
 	if (USBDevice.suspended()) {
 		USBDevice.remoteWakeup();
-		ledWakePulse();
+		// wake mode reserves the LED for hotkey presses (WAKE_MODE.md diagnostic table)
+		if (!modeIsWake(g_usbMode))
+			ledWakePulse();
 	} // wake host if bus was sleeping when we (re-)attached
 	// Route all device->host HID sends through the usbd task (SOF drain) so loop() never calls tud_* directly
 	// -> the cross-task blocking-defer that deadlocked the loop under comms load can no longer happen.

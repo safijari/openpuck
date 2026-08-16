@@ -2225,8 +2225,11 @@ for(const sel of document.querySelectorAll("select.chordD")){
 }
 for(const b of document.querySelectorAll(".modebtn")){
   b.onclick=()=>{ const m=+b.dataset.mode;
-    const clean=(m===7||m===8||m===9);
-    const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold all four back paddles (L4+R4+L5+R5) + A to return to Steam mode. The back4+D-pad chords are how you get back INTO these modes without the panel — check their assignments in the chords card first.":"");
+    const clean=(m===7||m===8||m===9||m===10);
+    const why=(m===10)
+      ? "Wake mode is a bare keyboard for firmware smart power on (Lenovo Alt+P): it has no WebUSB, so THIS PANEL WILL DISCONNECT. It fires once when a controller connects after the machine is shut down, then returns to the normal puck by itself. To leave it WITHOUT firing, chord all four back paddles (L4+R4+L5+R5) + A on a connected controller. Setup guide: docs/WAKE_MODE.md."
+      : "the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold all four back paddles (L4+R4+L5+R5) + A to return to Steam mode. The back4+D-pad chords are how you get back INTO these modes without the panel — check their assignments in the chords card first.";
+    const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: "+why:"");
     if(confirm(msg)){ send([0x03, m]); log("mode switch requested — device will reboot"); } };
 }
 updateUf2UI();

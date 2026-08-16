@@ -19,10 +19,14 @@ uint8_t g_chordDpad[4] = { MODE_PS3, MODE_DS4_GAME, MODE_PS5_GAME,
 			   MODE_SW_HORI };
 bool g_persistMode = false;
 uint8_t g_bootMode = 0xFF;
-// One-shot post-wake-fire handoff (Cfg.wakeHandoff): arm = persisted by the wake fire's saveMode; boot =
+// One-shot post-wake-fire handoff (Cfg.wakeHandoff): arm = persisted by wakeHandoffMark's saveCfg; boot =
 // this boot came from a wake fire (consumed like bootMode/debugCdc so the next boot is normal).
 uint8_t g_wakeHandoffArm = 0;
 bool g_wakeHandoffBoot = false;
+// The mode saveCfg persists as Cfg.mode. Tracks the last REAL (non-wake) personality: while the live mode
+// is MODE_WAKE, any saveCfg (the loadCfg consume-save included) must not leak 10 into the persisted mode,
+// or persist-last-mode users would boot into the panel-less keyboard on every replug.
+static uint8_t g_modePersist = 0;
 
 bool g_debugCdcThisBoot = false;
 
@@ -96,10 +100,12 @@ uint32_t g_pollUs = POLL_US_DEFAULT;
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
 		bootMode, chordBtn[3], wakeHandoff;
-	// wakeHandoff: ex rumble-strength slot (same offset, so an existing cfg.bin still loads; old files
-	// hold 0 = unarmed). Now the one-shot post-wake-fire handoff arm: MODE_WAKE sets 1 right before its
-	// return reboot, loadCfg honors it for that boot and consumes it. In FLASH, not .noinit, because this
-	// board class's bootloader wipes .noinit RAM on every reset.
+	// wakeHandoff: ex rumble-strength slot (same offset and magic, so an existing cfg.bin still loads --
+	// which also means a pre-rework file can hold a live rumble VALUE here, not 0). Now the one-shot
+	// post-wake-fire handoff arm: MODE_WAKE sets exactly 1 right before its return reboot, loadCfg honors
+	// ==1 for that boot and consumes ANY nonzero (so a legacy value, or a 1 stranded by flashing an old
+	// firmware between the fire and the consume, is scrubbed rather than read as an arm later). In FLASH,
+	// not .noinit, because this board class's bootloader wipes .noinit RAM on every reset.
 	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
 	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
 	uint8_t rxWin10, lizKeep, landAll87;
@@ -119,7 +125,7 @@ struct Cfg {
 void saveCfg()
 {
 	Cfg c = { CFG_MAGIC,
-		  g_usbMode,
+		  modeIsWake(g_usbMode) ? g_modePersist : g_usbMode,
 		  (uint8_t)g_mDiv,
 		  (uint8_t)g_mFric,
 		  g_debugCdc,
@@ -174,9 +180,10 @@ void loadCfg()
 				consume = true;
 			}
 			// one-shot wake handoff: this boot follows a MODE_WAKE fire; honored (grace + fast RF
-			// bring-up) then consumed. ==1 exactly: 0xFF here means a corrupt/short file, not an arm.
-			if (c.wakeHandoff == 1) {
-				g_wakeHandoffBoot = true;
+			// bring-up) then consumed. Honor ==1 exactly (the only value the fire writes) but consume
+			// any nonzero so legacy rumble-era values in this byte are scrubbed, not resurrected.
+			if (c.wakeHandoff != 0) {
+				g_wakeHandoffBoot = (c.wakeHandoff == 1);
 				g_wakeHandoffArm = 0;
 				consume = true;
 			}
@@ -194,6 +201,9 @@ void loadCfg()
 								     c.mode :
 								     0) :
 							    0;
+			// the persisted-mode slot must survive a trip through MODE_WAKE (see g_modePersist)
+			if (modeValid(c.mode) && !modeIsWake(c.mode))
+				g_modePersist = c.mode;
 			static const uint8_t CHORD_DEF[3] = { MODE_LIZARD,
 							      MODE_XBOX,
 							      MODE_SW_PRO };
@@ -238,8 +248,12 @@ void loadCfg()
 
 void saveMode(uint8_t m)
 {
-	if (g_persistMode) {
+	// MODE_WAKE is inherently transient (one wake, then back) -- it is ALWAYS a one-shot bootMode, even
+	// for persist-last-mode users, so the persisted personality is never overwritten by a wake trip and
+	// the fire's modeSwitchReboot(0xFF) return lands back in the user's own mode.
+	if (g_persistMode && !modeIsWake(m)) {
 		g_usbMode = m;
+		g_modePersist = m;
 		g_bootMode = 0xFF;
 	} else {
 		g_bootMode = m;
