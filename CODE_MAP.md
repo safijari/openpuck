@@ -76,8 +76,9 @@ re-add wake mouse + `g_active->mountSlots(k)` + WebUSB in locked instance order,
   (`g_swGyroLegacy` is declared here but lives in `mode_switch_pro.cpp`/`swprocfg.bin`.)
 - `struct Cfg` is serialized to `/cfg.bin` (LittleFS), magic `0xCF`. `rxWin10`,
   `lizKeep`, `landAll87` and the per-type table travel with it; `rsvd0` is the
-  one-shot debug-CDC arm and `rsvd1` the ex-rumble-strength slot (both kept so the
-  on-flash layout is unchanged). New fields are **appended to the tail** (`chordDpad[4]`) —
+  one-shot debug-CDC arm and `wakeHandoff` (ex `rsvd1`, the old rumble-strength slot)
+  the one-shot post-wake-fire handoff arm (0xA5 sentinel; see mode_wake) -- both offsets
+  kept so the on-flash layout is unchanged. New fields are **appended to the tail** (`chordDpad[4]`) —
   `loadCfg()` prefills `0xFF` and accepts a file short by only the tail (`CFG_LEN_MIN`),
   so an upgrade keeps every existing setting and unwritten tail bytes fall back to defaults.
 - `loadCfg()` resolves the boot mode policy: one-shot `bootMode` wins once then clears;
@@ -422,6 +423,33 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
   `wakeHidReady`, `wakeHidMove(dx,dy)` → `g_wakeHid.mouseReport(0,0,dx,dy,0,0)`
   (buttons always 0). Poll interval 10 ms. No buffers/delays/loops; only shared state is
   the one flag set once at begin.
+
+### `mode_wake.cpp` / `mode_wake.h`  (`g_wakeCtl`, MODE_WAKE)
+Boot-keyboard-only wake personality (28DE:574B): powers on a shut-down (S5) host whose
+firmware watches the port for a keyboard hotkey (Lenovo Smart Power On = Alt+P).
+- **loop task only**: `task()` state machine -- OBSERVED RF link quiet >= `WAKE_ARM_DOWN_MS`
+  arms it (the quiet clock runs only while `rfConnectOpen()`, so unobservable boot time
+  never counts); the gesture is an `anySlotLinkUp()` up-EDGE latched `WAKE_FIRE_LATCH_MS`
+  until `g_kbd.ready()`, which sends the shaped press sequence (`WAKE_MOD_LEAD_MS` Alt
+  alone, `WAKE_HOLD_MS` held chord restated every `WAKE_RESEND_MS`, x `WAKE_REPEAT`) then
+  `modeSwitchReboot(WAKE_RETURN_MODE)` (0xFF = boot-policy default). Registers no report
+  callbacks and forwards no controller input. `WAKE_SEQ_DEADLINE_MS` bails the sequence if
+  the EC deconfigures us.
+- **Post-fire handoff grace**: `wakeHandoffMark()` persists a one-shot 0xA5 sentinel in
+  `Cfg.wakeHandoff` (flash -- this board class's bootloader wipes .noinit) consumed by
+  `loadCfg`; `wakeHandoffActive()` (deadline-only, `WAKE_HANDOFF_GRACE_MS`) holds the
+  suspend controller power-off + auto-rearm through POST, and the grace boot skips the
+  mount wait + opens the RF connect cooldown (`rfConnectOpenNow`). `wakeFireInFlight()` /
+  `wakeHandoffExpired()` are the haptics-side gates.
+- `wakeAutoRearmTask()` (called from `loop()` in every mode): `WAKE_AUTO_REARM` opt-in --
+  sleep-aware re-arm. Samples the host's `DEVICE_REMOTE_WAKEUP` arming (`tud_suspend_cb`)
+  once per down-episode (flap filter `WAKE_REARM_FLAP_MS` vs the EC's S5 port-takeover
+  re-arm, age cap `WAKE_REARM_EPISODE_MS`); armed = sleeping host, never re-arm. The
+  countdown runs from the last suspend edge (`WAKE_AUTO_REARM_MS` continuous), plus a
+  dead-bus path (`WAKE_DEADBUS_REARM_MS` from the moment the bus was lost) covering
+  reset-style EC takeovers, failed wakes, and plugs into an off host.
+- Enumerates bare -- single boot-protocol keyboard, no wake mouse / WebUSB / CDC (`bareHid`
+  in `setup()`) -- because the S5 embedded controller runs a minimal USB host stack.
 
 ### `webusb_config.cpp` / `webusb_config.h` — browser config channel (loop task)
 - `Adafruit_USBD_WebUSB usb_web`. **No vendor callbacks** — fully **polled from

@@ -163,11 +163,20 @@
         <button data-mode="5" class="modebtn">PS5 DualSense</button>
         <button data-mode="6" class="modebtn">HID gyro (DS4)</button>
         <button data-mode="9" class="modebtn">PS3 (DualShock 3)</button>
+        <button data-mode="10" class="modebtn">Keyboard wake (power-on)</button>
       </div>
-      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only.</p>
+      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only. Keyboard wake mode is a bare keyboard for firmware smart power on (hotkey configurable below; default Alt+P, Lenovo): the panel cannot connect to it; it fires once when a controller connects and returns to the normal puck (chord back-4 + A on a still-connected controller to leave it before it arms).</p>
       <div class="row"><label>Persist last mode</label>
         <button id="persistMode">off</button>
         <span class="note" style="flex:1">Off (default): every restart / fresh reconnect boots into Steam mode. On: remembers the last mode you selected.</span>
+      </div>
+      <!-- Keyboard-wake hotkey (firmware >= v21): the chord mode 10 types to power the machine on.
+           Modifier checkboxes build the left-modifier bitmask (fields 30/31 -> firmware g_wakeMod/g_wakeKey). -->
+      <div class="row hide" id="wakeHotkeyRow"><label>Wake hotkey</label>
+        <!-- checkboxes generated from LZ_MODS (one modifier table for the whole page) -->
+        <span id="wakeMods" style="display:flex;gap:10px;align-items:center"></span>
+        <select id="wakeKeySel"></select>
+        <span class="note" style="flex:1">The chord Keyboard wake mode (10) types to power the machine on. Default Alt+P (Lenovo Smart Power On); other vendors use different chords — check your firmware's wake-on-keyboard docs.</span>
       </div>
     </div>
 
@@ -388,7 +397,7 @@
 </div>
 
 <script>
-const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)"];
+const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)","Keyboard wake (power-on)"];
 const CHORD_FIELD = [17, 18, 19];          // back4 + B/X/Y
 const CHORD_DPAD_FIELD = [34, 35, 36, 37]; // back4 + D-pad left/up/right/down (firmware protocol >= 18)
 const CHORD_DPAD_DEF = [9, 8, 7, 2];       // firmware defaults: PS3, DS4 game, PS5 game, Switch HORIPAD
@@ -678,7 +687,7 @@ function setTab(et){
   setTab(0);
 })();
 for(const sel of document.querySelectorAll("select.chord")){
-  MODE_NAMES.forEach((n,i)=>{ if(i===7||i===8) return;
+  MODE_NAMES.forEach((n,i)=>{ if(i===7||i===8||i===10) return;
     const o=document.createElement("option"); o.value=i; o.textContent=n; sel.appendChild(o); });
 }
 // D-pad chords offer EVERY mode, including the game/clean ones the face selects skip: those modes drop WebUSB,
@@ -1109,6 +1118,25 @@ function applyBlob(p){
   $("#dpadChords").classList.toggle("hide", !dpadCap);
   $("#dpadOld").classList.toggle("hide", dpadCap);
   if(dpadCap) for(const sel of document.querySelectorAll("select.chordD")){ if(document.activeElement!==sel) sel.value=chordD[+sel.dataset.i]; }
+  // Keyboard-wake hotkey (firmware p[195..196] = payload p[193..194], v21+); hidden on older firmware.
+  const wakeCap=(p[0]>=21 && p.length>194);
+  $("#wakeHotkeyRow").classList.toggle("hide", !wakeCap);
+  if(wakeCap){
+    const wk=$("#wakeKeySel");
+    // The firmware accepts any defined keyboard usage; the curated list is narrower. An out-of-list
+    // stored key gets its own hex option instead of silently blanking the select (a blank select
+    // reads as +""=0 on the next send).
+    if(document.activeElement!==wk){
+      if(![...wk.options].some(o=>+o.value===p[194])){
+        const o=document.createElement("option"); o.value=p[194];
+        o.textContent="0x"+p[194].toString(16).padStart(2,"0"); wk.appendChild(o);
+      }
+      wk.value=p[194];
+    }
+    let modFocus=false;
+    for(const c of document.querySelectorAll("#wakeMods input")) if(document.activeElement===c) modFocus=true;
+    if(!modFocus) for(const c of document.querySelectorAll("#wakeMods input")) c.checked=!!(p[193] & +c.dataset.bit);
+  }
 }
 function fmtSlider(id,v){ return id==="hapBlockS" ? v+" s" : ""+v; }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
@@ -1211,6 +1239,7 @@ function buildBackup(p, bp){
   // those settings existed carry rumble/swProRate/swGyro10 keys instead — now-removed settings, ignored.)
   if(p[0]>=18 && p.length>183) cfg.chordD=[p[180],p[181],p[182],p[183]];
   if(p[0]>=19 && p.length>184) cfg.swGyroLegacy=p[184];
+  if(p[0]>=21 && p.length>194){ cfg.wakeMod=p[193]; cfg.wakeKey=p[194]; }
   // version 2: include the lizard map so it survives a backup/restore cycle.
   // Guard on !lizardBusy to avoid a race with the one-shot lazy load (lizardExchange sets
   // lizardBusy while the initial 0x11 fetch is in flight); if the load is still pending the
@@ -1262,7 +1291,7 @@ async function importBackup(file){
   // slots, and the final commit.
   const typeN=Array.isArray(c.types)?Math.min(c.types.length,4):0;
   const lizardN=(Array.isArray(c.lizardMap) && lizardCapable())?Math.min(c.lizardMap.length,LZ_MAX):0;
-  const baseN=6 + (Array.isArray(c.chordD)?4:0) + (c.swGyroLegacy!==undefined?1:0);
+  const baseN=6 + (Array.isArray(c.chordD)?4:0) + (c.swGyroLegacy!==undefined?1:0) + (c.wakeMod!==undefined?1:0) + (c.wakeKey!==undefined?1:0);
   const padStickN=Array.isArray(c.types)?c.types.slice(0,typeN).filter(t=>Array.isArray(t.padStick)).length*2:0;
   const total=baseN + typeN*9 + padStickN + lizardN + 4 + 1;
   let step=0, stage="";
@@ -1293,6 +1322,9 @@ async function importBackup(file){
     // Switch Pro gyro mapping (v19+ backups only). Backups also carry rumble/swProRate/swGyro10 from the
     // removed settings; those fields no longer exist on the puck, so they are not replayed.
     if(c.swGyroLegacy!==undefined) await sf(38, c.swGyroLegacy?1:0);
+    // Keyboard-wake hotkey (v21+ backups; absent fields are skipped, keeping the puck's default)
+    if(c.wakeMod!==undefined) await sf(30, c.wakeMod);
+    if(c.wakeKey!==undefined) await sf(31, c.wakeKey);
     // c.types is absent in some very old backups created before per-type paddle/haptic config
     // was added to the panel export; guard so a missing field never crashes the import mid-flight.
     if(typeN){
@@ -2222,10 +2254,31 @@ for(const sel of document.querySelectorAll("select.chord")){
 for(const sel of document.querySelectorAll("select.chordD")){
   sel.addEventListener("change", ()=>setField(CHORD_DPAD_FIELD[+sel.dataset.i], +sel.value));
 }
+// Keyboard-wake hotkey (firmware >= v21). Built from the same LZ_KEYS/LZ_MODS tables as the lizard
+// binding editor -- ONE HID usage table for the whole page, so a key/label added there reaches this
+// selector too. Value 0 ("none") is filtered: the firmware rejects key 0, a wake chord always has a
+// key. Each control sends ONLY its own field (30 = modifier bitmask, 31 = key): the fields are
+// independent on the firmware side, and every field write costs a full cfg.bin flash rewrite.
+{ const sel=document.getElementById("wakeKeySel"), mods=document.getElementById("wakeMods");
+  for(const [v,lbl] of LZ_KEYS){ if(!v) continue;
+    const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
+  for(const [bit,lbl] of LZ_MODS){
+    const l=document.createElement("label"); l.style.flex="0 0 auto";
+    const c=document.createElement("input"); c.type="checkbox"; c.dataset.bit=bit;
+    l.appendChild(c); l.appendChild(document.createTextNode(" "+lbl)); mods.appendChild(l); }
+  sel.addEventListener("change", ()=>{ const v=+sel.value; if(v) setField(31, v); });
+  for(const c of mods.querySelectorAll("input"))
+    c.addEventListener("change", ()=>{ let m=0;
+      for(const b of mods.querySelectorAll("input")) if(b.checked) m|=+b.dataset.bit;
+      setField(30, m); });
+}
 for(const b of document.querySelectorAll(".modebtn")){
   b.onclick=()=>{ const m=+b.dataset.mode;
-    const clean=(m===7||m===8||m===9);
-    const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold all four back paddles (L4+R4+L5+R5) + A to return to Steam mode. The back4+D-pad chords are how you get back INTO these modes without the panel — check their assignments in the chords card first.":"");
+    const clean=(m===7||m===8||m===9||m===10);
+    const why=(m===10)
+      ? "Keyboard wake mode is a bare keyboard for firmware smart power on (hotkey set in the panel; default Alt+P, Lenovo): it has no WebUSB, so THIS PANEL WILL DISCONNECT. It fires once when a controller connects after the machine is shut down, then returns to the normal puck by itself. To leave it WITHOUT firing, chord all four back paddles (L4+R4+L5+R5) + A on a STILL-CONNECTED controller before it arms (~8 s); once armed, a fresh controller connect fires immediately. Setup guide: docs/WAKE_MODE.md."
+      : "the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold all four back paddles (L4+R4+L5+R5) + A to return to Steam mode. The back4+D-pad chords are how you get back INTO these modes without the panel — check their assignments in the chords card first.";
+    const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: "+why:"");
     if(confirm(msg)){ send([0x03, m]); log("mode switch requested — device will reboot"); } };
 }
 updateUf2UI();

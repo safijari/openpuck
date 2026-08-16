@@ -1,6 +1,8 @@
 #include "config.h"
 #include "rf_link.h" // g_rxWin (poll RX window persisted here)
 #include "haptics.h" // g_hapticBlockOn, g_hapticBlockMs
+#include "mode_wake.h" // WAKE_MOD_DEFAULT/WAKE_KEY_DEFAULT (g_wakeMod/g_wakeKey factory values)
+#include <Adafruit_TinyUSB.h> // KEYBOARD_MODIFIER_*/HID_KEY_* (wake-hotkey defaults + validation)
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 #include <string.h>
@@ -19,6 +21,18 @@ uint8_t g_chordDpad[4] = { MODE_PS3, MODE_DS4_GAME, MODE_PS5_GAME,
 			   MODE_SW_HORI };
 bool g_persistMode = false;
 uint8_t g_bootMode = 0xFF;
+// One-shot post-wake-fire handoff (Cfg.wakeHandoff): arm = persisted by wakeHandoffMark's saveCfg; boot =
+// this boot came from a wake fire (consumed like bootMode/debugCdc so the next boot is normal).
+uint8_t g_wakeHandoffArm = 0;
+bool g_wakeHandoffBoot = false;
+bool g_wakeRearmBoot = false;
+// MODE_WAKE hotkey (modifier bitmask + HID key usage), panel-settable per vendor; default Lenovo Alt+P.
+uint8_t g_wakeMod = WAKE_MOD_DEFAULT;
+uint8_t g_wakeKey = WAKE_KEY_DEFAULT;
+// The mode saveCfg persists as Cfg.mode. Tracks the last REAL (non-wake) personality: while the live mode
+// is MODE_WAKE, any saveCfg (the loadCfg consume-save included) must not leak 10 into the persisted mode,
+// or persist-last-mode users would boot into the panel-less keyboard on every replug.
+static uint8_t g_modePersist = 0;
 
 bool g_debugCdcThisBoot = false;
 
@@ -91,9 +105,14 @@ uint32_t g_pollUs = POLL_US_DEFAULT;
 #define CFG_MAGIC 0xCF
 struct Cfg {
 	uint8_t magic, mode, mDiv, mFric, rsvd0, pollU100, persistMode,
-		bootMode, chordBtn[3], rsvd1;
-	// rsvd1: legacy rumble-strength slot (strength now fixed at RUMBLE_SCALE_PCT; ignored -- kept so the
-	// on-flash layout is unchanged and an existing cfg.bin still loads).
+		bootMode, chordBtn[3], wakeHandoff;
+	// wakeHandoff: ex rumble-strength slot (same offset and magic, so an existing cfg.bin still loads --
+	// which also means a pre-rework file can hold a live rumble VALUE here, 0..100). Now the one-shot
+	// post-wake-fire handoff arm: MODE_WAKE writes the 0xA5 sentinel (outside the legacy range) right
+	// before its return reboot; loadCfg honors ==0xA5 for that boot and consumes ANY nonzero (so a
+	// legacy value, or a sentinel stranded by flashing an old firmware between the fire and the consume,
+	// is scrubbed rather than read as an arm later). In FLASH, not .noinit, because this board class's
+	// bootloader wipes .noinit RAM on every reset.
 	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
 	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
 	uint8_t rxWin10, lizKeep, landAll87;
@@ -103,6 +122,9 @@ struct Cfg {
 	uint8_t chordDpad[4];
 	// per-type trackpad->stick mapping: [et][0] = left pad, [et][1] = right pad (PS_*)
 	uint8_t padStick[ET_COUNT][2];
+	// MODE_WAKE hotkey (tail): modifier bitmask + HID key usage. 0xFF (short pre-tail file) = unset ->
+	// compiled defaults (Alt+P).
+	uint8_t wakeMod, wakeKey;
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 // Shortest cfg.bin we still accept: the layout as of CFG_MAGIC 0xCF, i.e. everything before the appended tail.
@@ -113,7 +135,7 @@ struct Cfg {
 void saveCfg()
 {
 	Cfg c = { CFG_MAGIC,
-		  g_usbMode,
+		  modeIsWake(g_usbMode) ? g_modePersist : g_usbMode,
 		  (uint8_t)g_mDiv,
 		  (uint8_t)g_mFric,
 		  g_debugCdc,
@@ -121,14 +143,16 @@ void saveCfg()
 		  (uint8_t)(g_persistMode ? 1 : 0),
 		  g_bootMode,
 		  { g_chordBtn[0], g_chordBtn[1], g_chordBtn[2] },
-		  0, // rsvd1 (ex rumble strength)
+		  g_wakeHandoffArm,
 		  (uint8_t)(g_rxWin / 10),
 		  g_lizKeep,
 		  g_landAll87,
 		  {},
 		  { g_chordDpad[0], g_chordDpad[1], g_chordDpad[2],
 		    g_chordDpad[3] },
-		  {} };
+		  {},
+		  g_wakeMod,
+		  g_wakeKey };
 	for (int i = 0; i < ET_COUNT; i++) {
 		c.type[i] = g_type[i];
 		c.padStick[i][0] = g_padStickCfg[i][0];
@@ -167,6 +191,17 @@ void loadCfg()
 				g_debugCdc = 0;
 				consume = true;
 			}
+			// one-shot wake handoff: this boot follows a MODE_WAKE fire; honored (grace + fast RF
+			// bring-up) then consumed. Honor the sentinels exactly -- this byte is the legacy
+			// rumble-strength slot (0..100), so a real legacy value can never fake an arm -- and
+			// consume any nonzero so stale values are scrubbed, not resurrected. 0xA5 = post-fire
+			// handoff; 0xC3 = auto-rearm boot (host proven down -> MODE_WAKE arms instantly).
+			if (c.wakeHandoff != 0) {
+				g_wakeHandoffBoot = (c.wakeHandoff == 0xA5);
+				g_wakeRearmBoot = (c.wakeHandoff == 0xC3);
+				g_wakeHandoffArm = 0;
+				consume = true;
+			}
 			// poll rate is fixed; rewrite cfg so the persisted byte matches the new default.
 			if (c.pollU100 != (uint8_t)(POLL_US_DEFAULT / 100))
 				consume = true;
@@ -181,6 +216,9 @@ void loadCfg()
 								     c.mode :
 								     0) :
 							    0;
+			// the persisted-mode slot must survive a trip through MODE_WAKE (see g_modePersist)
+			if (modeValid(c.mode) && !modeIsWake(c.mode))
+				g_modePersist = c.mode;
 			static const uint8_t CHORD_DEF[3] = { MODE_LIZARD,
 							      MODE_XBOX,
 							      MODE_SW_PRO };
@@ -199,6 +237,14 @@ void loadCfg()
 					if (c.padStick[i][k] <= PS_MAX)
 						g_padStickCfg[i][k] =
 							c.padStick[i][k];
+			// MODE_WAKE hotkey. Modifier: any bitmask incl. 0 (a bare key is a legal chord);
+			// only 0xFF (pre-tail file) means unset. Key: must be a defined keyboard usage
+			// (wakeKeyValid, shared with the WebUSB setter) so a stray byte can never make
+			// the wake press type garbage -- anything else keeps the compiled Alt+P default.
+			if (c.wakeMod != 0xFF)
+				g_wakeMod = c.wakeMod;
+			if (wakeKeyValid(c.wakeKey))
+				g_wakeKey = c.wakeKey;
 			// grow a short file to the current layout on the next save
 			if (got < (int)sizeof c)
 				consume = true;
@@ -225,8 +271,12 @@ void loadCfg()
 
 void saveMode(uint8_t m)
 {
-	if (g_persistMode) {
+	// MODE_WAKE is inherently transient (one wake, then back) -- it is ALWAYS a one-shot bootMode, even
+	// for persist-last-mode users, so the persisted personality is never overwritten by a wake trip and
+	// the fire's modeSwitchReboot(0xFF) return lands back in the user's own mode.
+	if (g_persistMode && !modeIsWake(m)) {
 		g_usbMode = m;
+		g_modePersist = m;
 		g_bootMode = 0xFF;
 	} else {
 		g_bootMode = m;
