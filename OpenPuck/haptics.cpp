@@ -790,9 +790,12 @@ void hapticTask()
 		g_offMask &= (uint8_t) ~(prevLinked &
 					 ~linked); // down edges leave the mask
 		prevLinked = linked;
-		// Suspend-edge off (host went to sleep / suspend-style shutdown).
+		// Suspend-edge off (host went to sleep / suspend-style shutdown). wakeRearmWaitActive:
+		// on a connect-triggered rearm boot the EC's enumerate flap (resume then re-suspend)
+		// re-arms this one-shot, and firing it while the wake mode waits for ready() would
+		// power off the very controller whose press triggered the rearm.
 		if (suspArmed && vbus && !wakeFireInFlight() &&
-		    !wakeHandoffActive() &&
+		    !wakeHandoffActive() && !wakeRearmWaitActive() &&
 		    (millis() - suspSinceMs) >= SUSPEND_OFF_MS) {
 			hapticSendShutdown();
 			suspArmed = false; // fire once per suspend
@@ -827,7 +830,8 @@ void hapticTask()
 				    (unsigned long)(millis() - lostMs) >=
 					    SUSPEND_OFF_LOST_MS &&
 				    !wakeFireInFlight() &&
-				    !wakeHandoffActive()) {
+				    !wakeHandoffActive() &&
+				    !wakeRearmWaitActive()) {
 					if (!lostOpenMs)
 						lostOpenMs = millis();
 					if (vbus && linked) {
@@ -878,7 +882,8 @@ void hapticTask()
 			// subset of `linked`; the & is kept as cheap armor, not a filter.
 			uint8_t targets = (uint8_t)(g_offMask & linked);
 			if (hostDown && vbus && !wakeFireInFlight() &&
-			    !wakeHandoffActive() && targets) {
+			    !wakeHandoffActive() && !wakeRearmWaitActive() &&
+			    targets) {
 				for (int rs = 0; rs < NSLOT; rs++)
 					if (targets & (1u << rs))
 						hapticSendShutdown((uint8_t)rs);

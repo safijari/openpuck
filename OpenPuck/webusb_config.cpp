@@ -12,6 +12,7 @@
 #include "fw_update.h"
 #include "usb_tx.h"
 #include "usb_mount.h" // modeSwitchReboot()
+#include "mode_wake.h" // wakeKeyValid() (wake-hotkey field validation)
 #include <Arduino.h>
 #include <string.h>
 
@@ -1043,12 +1044,16 @@ void webusbPoll()
 				// MODE_WAKE hotkey (protocol v21): 30 = modifier bitmask (any value,
 				// 0 = bare key), 31 = HID key usage, validated to the defined keyboard
 				// range like loadCfg so the wake press can never type garbage.
+				// 30: modifier bitmask (0 = bare key; 0xFF rejected -- it is loadCfg's
+				// unset sentinel, so it would work for the session then silently revert
+				// to the default at the next boot). 31: HID key usage, same accept
+				// policy as loadCfg (shared wakeKeyValid) so the sites cannot drift.
 				case 30:
-					g_wakeMod = v;
+					if (v != 0xFF)
+						g_wakeMod = v;
 					break;
 				case 31:
-					if (v >= HID_KEY_A &&
-					    v <= HID_KEY_GUI_RIGHT)
+					if (wakeKeyValid(v))
 						g_wakeKey = v;
 					break;
 				}

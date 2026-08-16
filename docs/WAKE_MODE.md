@@ -75,7 +75,7 @@ diagnostic story:
 
 | You see | It means |
 | --- | --- |
-| No pulses when the controller connects | First rule out timing: after a *manual* mode-10 switch the mode arms ~8 s after the link goes quiet (2.5 s radio bring-up + 5 s observed quiet; auto-re-arm boots arm instantly), so a power-press within ~8 s of the switch, or a second bonded controller still powered on, means it simply was not armed yet — power the controller off, wait ~10 s, try again. If timing is ruled out: the EC never enumerated/configured the keyboard — wrong port, BIOS feature off, or the machine's EC doesn't service USB in S5. |
+| No pulses when the controller connects | First rule out timing: after a *manual* mode-10 switch (or a timer-driven auto-re-arm) the mode arms ~8 s after the link goes quiet (2.5 s radio bring-up + 5 s observed quiet; press-triggered re-arm boots arm instantly), so a power-press within ~8 s of the switch, or a second bonded controller still powered on, means it simply was not armed yet — power the controller off, wait ~10 s, try again. If timing is ruled out: the EC never enumerated/configured the keyboard — wrong port, BIOS feature off, or the machine's EC doesn't service USB in S5. |
 | Pulses, machine stays off | Reports were delivered but the hotkey parser rejected them: wrong hotkey for your vendor (§6), or the EC wants different press shaping (`WAKE_*` timings in `mode_wake.h`). |
 | Pulses, machine powers on | Working as intended. |
 
@@ -93,12 +93,14 @@ with the puck ever again. Two triggers, whichever comes first:
 
 - **Your press.** From ~10 s after shutdown, powering the controller on IS
   the re-arm: the puck sees the connect against the shut-down bus, reboots
-  straight into wake mode (which arms instantly on re-arm boots — the
-  host's downtime already served as the arming quiet), answers the
-  controller before it gives up searching, and fires. One press, machine
-  on.
+  straight into wake mode (which arms instantly on these press-triggered
+  boots — your press already was the gesture), answers the controller
+  before it gives up searching, and fires. One press, machine on.
 - **The timer.** With no press, a persistent suspend (≥15 s) re-arms by
-  itself, so a later press lands on an already-armed wake keyboard.
+  itself; the wake mode then arms ~8 s later through the normal quiet
+  clock (deliberately not instantly: with no press behind the re-arm,
+  nothing may fire without a fresh, human-shaped connect), and any later
+  press lands on the armed keyboard.
 
 Press *too* early (in the first ~10 s, while the puck is still deciding
 sleep-vs-shutdown) and the controller is powered back off by the normal
@@ -117,7 +119,9 @@ handoff grace runs out (~90–105 s after the fire), so a later press still
 works. Three caveats: if your OS has wakeup *disabled* for the device
 (Linux: `power/wakeup` in sysfs), its sleep looks like a shutdown and the
 puck will re-arm mid-sleep — recover with the escape chord or a replug, or
-enable device wakeup. A host that arms remote wakeup once but never clears
+enable device wakeup. (The game/clean PS modes never advertise remote
+wakeup at all, so with auto-rearm every sleep in those modes reads as a
+shutdown the same way.) A host that arms remote wakeup once but never clears
 it (Linux clears on resume; other OSes untested) would make shutdowns look
 like sleeps — if auto-rearm silently stops re-arming on your machine, that's
 the signature. And if the *puck itself* restarts while the host is asleep
@@ -147,8 +151,8 @@ Validated end-to-end on the M90q Gen 6.
 ## 7. What happens behind the scenes (and what was hard)
 
 Full flow: arm (~5 s of observed RF-link silence, so switching modes with the
-controller still connected can't type into a live session; auto-re-arm boots
-skip this — the host's downtime already proved the point) → fire on the
+controller still connected can't type into a live session; press-triggered
+re-arm boots skip this — the press already was the gesture) → fire on the
 first controller connect → settle → reboot into the return mode with a
 persisted one-shot **handoff grace**. During the grace (up to 90 s; it ends
 early once the OS has been stably up for 20 s — a bar BIOS POST enumeration

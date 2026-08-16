@@ -82,6 +82,10 @@ static uint32_t s_t = 0; // start of the current timed phase
 static uint32_t s_dl = 0; // press-sequence start, for WAKE_SEQ_DEADLINE_MS
 static uint32_t s_resend = 0; // last held-report re-send (WAKE_RESEND_MS)
 static uint8_t s_shots = 0;
+// begin() timestamp, anchor for the rearm-boot fire window. Wrap-safe subtraction against this --
+// never a raw millis() comparison -- so a puck parked in W_ARMED on always-on VBUS for 49.7 days
+// cannot see the no-edge window reopen at the millis() wrap.
+static uint32_t s_bootMs = 0;
 
 // One boot-keyboard report. Queued for the usbTx drain like every other report in this firmware -- loop()
 // never calls tud_* directly (see usb_tx.h). key==0 with mod==0 is the all-keys-up report.
@@ -115,10 +119,13 @@ void WakeController::begin()
 	// 10 ms, a real keyboard's cadence; nothing here is latency-sensitive
 	g_kbd.setPollInterval(10);
 	g_kbd.begin();
-	// Auto-rearm boot: the host was proven down before the reboot (>= WAKE_AUTO_REARM_MS of
-	// shutdown-decided suspend, a settled connect, or a long-dead bus), so the link-quiet clock's job
+	// Connect-triggered rearm boot (0xC3, the ONLY marked rearm -- see WAKE_REARM_FIRE_WINDOW_MS):
+	// the user's press already happened and the host was proven down, so the link-quiet clock's job
 	// -- keeping a mode switch from typing into a live session -- is already done. Arm immediately:
-	// the connect that triggered a rearm-on-connect boot must be answerable the moment it relinks.
+	// the connect that triggered the rearm must be answerable the moment it relinks. Timer/dead-bus
+	// rearm boots are unmarked and go through W_WAIT_DOWN like a manual entry, so a controller that
+	// survived its power-off can never fire the hotkey without a human gesture.
+	s_bootMs = millis();
 	if (g_wakeRearmBoot)
 		s_st = W_ARMED;
 }
@@ -164,15 +171,17 @@ void WakeController::task()
 		// the EC's minimal stack having enumerated us. If it never goes true we simply never fire, and
 		// the LED never flashes, which is the diagnostic.
 		//
-		// Rearm-boot fire window: on a g_wakeRearmBoot boot the gesture already happened -- the
-		// connect that triggered the rearm (or a press racing the timer) -- and the controller
-		// relinks within ~1 s of boot, but the EC's enumeration of the reborn keyboard can take
-		// longer than WAKE_FIRE_LATCH_MS after that edge. For the first WAKE_REARM_FIRE_WINDOW_MS
-		// of the boot a link that is simply UP when ready() lands fires without a fresh edge; past
-		// the window the strict edge-latch rules return (a controller connected against a dead port
-		// must not fire when a manually booted OS finally enumerates us).
+		// Rearm-boot fire window: on a g_wakeRearmBoot (connect-triggered) boot the gesture already
+		// happened -- the connect that caused the rearm -- and the controller relinks within ~1 s
+		// of boot, but the EC's enumeration of the reborn keyboard can take longer than
+		// WAKE_FIRE_LATCH_MS after that edge. For the first WAKE_REARM_FIRE_WINDOW_MS of the boot a
+		// link that is simply UP when ready() lands fires without a fresh edge; past the window the
+		// strict edge-latch rules return (a controller connected against a dead port must not fire
+		// when a manually booted OS finally enumerates us). Wrap-safe subtraction against s_bootMs
+		// on purpose (see its comment).
 		if ((s_pend || (g_wakeRearmBoot && up &&
-				now <= WAKE_REARM_FIRE_WINDOW_MS)) &&
+				(uint32_t)(now - s_bootMs) <=
+					WAKE_REARM_FIRE_WINDOW_MS)) &&
 		    g_kbd.ready()) {
 			s_pend = false;
 			s_shots = 0;
@@ -260,6 +269,22 @@ bool wakeFireInFlight()
 	return modeIsWake(g_usbMode) && s_st >= W_PRESS;
 }
 
+// True while a connect-triggered rearm boot is still inside its fire window (see mode_wake.h): the
+// W_ARMED wait for g_kbd.ready() is part of answering the user's press, and haptics' suspend
+// power-off must not shoot the triggering controller down during it.
+bool wakeRearmWaitActive()
+{
+	return modeIsWake(g_usbMode) && g_wakeRearmBoot &&
+	       (uint32_t)(millis() - s_bootMs) <= WAKE_REARM_FIRE_WINDOW_MS;
+}
+
+// The one definition of "a byte the wake press may type": the defined HID keyboard usage range.
+// Shared by loadCfg and the WebUSB field-31 setter so the accept policies can never drift apart.
+bool wakeKeyValid(uint8_t k)
+{
+	return k >= HID_KEY_A && k <= HID_KEY_GUI_RIGHT;
+}
+
 // Auto-re-arm watcher, called from loop() in every mode (compiled to nothing unless the WAKE_AUTO_REARM
 // build option is on -- see mode_wake.h for why it is off by default). Note this deliberately bypasses the
 // "no mode switch while suspended" convention the chord + console paths follow: their rule exists so a
@@ -278,9 +303,11 @@ extern "C" void tud_suspend_cb(bool remote_wakeup_en)
 	s_suspWkArmed = remote_wakeup_en;
 }
 
-// Every auto-rearm reboot carries the persisted one-shot rearm marker (Cfg.wakeHandoff 0xC3, flash for
-// the same reason as the fire handoff: this board class's bootloader wipes .noinit RAM). saveCfg runs
-// inside modeSwitchReboot's saveMode, so the marker rides the same flash write. Does not return.
+// CONNECT-TRIGGERED rearm reboot only: carries the persisted one-shot gesture marker (Cfg.wakeHandoff
+// 0xC3, flash for the same reason as the fire handoff: this board class's bootloader wipes .noinit
+// RAM). saveCfg runs inside modeSwitchReboot's saveMode, so the marker rides the same flash write.
+// Timer/dead-bus rearms call modeSwitchReboot(MODE_WAKE) bare -- no gesture, no marker, normal
+// quiet-clock arming. Does not return.
 static void wakeRearmReboot()
 {
 	g_wakeHandoffArm = 0xC3;
@@ -323,10 +350,24 @@ void wakeAutoRearmTask()
 	wasSusp = susp;
 	// Connect-edge tracking for the rearm-on-connect fast path. Tracked UNCONDITIONALLY like the
 	// episode state above -- updating it only past the gates would leave a stale "down" across the
-	// grace and misread the first post-grace pass as a connect edge.
+	// grace and misread the first post-grace pass as a connect edge. An edge only counts as a
+	// GESTURE if the link was continuously down >= WAKE_REARM_CONN_DOWN_MS first: a real press
+	// follows a long controller-off, while an RF fade of a controller that survived its power-off
+	// blips down for well under a second (see mode_wake.h).
 	static bool wasUp = false;
+	static uint32_t linkDownMs =
+		0; // when the link last went down (0 = currently up)
 	const bool linkUp = anySlotLinkUp();
-	const bool connEdge = linkUp && !wasUp;
+	bool connGesture = false;
+	if (linkUp && !wasUp)
+		connGesture = linkDownMs && (uint32_t)(millis() - linkDownMs) >=
+						    WAKE_REARM_CONN_DOWN_MS;
+	if (!linkUp && wasUp)
+		linkDownMs = millis() ? millis() : 1;
+	else if (!linkUp && !linkDownMs)
+		linkDownMs = millis() ? millis() : 1; // down since boot
+	if (linkUp)
+		linkDownMs = 0;
 	wasUp = linkUp;
 	// Track the bus-lost clock UNCONDITIONALLY (like the episode tracking above): latching it below
 	// the grace gate made a failed wake's 45 s dead-bus countdown start only after the 90 s grace,
@@ -353,22 +394,26 @@ void wakeAutoRearmTask()
 	if (susp) {
 		// Rearm-on-connect (see WAKE_REARM_FIRE_WINDOW_MS in mode_wake.h): with a shutdown-decided
 		// episode and the suspension settled past the EC-takeover flap window, a controller connect
-		// IS the user pressing power for a wake -- reboot into MODE_WAKE right now instead of
-		// letting the suspend power-off shoot the controller down and making the user wait out the
-		// timer. Runs before rfLinkTask/hapticTask in loop(), and the power-off frame only leaves
-		// on rfLinkTask's poll replies, so this reboot always preempts a same-pass power-off. A
-		// sleep episode (epArmed) never lands here: its connect edge did the S3 remote wakeup in
-		// rf_link instead.
-		if (!epArmed && connEdge &&
+		// after a real controller-off IS the user pressing power for a wake -- reboot into
+		// MODE_WAKE right now instead of letting the suspend power-off shoot the controller down
+		// and making the user wait out the timer. Runs before rfLinkTask/hapticTask in loop(), and
+		// the power-off frame only leaves on rfLinkTask's poll replies, so this reboot always
+		// preempts a same-pass power-off. A sleep episode (epArmed) never lands here: its connect
+		// edge did the S3 remote wakeup in rf_link instead. This is the ONLY marked (0xC3) rearm:
+		// the marker attests a user gesture.
+		if (!epArmed && connGesture &&
 		    (uint32_t)(millis() - suspSince) >= WAKE_REARM_FLAP_MS)
 			wakeRearmReboot();
 		// Countdown from the LAST suspend edge, not the episode start: a manual power-on's POST
 		// flaps continue the shutdown episode, and counting from its start would fire the re-arm
 		// in the middle of a boot the user started by hand. Every flap restarts the clock; only
 		// WAKE_AUTO_REARM_MS of CONTINUOUS suspension (and a shutdown-decided episode) re-arms.
+		// UNMARKED reboot: with no gesture behind it, the wake mode must take the normal quiet-
+		// clock arming, or a controller that survived its power-off would relink into a pre-armed
+		// no-edge window and power the machine back on by itself.
 		if (!epArmed &&
 		    (uint32_t)(millis() - suspSince) >= WAKE_AUTO_REARM_MS)
-			wakeRearmReboot();
+			modeSwitchReboot(MODE_WAKE);
 		return;
 	}
 	// Dead-bus path (see WAKE_DEADBUS_REARM_MS): the bus is neither mounted nor suspended -- a
@@ -377,9 +422,10 @@ void wakeAutoRearmTask()
 	// uptime clock fired mid-shutdown and rebooted the puck out from under the pending power-off.
 	// No connect fast path here ON PURPOSE: a dead bus is also what a manually-rebooting PC looks
 	// like during POST, and a controller powered on during a normal boot must not swap the puck for
-	// the wake keyboard -- only the (deliberately long) timer may act on a dead bus.
+	// the wake keyboard -- only the (deliberately long) timer may act on a dead bus. UNMARKED
+	// reboot for the same reason as the suspend timer above: no gesture, so no pre-armed window.
 	if (busLostMs &&
 	    (uint32_t)(millis() - busLostMs) >= WAKE_DEADBUS_REARM_MS)
-		wakeRearmReboot();
+		modeSwitchReboot(MODE_WAKE);
 #endif
 }

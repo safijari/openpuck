@@ -239,12 +239,11 @@ void loadCfg()
 							c.padStick[i][k];
 			// MODE_WAKE hotkey. Modifier: any bitmask incl. 0 (a bare key is a legal chord);
 			// only 0xFF (pre-tail file) means unset. Key: must be a defined keyboard usage
-			// (HID_KEY_A..GUI_RIGHT) so a stray byte can never make the wake press type garbage
-			// -- anything else keeps the compiled Alt+P default.
+			// (wakeKeyValid, shared with the WebUSB setter) so a stray byte can never make
+			// the wake press type garbage -- anything else keeps the compiled Alt+P default.
 			if (c.wakeMod != 0xFF)
 				g_wakeMod = c.wakeMod;
-			if (c.wakeKey >= HID_KEY_A &&
-			    c.wakeKey <= HID_KEY_GUI_RIGHT)
+			if (wakeKeyValid(c.wakeKey))
 				g_wakeKey = c.wakeKey;
 			// grow a short file to the current layout on the next save
 			if (got < (int)sizeof c)

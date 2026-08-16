@@ -173,12 +173,8 @@
       <!-- Keyboard-wake hotkey (firmware >= v21): the chord mode 10 types to power the machine on.
            Modifier checkboxes build the left-modifier bitmask (fields 30/31 -> firmware g_wakeMod/g_wakeKey). -->
       <div class="row hide" id="wakeHotkeyRow"><label>Wake hotkey</label>
-        <span id="wakeMods" style="display:flex;gap:10px;align-items:center">
-          <label style="flex:0 0 auto"><input type="checkbox" data-bit="1"> Ctrl</label>
-          <label style="flex:0 0 auto"><input type="checkbox" data-bit="2"> Shift</label>
-          <label style="flex:0 0 auto"><input type="checkbox" data-bit="4"> Alt</label>
-          <label style="flex:0 0 auto"><input type="checkbox" data-bit="8"> Win</label>
-        </span>
+        <!-- checkboxes generated from LZ_MODS (one modifier table for the whole page) -->
+        <span id="wakeMods" style="display:flex;gap:10px;align-items:center"></span>
         <select id="wakeKeySel"></select>
         <span class="note" style="flex:1">The chord Keyboard wake mode (10) types to power the machine on. Default Alt+P (Lenovo Smart Power On); other vendors use different chords — check your firmware's wake-on-keyboard docs.</span>
       </div>
@@ -1127,7 +1123,16 @@ function applyBlob(p){
   $("#wakeHotkeyRow").classList.toggle("hide", !wakeCap);
   if(wakeCap){
     const wk=$("#wakeKeySel");
-    if(document.activeElement!==wk) wk.value=p[194];
+    // The firmware accepts any defined keyboard usage; the curated list is narrower. An out-of-list
+    // stored key gets its own hex option instead of silently blanking the select (a blank select
+    // reads as +""=0 on the next send).
+    if(document.activeElement!==wk){
+      if(![...wk.options].some(o=>+o.value===p[194])){
+        const o=document.createElement("option"); o.value=p[194];
+        o.textContent="0x"+p[194].toString(16).padStart(2,"0"); wk.appendChild(o);
+      }
+      wk.value=p[194];
+    }
     let modFocus=false;
     for(const c of document.querySelectorAll("#wakeMods input")) if(document.activeElement===c) modFocus=true;
     if(!modFocus) for(const c of document.querySelectorAll("#wakeMods input")) c.checked=!!(p[193] & +c.dataset.bit);
@@ -2249,20 +2254,23 @@ for(const sel of document.querySelectorAll("select.chord")){
 for(const sel of document.querySelectorAll("select.chordD")){
   sel.addEventListener("change", ()=>setField(CHORD_DPAD_FIELD[+sel.dataset.i], +sel.value));
 }
-// Keyboard-wake hotkey (firmware >= v21). Key options cover the usages BIOS wake hotkeys use (letters,
-// digits, F-keys + a few basics); values are HID keyboard usages, sent verbatim as field 31. The
-// modifier checkboxes OR into the left-modifier bitmask (field 30; 0 = a bare key, which is legal).
-{ const sel=document.getElementById("wakeKeySel");
-  const add=(lbl,v)=>{ const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); };
-  for(let i=0;i<26;i++) add(String.fromCharCode(65+i), 0x04+i);          // A..Z
-  for(let i=0;i<9;i++) add(String(i+1), 0x1E+i); add("0", 0x27);         // 1..9, 0
-  for(let i=0;i<12;i++) add("F"+(i+1), 0x3A+i);                          // F1..F12
-  add("Enter",0x28); add("Esc",0x29); add("Space",0x2C);
-  const sendHotkey=()=>{ let m=0;
-    for(const c of document.querySelectorAll("#wakeMods input")) if(c.checked) m|=+c.dataset.bit;
-    setField(30, m).then(()=>setField(31, +sel.value)); };
-  sel.addEventListener("change", sendHotkey);
-  for(const c of document.querySelectorAll("#wakeMods input")) c.addEventListener("change", sendHotkey);
+// Keyboard-wake hotkey (firmware >= v21). Built from the same LZ_KEYS/LZ_MODS tables as the lizard
+// binding editor -- ONE HID usage table for the whole page, so a key/label added there reaches this
+// selector too. Value 0 ("none") is filtered: the firmware rejects key 0, a wake chord always has a
+// key. Each control sends ONLY its own field (30 = modifier bitmask, 31 = key): the fields are
+// independent on the firmware side, and every field write costs a full cfg.bin flash rewrite.
+{ const sel=document.getElementById("wakeKeySel"), mods=document.getElementById("wakeMods");
+  for(const [v,lbl] of LZ_KEYS){ if(!v) continue;
+    const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
+  for(const [bit,lbl] of LZ_MODS){
+    const l=document.createElement("label"); l.style.flex="0 0 auto";
+    const c=document.createElement("input"); c.type="checkbox"; c.dataset.bit=bit;
+    l.appendChild(c); l.appendChild(document.createTextNode(" "+lbl)); mods.appendChild(l); }
+  sel.addEventListener("change", ()=>{ const v=+sel.value; if(v) setField(31, v); });
+  for(const c of mods.querySelectorAll("input"))
+    c.addEventListener("change", ()=>{ let m=0;
+      for(const b of mods.querySelectorAll("input")) if(b.checked) m|=+b.dataset.bit;
+      setField(30, m); });
 }
 for(const b of document.querySelectorAll(".modebtn")){
   b.onclick=()=>{ const m=+b.dataset.mode;

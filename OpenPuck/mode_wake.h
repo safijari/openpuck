@@ -96,6 +96,8 @@
 // mode_wake.cpp) and such suspends never re-arm, so wake-on-connect-from-S3 keeps working. Still off by
 // default: a host with wakeup disabled for the device (sysfs) makes its sleep look like a shutdown,
 // degrading to re-arm-on-sleep -- acceptable on hosts that shut down to S4/S5, surprising elsewhere.
+// The game/clean PS personalities never advertise remote wakeup at all (OpenPuck.ino psClean), so in
+// those modes EVERY sleep classifies as a shutdown -- the same degradation class.
 #ifndef WAKE_AUTO_REARM
 #define WAKE_AUTO_REARM 0
 #endif
@@ -115,13 +117,22 @@
 // ~15 s after shutdown connected to a Steam-mode puck on a suspended bus and was (correctly, for the
 // S3 case) powered straight back off by the suspend policy -- a press-timing trap users hit in
 // practice. A sleep episode (remote wakeup armed) never takes this path: its connect edge does the
-// normal S3 remote wakeup instead. Rearm boots carry a persisted one-shot marker (Cfg.wakeHandoff
-// 0xC3 sentinel -> g_wakeRearmBoot): the host was already proven down, so MODE_WAKE arms instantly
-// (no link-quiet wait, RF cooldown pre-opened), and for this long after the rearm boot a link that is
-// simply UP when the keyboard turns ready() fires without a fresh up-edge -- the EC's enumeration of
-// the reborn keyboard can outlast WAKE_FIRE_LATCH_MS, and the connect that caused the boot IS the
-// gesture. Past the window the strict edge-latch rules return.
+// normal S3 remote wakeup instead. CONNECT-TRIGGERED rearm boots -- and only those -- carry a
+// persisted one-shot marker (Cfg.wakeHandoff 0xC3 sentinel -> g_wakeRearmBoot): the marker attests a
+// USER GESTURE, so MODE_WAKE arms instantly (no link-quiet wait, RF cooldown pre-opened), and for
+// this long after the boot a link that is simply UP when the keyboard turns ready() fires without a
+// fresh up-edge -- the EC's enumeration of the reborn keyboard can outlast WAKE_FIRE_LATCH_MS, and
+// the connect that caused the boot IS the gesture. Past the window the strict edge-latch rules
+// return. Timer and dead-bus rearms deliberately boot UNMARKED into the normal quiet-clock arming: a
+// controller that survived its power-off (best-effort delivery) relinks right after any rearm
+// reboot, and against a pre-armed no-edge window that standing link would power the machine back on
+// with nobody at the button.
 #define WAKE_REARM_FIRE_WINDOW_MS 15000u
+// A connect edge only counts as a wake gesture if the link was continuously DOWN this long first: a
+// real press follows seconds-to-hours of controller-off, while an RF fade of a still-on controller
+// (the same best-effort-delivery survivor) blips down for well under a second -- without this, a
+// deep fade + relink while shutdown-suspended would read as a press and power the machine back on.
+#define WAKE_REARM_CONN_DOWN_MS 3000u
 // ...but an episode older than this always re-samples: USB selective-suspend churn can put a sub-5 s
 // resume right before a genuine sleep, and inheriting an hours-old "shutdown" decision there would
 // re-arm under a sleeping host. The EC takeover flap arrives ~3 s into its episode, far under this cap.
@@ -161,6 +172,14 @@ bool wakeHandoffExpired();
 // True while a press sequence is in flight (first press queued .. return reboot): the only wake-mode
 // window where haptics' suspend power-off must hold its fire (it would kill the triggering controller).
 bool wakeFireInFlight();
+// True while a connect-triggered rearm boot is still inside WAKE_REARM_FIRE_WINDOW_MS: haptics'
+// suspend power-off must also hold fire here -- the EC's enumerate flap (resume then re-suspend, a
+// captured M90q behavior) re-arms the suspend one-shot, and if ready() takes longer than
+// SUSPEND_OFF_MS from that edge the power-off would swallow the very press that triggered the rearm.
+bool wakeRearmWaitActive();
+// Valid HID keyboard usage for the wake hotkey (shared by loadCfg and the WebUSB setter, so the two
+// sites can never drift apart and silently un-persist a key one of them accepted).
+bool wakeKeyValid(uint8_t k);
 
 class WakeController : public IController {
     public:
