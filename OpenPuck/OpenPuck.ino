@@ -268,8 +268,10 @@ void setup()
 	// Post-wake-fire boot: the machine is POSTing and will not mount us for many seconds -- waiting here
 	// just extends the RF outage for the controller that triggered the wake (it gives up and powers off).
 	// Skip straight to bringing the RF side up; opening the connect cooldown makes the first beacons go
-	// out on the first loop() pass instead of at t=2.5 s.
-	if (wakeHandoffActive())
+	// out on the first loop() pass instead of at t=2.5 s. Auto-rearm boots take the same fast path for
+	// the mirror-image reason: the host is proven DOWN and will never mount us, and a rearm-on-connect
+	// boot has a controller mid-search that must be answered before it gives up (~4-5 s of silence).
+	if (wakeHandoffActive() || g_wakeRearmBoot)
 		rfConnectOpenNow();
 	else
 		for (int i = 0; i < 300 && !USBDevice.mounted(); i++)

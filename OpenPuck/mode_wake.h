@@ -88,7 +88,8 @@
 #define WAKE_SEQ_DEADLINE_MS 10000u
 
 // EXPERIMENTAL, default OFF; build with EXTRA_FLAGS="-DWAKE_AUTO_REARM=1" to enable. While running any
-// OTHER personality, a continuous USB suspend longer than WAKE_AUTO_REARM_MS reboots into MODE_WAKE, so
+// OTHER personality, a continuous USB suspend longer than WAKE_AUTO_REARM_MS reboots into MODE_WAKE (or
+// immediately on a controller connect once the episode is settled -- see WAKE_REARM_FIRE_WINDOW_MS), so
 // the wake re-arms itself every time the host goes down (the smart-power-on port keeps VBUS in S5, so the
 // MCU never cold-boots -- without this, one wake per manual arm). Sleep is distinguished from shutdown by
 // the host's own hand: an OS entering S3 arms DEVICE_REMOTE_WAKEUP before suspending (tud_suspend_cb in
@@ -104,8 +105,23 @@
 // A bus resume shorter than this does NOT start a new down-episode: during poweroff the smart-port EC
 // takes the bus over with a brief resume (~2.4 s captured on the M90q) and re-suspends WITH remote
 // wakeup armed -- its own listening mechanism, not the OS's sleep intent. The sleep-vs-shutdown decision
-// is sampled once, at the first suspend edge of the episode, and EC flaps cannot overwrite it.
+// is sampled once, at the first suspend edge of the episode, and EC flaps cannot overwrite it. Doubles
+// as the settle time for the rearm-on-connect fast path below: a connect is only honored once the bus
+// has been CONTINUOUSLY suspended this long, so the EC takeover flap can never race the decision.
 #define WAKE_REARM_FLAP_MS 5000u
+// Rearm-on-connect: while suspended with a shutdown-decided episode (settled per the flap filter), a
+// controller CONNECT is unambiguous -- the user pressing power for a wake -- so the re-arm reboots
+// immediately instead of waiting out WAKE_AUTO_REARM_MS. Without it, a press in the puck's first
+// ~15 s after shutdown connected to a Steam-mode puck on a suspended bus and was (correctly, for the
+// S3 case) powered straight back off by the suspend policy -- a press-timing trap users hit in
+// practice. A sleep episode (remote wakeup armed) never takes this path: its connect edge does the
+// normal S3 remote wakeup instead. Rearm boots carry a persisted one-shot marker (Cfg.wakeHandoff
+// 0xC3 sentinel -> g_wakeRearmBoot): the host was already proven down, so MODE_WAKE arms instantly
+// (no link-quiet wait, RF cooldown pre-opened), and for this long after the rearm boot a link that is
+// simply UP when the keyboard turns ready() fires without a fresh up-edge -- the EC's enumeration of
+// the reborn keyboard can outlast WAKE_FIRE_LATCH_MS, and the connect that caused the boot IS the
+// gesture. Past the window the strict edge-latch rules return.
+#define WAKE_REARM_FIRE_WINDOW_MS 15000u
 // ...but an episode older than this always re-samples: USB selective-suspend churn can put a sub-5 s
 // resume right before a genuine sleep, and inheriting an hours-old "shutdown" decision there would
 // re-arm under a sleeping host. The EC takeover flap arrives ~3 s into its episode, far under this cap.

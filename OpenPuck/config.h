@@ -124,6 +124,10 @@ extern bool g_persistMode;
 // one-shot post-wake-fire handoff flag (see Cfg.wakeHandoff in config.cpp)
 extern uint8_t g_wakeHandoffArm;
 extern bool g_wakeHandoffBoot;
+// one-shot auto-rearm-boot flag (same Cfg.wakeHandoff byte, 0xC3 sentinel): this MODE_WAKE boot was
+// triggered by wakeAutoRearmTask against a host already proven down, so the mode arms instantly
+// instead of waiting out the link-quiet clock (see mode_wake.cpp W_WAIT_DOWN).
+extern bool g_wakeRearmBoot;
 // MODE_WAKE hotkey: modifier bitmask (KEYBOARD_MODIFIER_*) + HID key usage the wake keyboard types.
 // Defaults to Alt+P (mode_wake.h WAKE_*_DEFAULT, Lenovo Smart Power On); settable from the WebUSB
 // panel (op 0x02 fields 30/31) for vendors whose EC wants a different chord. Persisted in Cfg.

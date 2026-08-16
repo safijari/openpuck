@@ -75,7 +75,7 @@ diagnostic story:
 
 | You see | It means |
 | --- | --- |
-| No pulses when the controller connects | First rule out timing: the mode arms ~8 s after the link goes quiet (2.5 s radio bring-up + 5 s observed quiet), so a power-press within ~8 s of shutdown, or a second bonded controller still powered on, means it simply was not armed yet — power the controller off, wait ~10 s, try again. If timing is ruled out: the EC never enumerated/configured the keyboard — wrong port, BIOS feature off, or the machine's EC doesn't service USB in S5. |
+| No pulses when the controller connects | First rule out timing: after a *manual* mode-10 switch the mode arms ~8 s after the link goes quiet (2.5 s radio bring-up + 5 s observed quiet; auto-re-arm boots arm instantly), so a power-press within ~8 s of the switch, or a second bonded controller still powered on, means it simply was not armed yet — power the controller off, wait ~10 s, try again. If timing is ruled out: the EC never enumerated/configured the keyboard — wrong port, BIOS feature off, or the machine's EC doesn't service USB in S5. |
 | Pulses, machine stays off | Reports were delivered but the hotkey parser rejected them: wrong hotkey for your vendor (§6), or the EC wants different press shaping (`WAKE_*` timings in `mode_wake.h`). |
 | Pulses, machine powers on | Working as intended. |
 
@@ -88,9 +88,21 @@ always **shuts down** (S4/S5) rather than sleeping, build with:
 make build EXTRA_FLAGS="-DWAKE_AUTO_REARM=1"
 ```
 
-Then a persistent USB suspend (≥15 s) in any other mode reboots the puck into
-wake mode by itself: shut the machine down, and the next controller power-on
-wakes it — no interaction with the puck ever again.
+Then the puck re-arms itself every time the host shuts down — no interaction
+with the puck ever again. Two triggers, whichever comes first:
+
+- **Your press.** From ~10 s after shutdown, powering the controller on IS
+  the re-arm: the puck sees the connect against the shut-down bus, reboots
+  straight into wake mode (which arms instantly on re-arm boots — the
+  host's downtime already served as the arming quiet), answers the
+  controller before it gives up searching, and fires. One press, machine
+  on.
+- **The timer.** With no press, a persistent suspend (≥15 s) re-arms by
+  itself, so a later press lands on an already-armed wake keyboard.
+
+Press *too* early (in the first ~10 s, while the puck is still deciding
+sleep-vs-shutdown) and the controller is powered back off by the normal
+host-asleep battery saver — just press again a few seconds later.
 
 **Sleep vs shutdown:** the firmware tells them apart by the host's own hand —
 an OS going to sleep arms USB remote wakeup on the puck first (that's what
@@ -135,7 +147,8 @@ Validated end-to-end on the M90q Gen 6.
 ## 7. What happens behind the scenes (and what was hard)
 
 Full flow: arm (~5 s of observed RF-link silence, so switching modes with the
-controller still connected can't type into a live session) → fire on the
+controller still connected can't type into a live session; auto-re-arm boots
+skip this — the host's downtime already proved the point) → fire on the
 first controller connect → settle → reboot into the return mode with a
 persisted one-shot **handoff grace**. During the grace (up to 90 s; it ends
 early once the OS has been stably up for 20 s — a bar BIOS POST enumeration

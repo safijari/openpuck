@@ -25,6 +25,7 @@ uint8_t g_bootMode = 0xFF;
 // this boot came from a wake fire (consumed like bootMode/debugCdc so the next boot is normal).
 uint8_t g_wakeHandoffArm = 0;
 bool g_wakeHandoffBoot = false;
+bool g_wakeRearmBoot = false;
 // MODE_WAKE hotkey (modifier bitmask + HID key usage), panel-settable per vendor; default Lenovo Alt+P.
 uint8_t g_wakeMod = WAKE_MOD_DEFAULT;
 uint8_t g_wakeKey = WAKE_KEY_DEFAULT;
@@ -191,11 +192,13 @@ void loadCfg()
 				consume = true;
 			}
 			// one-shot wake handoff: this boot follows a MODE_WAKE fire; honored (grace + fast RF
-			// bring-up) then consumed. Honor the 0xA5 sentinel exactly -- this byte is the legacy
+			// bring-up) then consumed. Honor the sentinels exactly -- this byte is the legacy
 			// rumble-strength slot (0..100), so a real legacy value can never fake an arm -- and
-			// consume any nonzero so stale values are scrubbed, not resurrected.
+			// consume any nonzero so stale values are scrubbed, not resurrected. 0xA5 = post-fire
+			// handoff; 0xC3 = auto-rearm boot (host proven down -> MODE_WAKE arms instantly).
 			if (c.wakeHandoff != 0) {
 				g_wakeHandoffBoot = (c.wakeHandoff == 0xA5);
+				g_wakeRearmBoot = (c.wakeHandoff == 0xC3);
 				g_wakeHandoffArm = 0;
 				consume = true;
 			}
