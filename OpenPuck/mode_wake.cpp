@@ -231,6 +231,20 @@ bool wakeFireInFlight()
 // "no mode switch while suspended" convention the chord + console paths follow: their rule exists so a
 // SLEEPING host never resumes to find a different device, and here a long suspend meaning "the host is
 // down" is the entire premise.
+#if WAKE_AUTO_REARM
+// The one device-visible difference between "asleep" and "off": an OS entering S3/s2idle arms
+// DEVICE_REMOTE_WAKEUP on wakeup-enabled devices BEFORE suspending (the existing wake-from-S3 path only
+// works because it does), while a shutdown never sets the feature. TinyUSB samples the flag at each
+// suspend edge and hands it to this weak callback (nothing else in the core claims it). A host that has
+// wakeup disabled for the device sends no SET_FEATURE, so its sleep reads as a shutdown -- that just
+// degrades to the old always-re-arm behavior, documented in WAKE_MODE.md.
+static volatile bool s_suspWkArmed = false;
+extern "C" void tud_suspend_cb(bool remote_wakeup_en)
+{
+	s_suspWkArmed = remote_wakeup_en;
+}
+#endif
+
 void wakeAutoRearmTask()
 {
 #if WAKE_AUTO_REARM
@@ -245,6 +259,11 @@ void wakeAutoRearmTask()
 		downAt = millis();
 	wasSusp = susp;
 	if (!susp || modeIsWake(g_usbMode))
+		return;
+	// Host armed remote wakeup for this suspend => it is SLEEPING and expects to find the puck on
+	// resume; do not swap in the keyboard. (A boot into an already-suspended bus never saw a
+	// SET_FEATURE, so the flag is false and the plugged-into-a-dead-host re-arm still works.)
+	if (s_suspWkArmed)
 		return;
 	if (millis() - downAt >= WAKE_AUTO_REARM_MS)
 		modeSwitchReboot(MODE_WAKE);

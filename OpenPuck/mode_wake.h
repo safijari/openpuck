@@ -88,9 +88,11 @@
 // EXPERIMENTAL, default OFF; build with EXTRA_FLAGS="-DWAKE_AUTO_REARM=1" to enable. While running any
 // OTHER personality, a continuous USB suspend longer than WAKE_AUTO_REARM_MS reboots into MODE_WAKE, so
 // the wake re-arms itself every time the host goes down (the smart-power-on port keeps VBUS in S5, so the
-// MCU never cold-boots -- without this, one wake per manual arm). Off by default because S3 sleep is also
-// a persistent suspend, and a device that re-attaches mid-S3 is never configured: with this on, the
-// existing wake-on-connect-from-S3 path stops working. Use it on hosts that shut down to S4/S5.
+// MCU never cold-boots -- without this, one wake per manual arm). Sleep is distinguished from shutdown by
+// the host's own hand: an OS entering S3 arms DEVICE_REMOTE_WAKEUP before suspending (tud_suspend_cb in
+// mode_wake.cpp) and such suspends never re-arm, so wake-on-connect-from-S3 keeps working. Still off by
+// default: a host with wakeup disabled for the device (sysfs) makes its sleep look like a shutdown,
+// degrading to re-arm-on-sleep -- acceptable on hosts that shut down to S4/S5, surprising elsewhere.
 #ifndef WAKE_AUTO_REARM
 #define WAKE_AUTO_REARM 0
 #endif

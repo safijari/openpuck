@@ -85,10 +85,16 @@ Then a persistent USB suspend (≥15 s) in any other mode reboots the puck into
 wake mode by itself: shut the machine down, and the next controller power-on
 wakes it — no interaction with the puck ever again.
 
-**Trade-off, read before enabling:** S3 sleep is *also* a persistent suspend.
-With this flag the puck re-attaches as a keyboard mid-sleep, which breaks the
-existing wake-from-S3 (controller-connect remote wakeup) path. Use it only on
-hosts that fully shut down. Validated end-to-end on the M90q Gen 6.
+**Sleep vs shutdown:** the firmware tells them apart by the host's own hand —
+an OS going to sleep arms USB remote wakeup on the puck first (that's what
+makes the existing wake-from-S3 feature work), and such suspends never
+re-arm, so sleeping the machine leaves the puck a normal puck and
+controller-wake-from-sleep keeps working. A shutdown never arms remote
+wakeup, so it re-arms as intended. Caveat: if your OS has wakeup *disabled*
+for the device (Linux: `power/wakeup` in sysfs), its sleep looks like a
+shutdown and the puck will re-arm mid-sleep — recover with the escape chord
+or a replug, or enable device wakeup. Validated end-to-end on the M90q
+Gen 6.
 
 ## 6. Other vendors / tuning the press
 
