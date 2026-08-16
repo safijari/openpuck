@@ -36,6 +36,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "lizard_map.h"
 #include "serial_console.h"
 #include "wake_hid.h"
+#include "mode_wake.h" // wakeAutoRearmTask()
 #include "status_led.h"
 #include "usb_mount.h"
 #include "identity.h"
@@ -65,10 +66,11 @@ using namespace Adafruit_LittleFS_Namespace;
 // puck composite (4 HID + WebUSB) exceeds the default 256 B config buffer
 static uint8_t g_usbCfgDesc[512];
 
-// Per-mode USB serial suffix (modes 1..9: X=xbox N=hori L=lizard P=swpro S=ps5 G=hidgyro Q=ps5game D=ds4game 3=ps3).
-static const char MODE_SUFFIX[] = {
-	'X', 'N', 'L', 'P', 'S', 'G', 'Q', 'D', '3'
-};
+// Per-mode USB serial suffix (modes 1..10: X=xbox N=hori L=lizard P=swpro S=ps5 G=hidgyro Q=ps5game D=ds4game 3=ps3 W=wake).
+static const char MODE_SUFFIX[] = { 'X', 'N', 'L', 'P', 'S',
+				    'G', 'Q', 'D', '3', 'W' };
+static_assert(sizeof MODE_SUFFIX == MODE_MAX,
+	      "MODE_SUFFIX must have one entry per mode 1..MODE_MAX");
 // Fixed-interface flags captured at boot so usbReenumerate (dynamic mount, no reboot) replays them.
 static bool s_dynWantWebusb = false, s_dynWantWakeMouse = false;
 
@@ -84,11 +86,11 @@ void usbReenumerate(uint8_t k)
 	USBDevice.setConfigurationBuffer(g_usbCfgDesc, sizeof g_usbCfgDesc);
 	g_active->usbIdentity(); // clearConfiguration reset VID/PID/strings -- restore them
 	// serial carries the mounted count so the host invalidates its cached config descriptor on a change
-	snprintf(
-		g_usbSerial, sizeof g_usbSerial, "%s%c%u", g_unit,
-		MODE_SUFFIX[(g_usbMode >= 1 && g_usbMode <= 9) ? g_usbMode - 1 :
-								 0],
-		(unsigned)k);
+	snprintf(g_usbSerial, sizeof g_usbSerial, "%s%c%u", g_unit,
+		 MODE_SUFFIX[(g_usbMode >= 1 && g_usbMode <= MODE_MAX) ?
+				     g_usbMode - 1 :
+				     0],
+		 (unsigned)k);
 	USBDevice.setSerialDescriptor(g_usbSerial);
 	if (s_dynWantWakeMouse)
 		wakeHidAddInterface(); // HID instance 0
@@ -179,6 +181,12 @@ void setup()
 	// clean-PS modes skip BOTH the wake mouse and WebUSB -- no config panel / host-wake; chord back to Steam
 	// (back-paddle 4 + A) to reach the panel. Normal MODE_PS5 / MODE_HIDGYRO keep wake + panel.
 	const bool psClean = modeIsCleanPS(g_usbMode);
+	// MODE_WAKE shows the same bare single-HID shape as the clean-PS modes, for a different reason: the
+	// embedded controller watching this port in S5 (Lenovo Smart Power On) enumerates with a minimal USB
+	// stack written against real keyboards, so we give it exactly one boot-protocol keyboard interface and
+	// nothing else. It keeps remote-wakeup in bmAttributes (a real keyboard advertises it) -- only the
+	// clean-PS modes drop that, to match a genuine Sony pad.
+	const bool bareHid = psClean || modeIsWake(g_usbMode);
 	const bool dynamic = g_active->dynamicMount();
 
 	if (dynamic) {
@@ -240,12 +248,12 @@ void setup()
 		// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
 		// no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS
 		// modes so the device stays a single clean HID gamepad (see psClean above).
-		if (!puckMode && !keepCdc && !psClean)
+		if (!puckMode && !keepCdc && !bareHid)
 			wakeHidBegin();
 
 		// WebUSB config panel -- every mode EXCEPT the PlayStation modes. Puck: registered above (IF 0) before wake +
 		// slots; other clean modes after controller. PS modes omit it to present a genuine single-HID PS controller.
-		if (!puckMode && !psClean)
+		if (!puckMode && !bareHid)
 			usb_web.begin();
 		// bmAttributes: required(0x80) | remote_wakeup(0x20). Remote Wakeup lets us signal wake-from-sleep.
 		// The PS3/Sixaxis (the only clean-PS mode on this static path) advertises 0x80 only -- match it so a
@@ -257,11 +265,20 @@ void setup()
 		USBDevice.attach();
 	}
 	Serial.begin(115200);
-	for (int i = 0; i < 300 && !USBDevice.mounted(); i++)
-		delay(10); // wait up to 3s for USB mount, but NEVER hang
+	// Post-wake-fire boot: the machine is POSTing and will not mount us for many seconds -- waiting here
+	// just extends the RF outage for the controller that triggered the wake (it gives up and powers off).
+	// Skip straight to bringing the RF side up; opening the connect cooldown makes the first beacons go
+	// out on the first loop() pass instead of at t=2.5 s.
+	if (wakeHandoffActive())
+		rfConnectOpenNow();
+	else
+		for (int i = 0; i < 300 && !USBDevice.mounted(); i++)
+			delay(10); // up to 3s for USB mount, NEVER hang
 	if (USBDevice.suspended()) {
 		USBDevice.remoteWakeup();
-		ledWakePulse();
+		// wake mode reserves the LED for hotkey presses (WAKE_MODE.md diagnostic table)
+		if (!modeIsWake(g_usbMode))
+			ledWakePulse();
 	} // wake host if bus was sleeping when we (re-)attached
 	// Route all device->host HID sends through the usbd task (SOF drain) so loop() never calls tud_* directly
 	// -> the cross-task blocking-defer that deadlocked the loop under comms load can no longer happen.
@@ -273,7 +290,8 @@ void setup()
 		"SWITCH(horipad)",     "LIZARD(puck kb/mouse)",
 		"SWITCH(pro+gyro)",    "PS5(dualsense)",
 		"HIDGYRO(ds4+motion)", "PS5(dualsense,game/clean)",
-		"DS4(ds4,game/clean)", "PS3(dualshock3/sixaxis)"
+		"DS4(ds4,game/clean)", "PS3(dualshock3/sixaxis)",
+		"WAKE(alt+p keyboard)"
 	};
 	Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit,
 		      g_board,
@@ -341,6 +359,8 @@ void loop()
 	hapticStabTask(); // stability-test keepalive buzz (no-op unless armed via WebUSB)
 	// cross-check HFCLK(micros) vs LFCLK(millis) once a second -- cheap, both builds (clone clock diagnostic)
 	clockDiagTick();
+	// opt-in auto re-arm of the smart-power-on wake mode (no-op unless built with WAKE_AUTO_REARM)
+	wakeAutoRearmTask();
 	if (g_dirty) {
 		g_dirty = false;
 		// A bond flash write erases+programs a page with interrupts effectively stalled for ms -- a known

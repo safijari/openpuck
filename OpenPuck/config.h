@@ -41,7 +41,12 @@
 // console wants a bare Sixaxis HID, not a composite). Answers the PS3's GET_REPORT(0xF2/0xF5/0xEF/0x01)
 // enable handshake. + gyro/accel + rumble.
 #define MODE_PS3 9
-#define MODE_MAX 9
+// Boot-keyboard-only wake personality: sends the firmware smart-power-on hotkey (Alt+P on Lenovo
+// ThinkCentre) when a controller connects, then reboots into WAKE_RETURN_MODE. Presents a single clean HID
+// keyboard -- no wake mouse, no WebUSB, no CDC -- because the EC that watches this port while the machine
+// is in S5 runs a minimal USB stack. See mode_wake.h.
+#define MODE_WAKE 10
+#define MODE_MAX 10
 
 // The two "game" personalities drop the wake-mouse + WebUSB interfaces so the device is a genuine single-HID PS
 // controller (some PC games -- e.g. Fortnite/UE GameInput -- refuse PS classification when extra interfaces are
@@ -49,6 +54,13 @@
 static inline bool modeIsCleanPS(uint8_t m)
 {
 	return m == MODE_PS5_GAME || m == MODE_DS4_GAME || m == MODE_PS3;
+}
+
+// Wake mode is a one-shot utility personality, not a controller: it forwards no input and enumerates as a
+// bare keyboard, so setup() gates it out of the wake-mouse / WebUSB interfaces like the clean-PS modes.
+static inline bool modeIsWake(uint8_t m)
+{
+	return m == MODE_WAKE;
 }
 
 static inline bool modeIsPuck(uint8_t m)
@@ -109,6 +121,9 @@ extern uint8_t g_chordDpad[4];
 // instead remembers the last selected mode across reboots.
 // false (default) = always boot Steam; true = boot into last mode
 extern bool g_persistMode;
+// one-shot post-wake-fire handoff flag (see Cfg.wakeHandoff in config.cpp)
+extern uint8_t g_wakeHandoffArm;
+extern bool g_wakeHandoffBoot;
 // one-shot: boot into this mode once then clear (!persistMode + explicit switch)
 extern uint8_t g_bootMode;
 
@@ -189,6 +204,18 @@ void swProSaveCfg();
 // (host idle power-management) resumes in <1s and must not trigger a self-inflicted power-off -> the
 // resulting disconnect/reconnect churn looked like random controller drops. Real host sleep persists.
 #define SUSPEND_OFF_MS 4000u
+// The suspend power-off relay is NO-ACK RF; a controller still CONTINUOUSLY linked (no 0xF2 disconnect
+// seen) this long after the send missed the burst -- resend, at most SUSPEND_OFF_RETRIES times. Long
+// enough to clear the dying controller's ~1 s F1 tail plus the 2.5 s post-disconnect cooldown, so a
+// retry can never transmit into the power-down window and re-wake it.
+#define SUSPEND_OFF_RETRY_MS 4000u
+// Reset-style shutdowns: some ECs RESET the bus when taking the port for S5 (observed on the M90q,
+// intermixed with suspend-style takeovers). A reset clears TinyUSB's connected state, so suspended()
+// never reads true again and the suspend-edge power-off above can never fire. "Was mounted, then the bus
+// died and stayed dead this long" is the equivalent signal -- long past any normal boot's ~10-20 s
+// re-enumeration gap, so it can never kill the controller during a reboot.
+#define SUSPEND_OFF_LOST_MS 30000u
+#define SUSPEND_OFF_RETRIES 2u
 // RF poll cadence (us). Defaults to POLL_US_DEFAULT; live-adjustable via the console "PR<hz>" command
 // (session-only -- NOT persisted; loadCfg always forces the default on boot) so the sweet spot can be
 // swept on hardware while watching the delivered report rate.

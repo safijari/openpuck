@@ -50,6 +50,11 @@ extern const uint32_t g_rxWin;
 
 // set on 0xF2 disconnect; pauses beacon+poll so a powering-off controller can sleep
 extern unsigned long g_connCooldown;
+// True once the post-boot / post-disconnect connect cooldown has passed, i.e. beacons + polls are on air.
+// Nothing can (re)link before this, so a "link quiet" observation made earlier proves nothing.
+bool rfConnectOpen();
+// Open the cooldown immediately (the post-wake-fire boot: the triggering controller is searching NOW).
+void rfConnectOpenNow();
 
 // connected-mode state (reset by the 'k' console toggle)
 extern uint8_t g_connSt, g_connStep;
