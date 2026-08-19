@@ -41,8 +41,12 @@ CFG_TUD_TASK_QUEUE_SZ ?= 512
 # too small and would silently drop every frame (blank panel / stale mappings).
 CFG_TUD_VENDOR_TX_BUFSIZE ?= 256
 EXTRA_FLAGS ?=
+# Force-include nosd.h into every translation unit so OpenPuck builds SoftDevice-free on ALL boards: it
+# drops the core's -DSOFTDEVICE_PRESENT and turns the InternalFileSystem's sd_* flash SVCs into plain calls
+# resolved by OpenPuck/nosd_flash.cpp (direct NVMC). See OpenPuck/nosd.h for the full rationale.
+NOSD_INCLUDE = -include $(CURDIR)/OpenPuck/nosd.h
 # {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
-USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
+USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(NOSD_INCLUDE) $(EXTRA_FLAGS)
 # When BUILD_PATH is set, --clean + path flags are injected; omitted for fast incremental dev builds.
 _PATH_FLAGS = $(if $(BUILD_PATH),--clean --build-path $(BUILD_PATH) --output-dir $(OUTPUT_DIR))
 
@@ -52,7 +56,8 @@ _PATH_FLAGS = $(if $(BUILD_PATH),--clean --build-path $(BUILD_PATH) --output-dir
 # the bottom swallows it so make doesn't try to build the port path as a target.
 FLASH_PORT := $(filter-out format format-check check build build-raytac \
 	package-raytac flash-raytac deploy-raytac provision-raytac-softdevice \
-	build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy,$(MAKECMDGOALS))
+	build-recovery build-connectkit build-connectkit-recovery \
+	reversepuck reversepuck-flash reversepuck-deploy flash deploy,$(MAKECMDGOALS))
 UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 
 # ReversePuck (controller dongle, 28DE:1302) build flags. It has ONE HID interface (core default 2 is fine),
@@ -63,6 +68,7 @@ RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 
 .PHONY: format format-check check build build-raytac package-raytac \
 	flash-raytac deploy-raytac provision-raytac-softdevice build-recovery \
+	build-connectkit build-connectkit-recovery \
 	reversepuck reversepuck-flash reversepuck-deploy flash deploy
 
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
@@ -122,6 +128,31 @@ provision-raytac-softdevice:
 ## One-time factory-reset recovery image (wipes persistent storage once on first boot). See §6 of the build doc.
 build-recovery:
 	$(MAKE) build BUILD_PATH=$(BUILD_PATH) OUTPUT_DIR=$(OUTPUT_DIR) EXTRA_FLAGS="$(EXTRA_FLAGS) -DOPK_FACTORY_RESET=1"
+
+## Build OpenPuck for the MakerDiary nRF52840 Connect Kit and emit a drag-and-drop .uf2.
+## Native NO-SoftDevice build via the in-repo vendored platform (arduino/hardware/openpuck/nrf52),
+## app linked @ 0x1000. ARDUINO_DIRECTORIES_USER is exported so arduino-cli finds that platform.
+## Like `build`, does NOT run gen_version.sh -- run it yourself first for version provenance.
+## Flash: double-tap RST -> the board mounts as UF2BOOT -> copy build/connectkit/OpenPuck-connectkit.uf2 onto it.
+## See docs/CONNECT_KIT_SETUP.md for the full walkthrough.
+build-connectkit build-connectkit-recovery: export ARDUINO_DIRECTORIES_USER = $(CURDIR)/arduino
+build-connectkit:
+	mkdir -p build/connectkit build/cache/connectkit
+	@# The trailing `-` lets the compile's optional adafruit-nrfutil DFU-zip step be absent: the Connect
+	@# Kit flashes by drag-and-drop, so we only need the .hex (emitted BEFORE that step). A genuine compile
+	@# failure is caught by the missing-.hex check below, so real errors still fail the build.
+	-arduino-cli compile --clean -b openpuck:nrf52:makerdiary_connectkit \
+		--build-path build/cache/connectkit --output-dir build/connectkit \
+		--build-property "build.extra_flags=$(USB_EXTRA_FLAGS)" OpenPuck
+	@# arduino-cli emits the .hex into the build-path cache; the --output-dir copy only runs on a fully
+	@# successful compile (which the optional DFU-zip step prevents), so read the .hex from the cache.
+	@test -f build/cache/connectkit/OpenPuck.ino.hex || { echo "connectkit compile failed (no .hex produced)"; exit 1; }
+	./gen_uf2.sh build/cache/connectkit/OpenPuck.ino.hex build/connectkit/OpenPuck-connectkit.uf2
+	@echo "Connect Kit image ready: build/connectkit/OpenPuck-connectkit.uf2  (drag onto the UF2BOOT drive)"
+
+## One-time factory-reset Connect Kit image (wipes persistent storage once on first boot). See §6 of the build doc.
+build-connectkit-recovery:
+	$(MAKE) build-connectkit EXTRA_FLAGS="$(EXTRA_FLAGS) -DOPK_FACTORY_RESET=1"
 
 ## Compile the ReversePuck controller dongle firmware (28DE:1302) with its WebUSB vendor flags baked in.
 reversepuck:

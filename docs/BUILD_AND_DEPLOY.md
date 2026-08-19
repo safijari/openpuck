@@ -152,6 +152,20 @@ build; use the physical Open DFU workflow above instead. The panel's factory
 erase (§6, filesystem-only) and the serial `ERASE-ALL` console command work
 normally.
 
+## 4c. Build for the MakerDiary nRF52840 Connect Kit
+
+The MakerDiary nRF52840 Connect Kit is supported as a native **no-SoftDevice** build (app linked at
+`0x1000`) via an in-repo vendored Arduino platform (`arduino/hardware/openpuck/nrf52/`) that references
+the same Adafruit nRF52 core — no bootloader swap, no SWD probe, plain drag-and-drop:
+
+```sh
+make build-connectkit   # -> build/connectkit/OpenPuck-connectkit.uf2
+```
+
+Double-tap **RST** (mounts as `UF2BOOT`) and copy the `.uf2` onto it. Full walkthrough, including why the
+nosd approach is needed and the board's reliability advantages, is in
+[CONNECT_KIT_SETUP.md](./CONNECT_KIT_SETUP.md).
+
 ## 5. Upload the firmware
 
 The quickest path is `make`. The serial port is a **required argument** (find it with `arduino-cli board list`):
