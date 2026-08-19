@@ -22,16 +22,23 @@ extern uint32_t __flash_arduino_start[];
 // the flash_nrf5x_write() guard, so we never erase/write into the bootloader or the pages above it.
 #define NOSD_FLASH_BOOTLOADER 0x000F4000u
 
-#define NOSD_NRF_ERROR_FORBIDDEN 15u // NRF_ERROR_FORBIDDEN; any non-zero makes the caller treat the op as failed
+#define NOSD_NRF_ERROR_FORBIDDEN \
+	15u // NRF_ERROR_FORBIDDEN; any non-zero makes the caller treat the op as failed
 
 extern "C" {
 
-static inline void nosd_nvmc_wait(void) { while (NRF_NVMC->READY == NVMC_READY_READY_Busy) { } }
+static inline void nosd_nvmc_wait(void)
+{
+	while (NRF_NVMC->READY == NVMC_READY_READY_Busy) {
+	}
+}
 
 uint32_t sd_softdevice_is_enabled(uint8_t *p_enabled)
 {
-	if (p_enabled) *p_enabled = 0; // OpenPuck never enables it -> flash ops run synchronously
-	return 0;                      // NRF_SUCCESS
+	if (p_enabled)
+		*p_enabled =
+			0; // OpenPuck never enables it -> flash ops run synchronously
+	return 0; // NRF_SUCCESS
 }
 
 uint32_t sd_softdevice_disable(void)
@@ -42,7 +49,8 @@ uint32_t sd_softdevice_disable(void)
 uint32_t sd_flash_page_erase(uint32_t page_number)
 {
 	uint32_t addr = page_number * 4096u; // page index -> byte address
-	if (addr < (uint32_t)__flash_arduino_start || addr >= NOSD_FLASH_BOOTLOADER)
+	if (addr < (uint32_t)__flash_arduino_start ||
+	    addr >= NOSD_FLASH_BOOTLOADER)
 		return NOSD_NRF_ERROR_FORBIDDEN; // never touch MBR / a resident SoftDevice / the bootloader
 	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Een;
 	nosd_nvmc_wait();
@@ -53,11 +61,13 @@ uint32_t sd_flash_page_erase(uint32_t page_number)
 	return 0; // NRF_SUCCESS
 }
 
-uint32_t sd_flash_write(uint32_t *p_dst, uint32_t const *p_src, uint32_t size /*words*/)
+uint32_t sd_flash_write(uint32_t *p_dst, uint32_t const *p_src,
+			uint32_t size /*words*/)
 {
 	uint32_t a = (uint32_t)p_dst;
 	uint32_t end = a + size * 4u;
-	if (a < (uint32_t)__flash_arduino_start || end > NOSD_FLASH_BOOTLOADER || end < a)
+	if (a < (uint32_t)__flash_arduino_start ||
+	    end > NOSD_FLASH_BOOTLOADER || end < a)
 		return NOSD_NRF_ERROR_FORBIDDEN;
 	NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen;
 	nosd_nvmc_wait();
