@@ -63,7 +63,8 @@ RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 
 .PHONY: format format-check check build build-raytac package-raytac \
 	flash-raytac deploy-raytac provision-raytac-softdevice build-recovery \
-	reversepuck reversepuck-flash reversepuck-deploy flash deploy
+	reversepuck reversepuck-flash reversepuck-deploy flash deploy \
+	install-wireplumber uninstall-wireplumber
 
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
 ## EXTRA_FLAGS / FQBN as make variables if needed.
@@ -167,3 +168,22 @@ format-check:
 
 ## Everything CI gates on.
 check: format-check
+
+WIREPLUMBER_CONF_DIR ?= $(HOME)/.config/wireplumber/wireplumber.conf.d
+
+## Install the WirePlumber 4-channel surround haptics rule to ~/.config/wireplumber/wireplumber.conf.d/
+install-wireplumber:
+	mkdir -p "$(WIREPLUMBER_CONF_DIR)"
+	cp tools/wireplumber/60-openpuck-dualsense.conf "$(WIREPLUMBER_CONF_DIR)/"
+	@if command -v systemctl >/dev/null 2>&1; then \
+		systemctl --user restart wireplumber 2>/dev/null || true; \
+	fi
+	@echo "Installed WirePlumber DualSense haptics config to $(WIREPLUMBER_CONF_DIR)/60-openpuck-dualsense.conf"
+
+## Remove the WirePlumber DualSense haptics rule.
+uninstall-wireplumber:
+	rm -f "$(WIREPLUMBER_CONF_DIR)/60-openpuck-dualsense.conf"
+	@if command -v systemctl >/dev/null 2>&1; then \
+		systemctl --user restart wireplumber 2>/dev/null || true; \
+	fi
+	@echo "Removed WirePlumber DualSense haptics config from $(WIREPLUMBER_CONF_DIR)/"
