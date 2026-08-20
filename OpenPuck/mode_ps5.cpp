@@ -59,26 +59,52 @@ static void initPs5Macs()
 	g_ps5MacInit = true;
 }
 
-// GET_FEATURE handler. Per-slot dispatch via per-instance callback. Sizes per drivers/hid/hid-playstation.c:
-// 0x05=41, 0x09=20, 0x20=64. TinyUSB writes the report id itself and hands us the buffer PAST it, so we
-// fill only the PAYLOAD and return size-1.
+static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63]);
+
 static uint16_t ps5GetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 			     uint8_t *buf, uint16_t reqlen)
 {
 	(void)slot;
-	if (type != HID_REPORT_TYPE_FEATURE || !buf || reqlen == 0)
+	if (!buf || reqlen == 0)
 		return 0;
 	memset(buf, 0, reqlen);
+
+	// DirectInput and game polling via GET_REPORT(INPUT, 0x01)
+	if (type == HID_REPORT_TYPE_INPUT) {
+		if ((rid == 0x01 || rid == 0) && reqlen >= 63) {
+			int bond = (slot < NSLOT) ? g_usbToBond[slot] : -1;
+			if (bond < 0 || !g_slot[bond].used) {
+				for (int s = 0; s < NSLOT; s++) {
+					if (g_slot[s].used) {
+						bond = s;
+						break;
+					}
+				}
+			}
+			if (bond >= 0)
+				ps5Build(slot, (uint8_t)bond, buf);
+			return 63;
+		}
+		return 0;
+	}
+
+	if (type != HID_REPORT_TYPE_FEATURE)
+		return 0;
+
 	switch (rid) {
 	// capabilities: identify as DualSense-capable (SDL-only probe; hid-playstation never reads 0x03)
-	case 0x03: {
+	case 0x03:
+	case 0x08: {
 		if (reqlen < 47)
 			return 0;
 		buf[0] = 0x00;
 		buf[1] = 0x28;
 		buf[2] = 0x01;
 		buf[3] = 0x00;
-		buf[4] = 0x0E; // sensors + lightbar + vibration capability bits
+		// Bit 0 (0x01): haptic audio endpoint present; bit 1-3: lightbar,
+		// vibration, sensors. hid-playstation and SDL2 check bit 0 before
+		// enabling the 4-channel audio-haptic path.
+		buf[4] = 0x0F;
 		return 47;
 	}
 	case 0x05: // motion calibration (41 incl id)
@@ -92,11 +118,40 @@ static uint16_t ps5GetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 		// MAC at kernel buf[1..6] = payload[0..5]
 		memcpy(buf, g_ps5Mac[slot], 6);
 		return 19;
+	case 0x0A: // audio status / mic mute (27 incl id)
+		if (reqlen < 26)
+			return 0;
+		return 26;
 	case 0x20: // firmware info (64 incl id)
 		if (reqlen < 63)
 			return 0;
-		buf[23] = 0x01; // hw_version (le32 @ kernel buf[24]) non-zero
-		buf[27] = 0x01; // fw_version (le32 @ kernel buf[28]) non-zero
+		memcpy(buf, "Sep 10 202316:01:06", 19);
+		// hw_version le32 @ kernel payload offset 24 = our buf[24].
+		// 0x00000300 matches a DualSense hardware revision 3.
+		buf[24] = 0x00;
+		buf[25] = 0x03;
+		buf[26] = 0x00;
+		buf[27] = 0x00;
+		// fw_version le32 @ kernel payload offset 28 = our buf[28].
+		// 0x0228000B = fw 2.40 build 11 -- above hid-playstation's
+		// enhanced-haptics gate in kernel 6.3+.
+		buf[28] = 0x0B;
+		buf[29] = 0x00;
+		buf[30] = 0x28;
+		buf[31] = 0x02;
+		// update_version le16 @ kernel payload offset 44 = our buf[44].
+		// 0x0228 enables vibration-v2 and audio haptics in hid-playstation.
+		buf[44] = 0x28;
+		buf[45] = 0x02;
+		return 63;
+	case 0x21: // build info (5 incl id)
+		if (reqlen < 4)
+			return 0;
+		buf[0] = 0x01;
+		return 4;
+	case 0x22: // extra calibration / pairing (64 incl id)
+		if (reqlen < 63)
+			return 0;
 		return 63;
 	default:
 		return 0;
@@ -186,6 +241,12 @@ static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 	out[9] = ((b & TB_STEAM) ? 0x01 : 0) |
 		 ((b & TB_TOUCH || b & TB_LPADC || b & TB_RPADC) ? 0x02 : 0) |
 		 ((b & TB_MUTE) ? 0x04 : 0);
+	static uint32_t pktSeq[NSLOT] = { 0 };
+	uint32_t s = ++pktSeq[usbSlot];
+	out[11] = (uint8_t)(s & 0xFF);
+	out[12] = (uint8_t)((s >> 8) & 0xFF);
+	out[13] = (uint8_t)((s >> 16) & 0xFF);
+	out[14] = (uint8_t)((s >> 24) & 0xFF);
 	out[15] = g_in[slot].gx & 0xFF;
 	out[16] = g_in[slot].gx >> 8;
 	out[17] = g_in[slot].gz & 0xFF;
@@ -198,12 +259,18 @@ static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 	out[24] = g_in[slot].ay >> 8;
 	out[25] = g_in[slot].az & 0xFF;
 	out[26] = g_in[slot].az >> 8;
+	uint32_t ts = micros();
+	out[27] = (uint8_t)(ts & 0xFF);
+	out[28] = (uint8_t)((ts >> 8) & 0xFF);
+	out[29] = (uint8_t)((ts >> 16) & 0xFF);
+	out[30] = (uint8_t)((ts >> 24) & 0xFF);
 	uint16_t tlx, tly, trx, trry;
 	steamPadsToTouch(b, PS5_TOUCH_H, g_in[slot].lpx, g_in[slot].lpy,
 			 g_in[slot].rpx, g_in[slot].rpy, &tlx, &tly, &trx,
 			 &trry);
 	touchPackPads(out + 32, lTouch, rTouch, tlx, tly, trx, trry);
 	out[52] = PS5_STATUS_USB;
+	out[53] = 0x08; // USB connected state
 }
 
 // Dynamic-mount mode: begin() is unused (setup() calls beginPool()+usbReenumerate instead).
@@ -222,8 +289,10 @@ void Ps5Controller::usbIdentity()
 	USBDevice.setID(0x054C, 0x0CE6);
 	USBDevice.setDeviceVersion(0x0110);
 	USBDevice.setManufacturerDescriptor("Sony Interactive Entertainment");
-	USBDevice.setProductDescriptor("DualSense Wireless Controller");
+	USBDevice.setProductDescriptor("Wireless Controller");
 }
+#include "mode_ps5_audio.h"
+
 // One-time: create the DualSense HID pool and lock instance indices (wake mouse, if any, was begun first).
 void Ps5Controller::beginPool()
 {
@@ -239,17 +308,29 @@ void Ps5Controller::beginPool()
 }
 void Ps5Controller::mountSlots(uint8_t k)
 {
-	for (uint8_t u = 0; u < k; u++)
+	uint8_t count = (k > 0) ? k : 1;
+	for (uint8_t u = 0; u < count; u++)
 		USBDevice.addInterface(g_ps5[u]);
+	USBDevice.addInterface(g_ps5Audio);
+	USBDevice.addInterface(g_ps5AudioAs);
 }
 void Ps5Controller::task()
 {
+	ps5AudioTask();
 	for (uint8_t u = 0; u < g_usbMountCount; u++) {
 		if (!g_ps5[u].ready())
 			continue;
 		if (millis() - g_ps5LastMs[u] < USB_STREAM_MS)
 			continue;
 		int bond = g_usbToBond[u];
+		if (bond < 0 || !g_slot[bond].used) {
+			for (int s = 0; s < NSLOT; s++) {
+				if (g_slot[s].used) {
+					bond = s;
+					break;
+				}
+			}
+		}
 		if (bond < 0)
 			continue;
 		g_ps5LastMs[u] = millis();
