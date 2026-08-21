@@ -198,10 +198,17 @@ void setup()
 		g_active->beginPool();
 		if (s_dynWantWebusb)
 			usb_web.begin();
-		usbMountEnable(true, g_active->maxSlots());
-		usbMountRebuildMap(); // initial connected set (usually empty at cold boot)
-		usbReenumerate(
-			g_usbMountCount); // build the live descriptor + attach
+		if (psClean) {
+			usbMountEnable(false, 1);
+			g_usbMountCount = 1;
+			g_usbToBond[0] = 0;
+			g_bondToUsb[0] = 0;
+			usbReenumerate(1);
+		} else {
+			usbMountEnable(true, g_active->maxSlots());
+			usbMountRebuildMap();
+			usbReenumerate(g_usbMountCount);
+		}
 	} else {
 		USBDevice.detach();
 		delay(30);

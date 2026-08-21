@@ -193,10 +193,16 @@ static const usbd_class_driver_t g_xiDriver = {
 	.xfer_cb = xi_xfer,
 	.sof = NULL
 };
+
+#include "mode_ps5_audio.h"
+
 extern "C" const usbd_class_driver_t *usbd_app_driver_get_cb(uint8_t *count)
 {
-	*count = 1;
-	return &g_xiDriver;
+	static usbd_class_driver_t drivers[2];
+	drivers[0] = g_xiDriver;
+	drivers[1] = *uac1_get_driver();
+	*count = 2;
+	return drivers;
 }
 
 class Adafruit_USBD_XInput : public Adafruit_USBD_Interface {
