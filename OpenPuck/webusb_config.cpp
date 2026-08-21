@@ -97,7 +97,8 @@ static bool boardCommand(uint8_t op)
 //                [v14/v17: p[181] landAll87 (verbatim-0x87-relay experiment toggle)]
 //                [v18: p[182..185] chordDpad left/up/right/down (back4+D-pad mode assignments)]
 //                [v19: p[186] swGyroLegacy (Switch Pro gyro mapping: 0 = corrected, 1 = legacy/pre-#189)]
-#define WB_PAYLEN 185
+//                [v20: p[187..194] per-type trackpad->stick map, 4x2B {left pad, right pad} (PS_OFF/LEFT/RIGHT)]
+#define WB_PAYLEN 193
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -122,7 +123,8 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the rumble-strength,
+	// protocol version (20 = +per-type trackpad->stick mapping (fields 80..87, blob p[187..194]);
+	// 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the rumble-strength,
 	// Switch report-rate and Switch gyro-scale settings (fields 22/23/24, blob p[53..55]) are GONE -- those
 	// bytes now read 0; 18 = +configurable back4+D-pad chords (fields 34..37, blob p[182..185]);
 	// 17 = per-type rumble field (TypeCfg k=8), per-type stride 8->9; 16 = +configurable
@@ -131,7 +133,7 @@ static void webusbSendBlob()
 	// unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87 toggle; 13 = +per-slot link
 	// stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type
 	// cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 19;
+	p[2] = 20;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -297,7 +299,7 @@ static void webusbSendBlob()
 		q[8] = g_slotRelayps[s];
 	}
 	// v14/v17: verbatim-0x87-relay experiment toggle (panel reflects + toggles it)
-	p[181] = g_landAll87;
+	p[181] = 0; // used to be g_landAll87
 	// v18: back4+D-pad mode assignments (panel renders these as selects next to the B/X/Y ones)
 	p[182] = g_chordDpad[CHD_LEFT];
 	p[183] = g_chordDpad[CHD_UP];
@@ -305,6 +307,11 @@ static void webusbSendBlob()
 	p[185] = g_chordDpad[CHD_DOWN];
 	// v19: Switch Pro gyro mapping (0 = corrected/default, 1 = legacy pre-#189 raw axes)
 	p[186] = g_swGyroLegacy;
+	// v20: per-type trackpad->stick mapping, {left pad, right pad} per emulated type
+	for (int et = 0; et < ET_COUNT; et++) {
+		p[187 + et * 2] = g_padStickCfg[et][0];
+		p[188 + et * 2] = g_padStickCfg[et][1];
+	}
 	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
 	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
 	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
@@ -1006,6 +1013,28 @@ void webusbPoll()
 					}
 					break;
 
+				// 80..87: per-type trackpad->stick mapping, field = 80 + et*2 + pad
+				// (pad 0 = left, 1 = right; value PS_OFF/PS_LEFT/PS_RIGHT).
+				// Must stay clear of the per-type cfg range 40..40+ET_COUNT*9-1
+				// (40..75), which is claimed before this switch runs.
+				case 80:
+				case 81:
+				case 82:
+				case 83:
+				case 84:
+				case 85:
+				case 86:
+				case 87: {
+					uint8_t et = (uint8_t)((f - 80) / 2),
+						pad = (uint8_t)((f - 80) % 2);
+					if (et < ET_COUNT && v <= PS_MAX) {
+						g_padStickCfg[et][pad] = v;
+						if (et == g_etype)
+							applyActiveType();
+					}
+					break;
+				}
+
 				// Switch Pro gyro mapping: 0 = corrected (default), 1 = legacy
 				// (pre-#189 raw axes, no sensitivity trim). Protocol v19.
 				case 38:
@@ -1020,10 +1049,9 @@ void webusbPoll()
 					// (field 25, poll RX window, removed -- g_rxWin is now FIXED/not configurable)
 					// (fields 27/28, post-connect haptic block, removed -- permanently disabled)
 
-				// EXPERIMENT: land ALL relayed 0x87 config verbatim (real-puck relay)
-				// instead of the discard-whitelist. Persisted; blob p[181] reflects state.
+				// Used to be experimental g_landAll87. Persisted; blob p[181] reflects state. Now ignored.
 				case 29:
-					g_landAll87 = v ? 1 : 0;
+					// g_landAll87 = v ? 1 : 0;
 					break;
 				}
 				if (persist)

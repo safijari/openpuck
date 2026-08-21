@@ -46,14 +46,17 @@ Feature payload framing is:
 [cmd][len][payload...]
 ```
 
+
 Implemented commands:
 
-- `0x83`: attribute block
-- `0xAE`: string attribute
-- `0xB4`: connection state for the interface's slot
-- `0xAD`: pairing mode enable/disable
-- `0xA2`: write or clear the interface's 24-byte bond slot
-- `0xA3`: read the interface's 24-byte bond slot
+- `0x83`: `GET_ATTRIBUTES_VALUES`
+- `0xAE`: `GET_STRING_ATTRIBUTE`
+- `0xB4`: `DONGLE_GET_WIRELESS_STATE` (connection state for the interface's slot)
+- `0xAD`: `ENABLE_PAIRING` (pairing mode enable/disable)
+- `0xA2`: `TRITON_A2_OBSERVED_PAIRING_RECORD` (write or clear the interface's 24-byte bond slot)
+- `0xA3`: `TRITON_A3_BOND_EVENT_OR_STATUS` (read the interface's 24-byte bond slot)
+
+For a full list of commands the controller supports, check steam_commands.h
 
 #### `0xB4` response
 
@@ -82,30 +85,16 @@ When Steam writes feature report `0x01`, OpenPuck forwards it over RF to the con
 containing a sub-TLV. There are two on-air forms:
 
 ```text
-legacy   [E3][1+len][0x05][report_id][data...]              (no inner-len)
-landing  [E3][2+len][0x01][report_id][innerlen][data...]    (type 01, KEEPS inner-len; controller ACTS on it)
+haptic   [E3][1+len][0x05][report_id][data...]             (type 05, no inner-len)
+normal  [E3][2+len][0x01][report_id][innerlen][data...]    (type 01, KEEPS inner-len)
 ```
 
-A command only **lands** on the controller in the `landing` form (type `0x01` — the same type byte the GET poll
-uses, `E3 02 01 45 <param>`; the `report_id` selects the action, `innerlen` is the report's own `[len]`). In the
-`legacy` form the controller discards any `0x87+` command (it reads the first data byte as the length).
-
-**OpenPuck sends the `legacy` form for everything EXCEPT a tight whitelist** — only LED brightness (`0x87` whose
-first register byte is `0x2D`) and controller power-off (`0x9F`) use the `landing` form:
 
 ```text
 haptic on    E3 04 05 82 01 01 F7              (report 0x82, legacy)
-brightness   E3 05 01 87 03 2D <val> 00        (report 0x87 reg 0x2D, LANDING -- whitelisted)
-power-off    E3 06 01 9F 04 6F 66 66 21        (report 0x9F "off!", LANDING -- whitelisted)
-Steam 0x87 cfg  E3 .. 05 87 ..                 (haptic/IMU config: legacy -> DISCARDED, by design)
+brightness   E3 05 01 87 03 2D <val> 00        (report 0x87 reg 0x2D, LANDING)
+power-off    E3 06 01 9F 04 6F 66 66 21        (report 0x9F "off!", LANDING)
 ```
-
-**Why the whitelist is tight, not "land everything `0x87+`":** Steam continuously writes its own `0x87`
-passthrough during normal play — the haptic-config block including reg `0x30` (IMU/subsystem enable) and
-`0x34/0x35` (haptic amplitude). If those *land*, reg `0x30` **freezes the controller's gyro stream** and
-`0x34/0x35` drive the **connect-time buzz**. The long-working build never landed any `0x87`, so neither happened.
-Landing the whole class regresses both (stuck gyro + buzz); landing only the brightness register and power-off
-adds those two features while leaving Steam's config writes discarded exactly as before.
 
 The relay carries the command's declared length, up to 60 bytes — the most one RF frame fits. Relays are staged
 in a small ring (not a single buffer): the USB SET callbacks run in ISR context and Steam sends
@@ -365,14 +354,6 @@ from the feature-`0x01` **command** space even though the numbers overlap. Groun
 | `0x86` | (unnamed) | 3 | `FACTORY_RESET` |
 | `0x87`+ | 63-byte settings/config | 63 | `SET_SETTINGS_VALUES` … |
 
-`0x81` is the trap: the feature-channel `0x81` (`CLEAR_DIGITAL_MAPPINGS`) is dropped in Steam mode on
-purpose (`g_drop81`, console `S81` — it is the connect-time amp-clicker and OpenPuck does its own input
-translation), but the OUTPUT-report `0x81` is `HAPTIC_PULSE` — the left/right pulse Steam fires for
-trackpad **click** feedback ("Regular Press"), the **trigger full-pull** click and GripSense cues.
-Extending the feature-channel drop to the OUTPUT report is what made those haptics missing
-(issues #163 / #166) while "Soft Press" kept working, since that one rides `0x82 HAPTIC_COMMAND`.
-Pulses carry their own `repeat_count`, so they are self-terminating: there is no latch to strand and no
-stop frame that can be lost (unlike the `0x82` on/off pair or `0x80` rumble).
 
 ### 9.2 Xbox mode
 
@@ -477,6 +458,15 @@ Status blob payload:
 [21] QoS auto-hop flag
 [22] persist-mode flag
 ```
+
+Later fields are appended (the version byte says how far the payload goes). From version 20 the tail carries
+the per-emulated-type trackpad-to-stick mapping at payload bytes 187..194 — two bytes per type
+(`{left pad, right pad}`), each `0` off / `1` left stick / `2` right stick. Set with
+`0x02 <80 + type*2 + pad> <value>`. Fields 40..75 are the per-type config block, so the mapping starts at 80.
+A mapped pad **blends** with its stick: while the pad is touched each axis reports whichever of the two
+sources is deflected further from center (signed); an untouched pad contributes nothing and the physical
+stick passes straight through. A mapped pad also stops reporting as a touchpad contact / mouse.
+
 
 ### 10.1 Backup / clone (bond export & import)
 

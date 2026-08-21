@@ -683,14 +683,17 @@ static void xboxOgBuildReport(XboxOgInputReport &report, const uint8_t *raw)
 	if ((buttons & TB_QAM) && g_qamMap)
 		xboxOgApplyRemap(report, g_qamMap);
 
-	le16(reinterpret_cast<uint8_t *>(&report.left_x),
-	     (int16_t)s16off(raw, 8));
-	le16(reinterpret_cast<uint8_t *>(&report.left_y),
-	     (int16_t)s16off(raw, 10));
-	le16(reinterpret_cast<uint8_t *>(&report.right_x),
-	     (int16_t)s16off(raw, 12));
-	le16(reinterpret_cast<uint8_t *>(&report.right_y),
-	     (int16_t)s16off(raw, 14));
+	// Raw-report offsets, not slotSticks(): like mode_xinput this mode decodes 0x45 in place and never
+	// touches g_in. 16/18 = left pad X/Y, 22/24 = right pad X/Y.
+	int16_t lx = (int16_t)s16off(raw, 8), ly = (int16_t)s16off(raw, 10),
+		rx = (int16_t)s16off(raw, 12), ry = (int16_t)s16off(raw, 14);
+	padStickBlend(buttons, (int16_t)s16off(raw, 16),
+		      (int16_t)s16off(raw, 18), (int16_t)s16off(raw, 22),
+		      (int16_t)s16off(raw, 24), &lx, &ly, &rx, &ry);
+	le16(reinterpret_cast<uint8_t *>(&report.left_x), lx);
+	le16(reinterpret_cast<uint8_t *>(&report.left_y), ly);
+	le16(reinterpret_cast<uint8_t *>(&report.right_x), rx);
+	le16(reinterpret_cast<uint8_t *>(&report.right_y), ry);
 }
 
 static bool xboxOgBondRecent(int slot, unsigned long now)

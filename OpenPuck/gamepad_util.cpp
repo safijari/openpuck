@@ -32,6 +32,57 @@ uint8_t swStick(int16_t v, bool invert)
 	return (uint8_t)a;
 }
 
+// Pick whichever of the two sources is deflected further from center, keeping its sign. -32768 has no
+// positive twin in int16, so clamp its magnitude to 32767 before comparing -- otherwise the negation
+// overflows and a full-left stick would lose to anything.
+static inline int16_t strongerAxis(int16_t a, int16_t b)
+{
+	int32_t ma = (a == -32768) ? 32767 : (a < 0 ? -(int32_t)a : (int32_t)a);
+	int32_t mb = (b == -32768) ? 32767 : (b < 0 ? -(int32_t)b : (int32_t)b);
+	return (ma >= mb) ? a : b;
+}
+
+void padStickBlend(uint32_t b, int16_t lpx, int16_t lpy, int16_t rpx,
+		   int16_t rpy, int16_t *lx, int16_t *ly, int16_t *rx,
+		   int16_t *ry)
+{
+	// pad index 0 = left pad, 1 = right pad; both share the same s16, center-0 coordinate space as the sticks
+	const int16_t px[2] = { lpx, rpx };
+	const int16_t py[2] = { lpy, rpy };
+	const bool touch[2] = { (b & TB_LPADT) != 0, (b & TB_RPADT) != 0 };
+	for (int pad = 0; pad < 2; pad++) {
+		int16_t *sx, *sy;
+		if (g_padStick[pad] == PS_LEFT) {
+			sx = lx;
+			sy = ly;
+		} else if (g_padStick[pad] == PS_RIGHT) {
+			sx = rx;
+			sy = ry;
+		} else
+			continue;
+		// An untouched pad contributes NOTHING rather than forcing center, so the physical
+		// stick keeps working while the pad is idle. (No touch means no pad value that could
+		// get stuck on the axis after a release.)
+		if (!touch[pad])
+			continue;
+		// Both sources live: send whichever is pushed further, per axis, sign preserved.
+		*sx = strongerAxis(*sx, px[pad]);
+		*sy = strongerAxis(*sy, py[pad]);
+	}
+}
+
+void slotSticks(uint8_t slot, int16_t *lx, int16_t *ly, int16_t *rx,
+		int16_t *ry)
+{
+	const PuckInput &in = g_in[slot];
+	*lx = in.lx;
+	*ly = in.ly;
+	*rx = in.rx;
+	*ry = in.ry;
+	padStickBlend(in.buttons, in.lpx, in.lpy, in.rpx, in.rpy, lx, ly, rx,
+		      ry);
+}
+
 // Map Steam trackpad s16 coords into a 0..max axis (centered touch -> mid-range).
 uint16_t padNormU16(int16_t v, uint16_t maxv)
 {

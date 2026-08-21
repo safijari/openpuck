@@ -4,6 +4,7 @@
 #include "rf_link.h"
 #include "usb_tx.h" // usbTxBoost/Unboost -- flood-rate CDC prints share the dcd DMA claim window
 #include "puck_hid.h" // puckLizardActive() -- gate the lizard-suppression keepalive
+#include "steam_commands.h"
 
 #include "fault_diag.h" // faultDiagTrace() -- flight recorder
 // USBDevice.suspended() -> autonomous controller power-off on host sleep
@@ -26,19 +27,6 @@ uint16_t g_hapticBlockMs = HAPTIC_BLOCK_MS_DEFAULT;
 // or Steam-closed fallback) so the autonomous pad layer -- the trackpad-tick source -- is on.
 // Persisted; console 'u' toggles for A/B.
 uint8_t g_lizKeep = 1;
-// EXPERIMENT (console "L87" toggles, persisted): land ALL relayed 0x87 SET_SETTINGS via type-01 framing so
-// Steam's haptic/amp/IMU config actually reaches the controller (verbatim relay = real-puck behavior),
-// instead of the whitelist discarding everything but LED(0x2D)/id9(0x09). Hypothesis: the buzz is the
-// controller's haptic engine left MISCONFIGURED because Steam's 0x87 config is discarded; landing it should
-// configure the engine correctly and stop the buzz. Default OFF (keeps the safe whitelist) because landing
-// reg 0x30 was once blamed for freezing the gyro and 0x34/0x35 for the buzz -- but those were OpenPuck's own
-// bad hapticReinit values, so Steam's real values may be fine. Flip it on hardware to test; flip back if the
-// gyro freezes.
-uint8_t g_landAll87 = 0;
-// Land Steam's amp/haptic-config 0x87 blocks (regs 0x18/0x2E/0x34/0x35, NOT gyro 0x30) so the controller's
-// amplifier is configured and haptics play as clean ticks instead of a default-amp buzz. On by default;
-// console "AMP" toggles for A/B. See the land01 whitelist in rfConnFlushRelay.
-uint8_t g_landAmp = 1;
 // Master enable for the puck->controller haptic RELAY (Steam OUTPUT reports 0x80-0x86, incl. the trackpad
 // texture-feedback stream Steam pushes WHILE you drag). Each relayed frame is an extra TX that precedes the
 // E3 poll and steals its reply window, and the controller must stop to process it -- both can depress the
@@ -63,19 +51,14 @@ void hapticSendShutdown(uint8_t slot)
 	// the panel/test power-off button.
 	faultDiagTrace(FR_OFF, slot);
 	for (uint8_t i = 0; i < HAPTIC_SHUTDOWN_SHOTS; i++)
-		relayEnqueue(0x9F, OFF, sizeof OFF, slot);
+		relayEnqueue(IBEX_CMD_TURN_OFF_CONTROLLER, OFF, sizeof OFF,
+			     false, slot);
 	// Tell the puck presentation layer to show this slot (or all, for 0xFF broadcast) cleanly DISCONNECTED to
 	// Steam and hold it there through the controller's post-off F1 tail -- otherwise the dying replies bounce
 	// the connection state (phantom reconnect / never-removed). Covers every power-off path (Steam 0x9F, the
 	// Steam+Y chord, the panel button, host suspend) since they all funnel through here.
 	puckNotePowerOff(slot);
 }
-
-// millis of last 0x82 haptic OUTPUT relayed (Steam mode)
-static unsigned long g_haptic82Ms = 0;
-
-// a non-zero 0x82 haptic is currently active (awaiting host stop)
-static bool g_haptic82On = false;
 
 // millis of last translated host rumble (0x80), per-slot (4 XInput interfaces each have their own stream)
 static unsigned long g_rumble80Ms[NSLOT] = { 0 };
@@ -93,7 +76,11 @@ static bool g_rumble80On[NSLOT] = { false, false, false, false };
 // per slot (rfConnFlushRelay on that slot's poll turn). Producers serialize under PRIMASK.
 struct RelayMsg {
 	uint8_t rid, len;
+	bool isHaptic;
 	uint8_t data[RELAY_MAXP];
+	// set by the caller at relayEnqueue() time (see haptics.h) -- true iff a real controller reply is
+	// wanted for this specific message, i.e. whether rfConnFlushRelay appends the query-reply trailer.
+	bool expectReply;
 };
 // deep enough to hold a full Steam settings/LED transaction burst without loss
 #define RELAY_QLEN 32
@@ -119,7 +106,7 @@ bool relayPending()
 	return g_rqHead[cur] != g_rqTail[cur];
 }
 bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
-		  uint8_t slot)
+		  bool isHaptic, uint8_t slot, bool expectReply)
 {
 	if (plen > RELAY_MAXP)
 		plen = RELAY_MAXP;
@@ -138,13 +125,13 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 			g_rqTail[s] = rqNext(g_rqTail[s]);
 		g_rq[s][h].rid = rid;
 		g_rq[s][h].len = plen;
+		g_rq[s][h].expectReply = expectReply;
+		g_rq[s][h].isHaptic = isHaptic;
 		if (plen)
 			memcpy(g_rq[s][h].data, payload, plen);
 		g_rqHead[s] = nx;
 	}
-	// Track last-haptic time for the Steam-mode quiet timeout (marks the 0x82 stream inactive after silence).
-	if (rid == 0x82 || rid == 0x80)
-		g_haptic82Ms = millis();
+
 	__set_PRIMASK(pm);
 	faultDiagTrace(FR_RELAY, (uint16_t)((slot << 8) | rid));
 	return true;
@@ -256,16 +243,6 @@ bool hapticRelaySlotOk(int slot)
 {
 	return slot >= 0 && slot < NSLOT && hapticLinkUp(slot);
 }
-static bool haptic82PayloadOn(const uint8_t *p, uint16_t n)
-{
-	if (n < 3)
-		return false;
-	for (uint16_t i = 2; i < n; i++)
-		if (p[i])
-			// observed form is [01 01 gain], but treat any trailing non-zero as active
-			return true;
-	return false;
-}
 static void hapticCancelPendingOn(int slot)
 {
 	// void queued ON entries (stale haptics / rumble across a reconnect). Per-slot: only the reconnected
@@ -309,15 +286,7 @@ static void hapticCancelPendingOn(int slot)
 	}
 	__set_PRIMASK(pm);
 }
-void haptic82HostReport(const uint8_t *p, uint16_t n)
-{
-	if (n < 3)
-		return;
-	g_haptic82Ms = millis();
-	// Track on/off only. Do NOT synthesize a stop burst: Steam's own stop is forwarded verbatim, and each extra
-	// 0x82 is a discrete pad click -- the spurious end-of-movement "click"/buzz the real puck never produces.
-	g_haptic82On = haptic82PayloadOn(p, n);
-}
+
 bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 {
 	if (slot >= NSLOT)
@@ -371,7 +340,7 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 	uint8_t reps = stopping ? RUMBLE_STOP_REPS : 1;
 	bool queued = false;
 	for (uint8_t i = 0; i < reps; i++)
-		if (relayEnqueue(0x80, p, sizeof p, slot))
+		if (relayEnqueue(0x80, p, sizeof p, true, slot))
 			queued = true;
 	if (!queued)
 		return false;
@@ -402,7 +371,7 @@ void hapticStabTask()
 		for (uint8_t s = 0; s < NSLOT; s++)
 			if (g_slot[s].used && g_connReplyMs[s] &&
 			    (unsigned long)(now - g_connReplyMs[s]) < 300u)
-				relayEnqueue(0x82, p, 3, s);
+				relayEnqueue(0x82, p, 3, true, s);
 	};
 	if (lastOn == 0 || (uint32_t)(now - lastOn) >= 10000u) {
 		lastOn = now;
@@ -422,10 +391,10 @@ void rfConnQueueHapticRelay()
 	static const uint8_t HAP_ON[3] = { 0x01, 0x01, 0xF7 };
 	static const uint8_t HAP_OFF[3] = { 0x01, 0x01, 0x00 };
 	if (g_testHaptic) {
-		if (relayEnqueue(0x82, HAP_ON, 3, 0xFF))
+		if (relayEnqueue(0x82, HAP_ON, 3, true, 0xFF))
 			g_testHaptic--;
 	} else if (g_hapticStop && !g_xbox) {
-		if (relayEnqueue(0x82, HAP_OFF, 3, 0xFF))
+		if (relayEnqueue(0x82, HAP_OFF, 3, true, 0xFF))
 			g_hapticStop--;
 	}
 }
@@ -471,37 +440,15 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// On-air sub-TLV framing. CONFIRMED from real puck<->controller sniffs: a command LANDS on
 			// the controller only with the type-01 + inner-len form E3 [2+rl][01][rid][innerlen][data];
 			// the legacy form E3 [1+rl][05][rid][data] makes the controller DISCARD any 0x87+ command.
-			//
-			// Whitelist type-01 to exactly three commands: LED brightness (0x87 reg 0x2D), power-off
-			// (0x9F), and the STANDALONE lizard-suppression keepalive (0x87 [09 00 00] -- rl==3 so a
-			// multi-register block that merely STARTS with 0x09 can't smuggle other registers into
-			// landing). Setting index 9 = digital-mappings/lizard-active (ibex FUN_0001f554 decomp);
-			// the real puck lands id9=0 every 3s -- without it the controller's revert timer fires,
-			// re-enables autonomous mode and resets ALL settings to defaults (audible amp pop +
-			// autonomous touchpad ticks = the spurious mid-session buzz). Other 0x87 writes (e.g. reg
-			// 0x30 IMU enable, 0x34/0x35 haptic amplitude) must stay on legacy form -- landing 0x30
-			// freezes the gyro; landing 0x34/0x35 causes the connect buzz.
-			// Amp/haptic-config registers (0x18/0x2E/0x34/0x35): LAND these so the controller's amplifier is
-			// configured the way Steam intends -> haptics (0x82 ticks, connect cue) play as clean ticks
-			// instead of the default-amp BUZZ we get when the config is discarded. Steam sends these grouped
-			// in 0x87 blocks that START with one of those regs and do NOT contain 0x30 (the gyro reg, which
-			// must NOT land -- it freezes the gyro), so gating on data[0] lands the amp block without 0x30.
-			// (g_landAmp, console "AMP"; on by default. The old "landing 0x34/0x35 buzzes" note was really the
-			// 0x81 storm, now removed.)
-			bool ampReg = (m.data[0] == 0x18 || m.data[0] == 0x2E ||
-				       m.data[0] == 0x34 || m.data[0] == 0x35);
-			bool land01 =
-				(m.rid == 0x9F) ||
-				(m.rid == 0x87 && rl >= 1 &&
-				 m.data[0] == 0x2D) ||
-				(m.rid == 0x87 && rl == 3 &&
-				 m.data[0] == 0x09) ||
-				(g_landAmp && m.rid == 0x87 && rl >= 1 &&
-				 ampReg) ||
-				// experiment: land EVERY 0x87 verbatim (real-puck relay) when enabled
-				(g_landAll87 && m.rid == 0x87);
-			uint8_t p[5 + RELAY_MAXP], plen;
-			if (land01) {
+
+			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
+			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
+			// value=0. If the caller decides they want an answer, we add the queryTrailer.
+			// Should check later if there's a way to somehow determine which types need the trailer and which ones don't.
+			bool queryTrailer = m.expectReply;
+			uint8_t p[5 + RELAY_MAXP + 3], plen;
+			if (!m.isHaptic) {
+				// Non-haptics use type 01
 				p[0] = g_relayOp;
 				p[1] = (uint8_t)(2 + rl);
 				p[2] = 0x01;
@@ -509,7 +456,14 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				p[4] = rl;
 				memcpy(p + 5, m.data, rl);
 				plen = (uint8_t)(5 + rl);
+				if (queryTrailer && plen + 3 <= sizeof p) {
+					p[plen + 0] = 0x01;
+					p[plen + 1] = 0x03;
+					p[plen + 2] = 0x00;
+					plen = (uint8_t)(plen + 3);
+				}
 			} else {
+				// Haptics use type 05
 				p[0] = g_relayOp;
 				p[1] = (uint8_t)(1 + rl);
 				p[2] = 0x05;
@@ -528,7 +482,8 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				usbTxBoost();
 				Serial.printf("# TX t=%lu slot%d %s rid=%02X:",
 					      (unsigned long)millis(), cur,
-					      land01 ? "L01" : "l05", m.rid);
+					      m.isHaptic ? "L05" : "L01",
+					      m.rid);
 				for (uint8_t i = 0; i < rl && i < 8; i++)
 					Serial.printf(" %02X", m.data[i]);
 				Serial.println();
@@ -556,67 +511,70 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 	return have; // true = a relay frame went out this cycle (its reply is harvested as input, above)
 }
 
-// Haptic-subsystem re-init: the captured sequence Steam sends when it (re)takes control (0x81 reset + 0x87
-// register writes). Brightness (reg 0x2D) is omitted to avoid stomping the LED. The 0x87 frames go out on
-// legacy framing so the controller discards them; the three 0x81 frames are the effective reset. slot=0xFF
-// broadcasts to all connected controllers (the re-init is settings-only and harmless on healthy controllers).
-// One-shot SET_SETTINGS (0x87) write of the controller's GLOBAL trackpad-haptics enable. The controller plays
-// touchpad haptic sequences autonomously (haptics-sequencer-touchpad) gated by settings/haptics/enabled; in the
-// emulated (non-Steam) modes the host never sends SC haptic reports, so the only way to silence the pad buzz is
-// to write this setting. Wire format [id][val u16 LE] -- confirmed from the controller's SET_SETTINGS handler
-// (decomp FUN_0001f61c; id 0x30 == settings/sensors/imu/mode is the cross-check anchor in the same id space).
-// The exact id for settings/haptics/enabled needs a one-time `scmd labels` HW read (candidates from the captured
-// reinit: 0x18 / 0x2e / 0x34 / 0x35). Until it is set, SETTING_HAPTICS_ENABLED stays 0xFF and this is inert.
-#define SETTING_HAPTICS_ENABLED 0xFF
-void hapticSetPadEnabled(uint8_t slot, bool on)
-{
-#if SETTING_HAPTICS_ENABLED != 0xFF
-	uint8_t pl[3] = { SETTING_HAPTICS_ENABLED, (uint8_t)(on ? 1 : 0), 0 };
-	relayEnqueue(0x87, pl, 3, slot);
-#else
-	(void)slot;
-	(void)on;
-#endif
-}
 void hapticReinit(uint8_t slot)
 {
-	static const uint8_t H30[] = { 0x30, 0x00, 0x00, 0x07, 0x07,
-				       0x00, 0x08, 0x07, 0x00, 0x31,
-				       0x02, 0x00, 0x52, 0x03, 0x00 };
-	static const uint8_t H18[] = { 0x18, 0x00, 0x00, 0x2e, 0x00,
-				       0x00, 0x34, 0xff, 0xff, 0x35,
-				       0xff, 0xff, 0x34, 0xff, 0xff };
-	static const uint8_t H35[] = { 0x35, 0xff, 0xff, 0x2e, 0x00, 0x00 };
+	// TODO: This function is only ever called from WebUSB in debug mode
+	// when the user clicks the "Clear stuck buzz" button.
+	// I believe with MR 230 the haptics issues should be gone,
+	// so this can probably be removed?
+
+	// clang-format off
+	static const uint8_t haptic_reset_data_1[] = { 
+			SETTING_IMU_MODE, 0x00, 0x00, 
+			SETTING_LEFT_TRACKPAD_MODE, 0x07, 0x00, 
+			SETTING_RIGHT_TRACKPAD_MODE, 0x07, 0x00, 
+			SETTING_WIRELESS_PACKET_VERSION, 0x02, 0x00, 
+			SETTING_COUNT, 0x03, 0x00 };
+	
+	static const uint8_t haptic_reset_data_2[] = { 
+			SETTING_SMOOTH_ABSOLUTE_MOUSE, 0x00, 0x00, 
+			SETTING_ENABLE_RAW_JOYSTICK, 0x00, 0x00, 
+			SETTING_LEFT_TRACKPAD_CLICK_PRESSURE, 0xff, 0xff, 
+			SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE, 0xff, 0xff, 
+			SETTING_LEFT_TRACKPAD_CLICK_PRESSURE, 0xff, 0xff };
+
+	static const uint8_t haptic_reset_data_3[] = { 
+			SETTING_RIGHT_TRACKPAD_CLICK_PRESSURE, 0xff, 0xff, 
+			SETTING_ENABLE_RAW_JOYSTICK, 0x00, 0x00 };
+
+	// clang-format on
+
 	static const uint8_t T81A[] = {
 		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 	};
 	static const uint8_t T81B[] = {
 		0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 	};
-	// reset action (FUN_0001f554) -- Steam sends this first
-	relayEnqueue(0x81, nullptr, 0, slot);
-	relayEnqueue(0x87, H30, sizeof H30, slot);
 
-	// haptic config (enabled/amplifier/gain): the part that clears a latch
-	relayEnqueue(0x87, H18, sizeof H18, slot);
-	relayEnqueue(0x87, H35, sizeof H35, slot);
-	relayEnqueue(0x81, T81A, sizeof T81A, slot);
-	relayEnqueue(0x81, T81B, sizeof T81B, slot);
-	// Re-apply the active emulated type's trackpad-haptics preference last (after the haptic-config writes
-	// above, which would otherwise re-enable it). Default-on types send "enable"; Switch (padHaptics=0)
-	// disables. Inert until the setting id is captured.
-	hapticSetPadEnabled(slot, g_padHaptics != 0);
+	// reset action (FUN_0001f554) -- Steam sends this first
+	relayEnqueue(0x81, nullptr, 0, true, slot);
+
+	// This is probably split into three commands because you can only update
+	// five parameters in one batch.
+	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, haptic_reset_data_1,
+		     sizeof haptic_reset_data_1, false, slot);
+	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, haptic_reset_data_2,
+		     sizeof haptic_reset_data_2, false, slot);
+	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, haptic_reset_data_3,
+		     sizeof haptic_reset_data_3, false, slot);
+
+	// explicitly trigger an empty HAPTIC_PULSE: the part that clears a latch
+	relayEnqueue(0x81, T81A, sizeof T81A, true, slot);
+	relayEnqueue(0x81, T81B, sizeof T81B, true, slot);
+
 	// Apply the configured LED brightness for the active emulated type. Steam sets the
 	// brightness each session; emulated modes never do, so the controller comes up at
 	// full brightness. 0 = no override (preserve controller default).
+	// TODO: This has nothing to do with haptics, why is this here?
 	if (g_etype < ET_COUNT && g_ledBright > 0) {
-		uint8_t pl[3] = { 0x2D, g_ledBright, 0x00 };
-		relayEnqueue(0x87, pl, sizeof pl, slot);
+		uint8_t pl[3] = { SETTING_LED_USER_BRIGHTNESS, g_ledBright,
+				  0x00 };
+		relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, pl, sizeof pl, false,
+			     slot);
 	}
 }
 void hapticInit()
 {
-	g_haptic82On = false;
 	g_hapticStop = 0;
 	for (int s = 0; s < NSLOT; s++) {
 		g_rqHead[s] = g_rqTail[s] = 0;
@@ -635,7 +593,6 @@ void hapticOnReconnect(int slot)
 		return;
 	// post-connect haptic block is permanently disabled -- relay haptics immediately on (re)connect
 	g_hapticBlockUntil[slot] = 0;
-	g_haptic82On = false;
 	g_rumble80On[slot] = false;
 	g_rumble80Ms[slot] = 0;
 	// Scrub haptics queued before the link came up (stale across the reconnect) -- this slot only.
@@ -669,10 +626,18 @@ void hapticTask()
 	if (g_lizKeep) {
 		static unsigned long lastKeep[NSLOT] = { 0 };
 		static bool landedAuto[NSLOT] = { false };
-		static const uint8_t K0[3] = { 0x09, 0x00, 0x00 };
-		static const uint8_t K1[3] = { 0x09, 0x01, 0x00 };
-		bool wantAuto = modeIsPuck(g_usbMode) ? puckLizardActive() :
-							(g_padHaptics != 0);
+		static const uint8_t DATA_LIZARD_OFF[3] = { SETTING_LIZARD_MODE,
+							    0x00, 0x00 };
+		static const uint8_t DATA_LIZARD_ON[3] = { SETTING_LIZARD_MODE,
+							   0x01, 0x00 };
+
+		if (modeIsPuck(g_usbMode)) {
+			// We're in puck mode. Leave the haptics to Steam.
+			return;
+		}
+
+		// We're in emulated controller mode.
+		bool wantAuto = (g_padHaptics != 0);
 		for (int s = 0; s < NSLOT; s++) {
 			if (!g_slot[s].used || !hapticLinkUp(s)) {
 				// re-land id9 on the next (re)connect: a fresh controller defaults to
@@ -684,8 +649,11 @@ void hapticTask()
 			if (wantAuto) {
 				if (!landedAuto[s]) {
 					landedAuto[s] = true;
-					relayEnqueue(0x87, K1, sizeof K1,
-						     (uint8_t)s);
+					relayEnqueue(
+						IBEX_CMD_SET_SETTINGS_VALUES,
+						DATA_LIZARD_ON,
+						sizeof DATA_LIZARD_ON, false,
+						(uint8_t)s);
 				}
 			} else {
 				landedAuto[s] = false;
@@ -694,7 +662,10 @@ void hapticTask()
 					    LIZKEEP_MS)
 					continue;
 				lastKeep[s] = millis();
-				relayEnqueue(0x87, K0, sizeof K0, (uint8_t)s);
+				relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES,
+					     DATA_LIZARD_OFF,
+					     sizeof DATA_LIZARD_OFF, false,
+					     (uint8_t)s);
 			}
 		}
 	}
@@ -749,10 +720,6 @@ void hapticTask()
 		suspArmed = false; // fire once per suspend
 	}
 	wasSusp = susp;
-	// Steam-mode quiet timeout: mark 0x82 stream inactive. No synthesized stop -- Steam forwards its own.
-	if (!g_xbox && g_haptic82On &&
-	    millis() - g_haptic82Ms > HAPTIC_QUIET_MS)
-		g_haptic82On = false;
 	// Per-slot stuck-rumble watchdog: force zero after 2.5s without a refresh.
 	for (int s = 0; s < NSLOT; s++) {
 		if (g_rumble80On[s] && millis() - g_rumble80Ms[s] > 2500u)
