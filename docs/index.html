@@ -38,6 +38,9 @@
   button.danger{background:#3a1420;border-color:#7a2233;color:#ff9bb0;font-weight:600}
   button.danger:hover{border-color:#ff9bb0}
   button:disabled{opacity:.4;cursor:default}
+  button.reset{background:transparent;border:1px solid #3a3a4a;color:#8a8a9a;font-size:12px;padding:5px 10px}
+  button.reset:hover:not(:disabled){border-color:var(--warn);color:var(--warn)}
+  .reset-row{display:flex;justify-content:flex-end;margin:10px 0 0}
   .pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600}
   .pill.up{background:#143626;color:var(--acc)} .pill.dn{background:#3a1822;color:var(--bad)}
   /* update-available notice (topbar): :not(.hide) so this ID rule can't out-rank .hide (see #updModal) */
@@ -212,6 +215,7 @@
         </div>
       </div>
       <p id="dpadOld" class="note hide">This puck's firmware predates the D-pad chords — update it to configure them.</p>
+      <div class="reset-row"><button class="reset" id="resetChordsBtn" onclick="resetChords()">Reset chords</button></div>
     </div>
 
     <div class="card wide">
@@ -269,6 +273,7 @@
       <div class="row"><label>Sensitivity</label><input type="range" id="mDiv" min="4" max="200" step="1"><span class="val" id="mDivV"></span></div>
       <div class="row"><label>Glide / friction</label><input type="range" id="mFric" min="0" max="99" step="1"><span class="val" id="mFricV"></span></div>
       <p class="note">Right-pad cursor in Steam-mode lizard (Steam closed) and in Xbox mode. Sensitivity is a divisor — lower = faster pointer. Glide = how long the cursor coasts after a flick.</p>
+      <div class="reset-row"><button class="reset" id="resetMouseBtn" onclick="resetMouse()">Reset mouse</button></div>
     </div>
 
     <div class="card">
@@ -280,6 +285,7 @@
         <p class="note">Corrected (default) trims the gyro so Switch Pro mode matches a genuine Pro Controller and Steam mode (roll ×0.8, pitch/yaw ×0.9). Legacy sends the raw axes untrimmed — the pre-fix behavior, if you preferred the faster feel or tuned your in-game sensitivity around it.</p>
       </div>
       <p id="swGyroOld" class="note hide">This puck's firmware predates the gyro-mapping setting — update it to configure it.</p>
+      <div class="reset-row"><button class="reset" id="resetGyroBtn" onclick="resetSwGyro()">Reset gyro</button></div>
     </div>
 
     <div class="card">
@@ -295,12 +301,14 @@
         <p class="note">Strength is a percentage of the amplitude the game asked for; 200% is the shipped default, so leave it there for stock feel. Style reshapes the two motors before that scale: <strong>mono</strong> drives both at the stronger value, <strong>heavy</strong> and <strong>light</strong> mute one motor each, <strong>punchy</strong> softens weak effects while leaving strong ones alone, and <strong>soft</strong> lifts weak ones so subtle rumble is felt.</p>
       </div>
       <p id="rumbleOld" class="note hide">This puck's firmware predates the rumble-shaping settings — update it to configure them.</p>
+      <div class="reset-row"><button class="reset" id="resetRumbleBtn" onclick="resetRumble()">Reset rumble</button></div>
     </div>
 
     <div class="card wide">
       <h2>Button mapping</h2>
       <p class="note" style="margin-top:0">Separate mappings per emulated controller type — each only offers targets that exist on that controller. The type matching the current mode is highlighted. Steam &amp; Lizard are native puck modes (Steam does its own remapping) and aren't configured here.</p>
       <div id="typeCfgs"></div>
+      <div class="reset-row"><button class="reset" id="resetAllTypesBtn" onclick="resetAllTypes()">Reset all types</button></div>
     </div>
 
     <div class="card" id="lizardCard" style="display:none">
@@ -325,6 +333,10 @@
         <input type="file" id="backupFile" accept="application/json,.json" style="display:none">
       </div>
       <p class="note">Import <strong>overwrites</strong> all pairings and settings on the connected puck, then reboots it (~2 s — reconnect after). Tip: pair every controller to one puck, export once, then import onto each spare.</p>
+    </div>
+
+    <div class="card">
+      <div class="reset-row" style="margin:0"><button class="reset" id="resetAllBtn" onclick="resetAll()">Reset all settings</button></div>
     </div>
 
     <div class="card wide debugonly">
@@ -423,6 +435,22 @@ const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always
 const CHORD_FIELD = [17, 18, 19];          // back4 + B/X/Y
 const CHORD_DPAD_FIELD = [34, 35, 36, 37]; // back4 + D-pad left/up/right/down (firmware protocol >= 18)
 const CHORD_DPAD_DEF = [9, 8, 7, 2];       // firmware defaults: PS3, DS4 game, PS5 game, Switch HORIPAD
+const DEFAULTS = {
+  chordBtn: [3, 1, 4], chordDpad: CHORD_DPAD_DEF,
+  mDiv: 64, mFric: 94,
+  rumbleScale: 200, rumbleStyle: 0, swGyro: 0,
+  type: [
+    {back:[5,6,7,8], qam:0, ab:0, pad:1, led:0, rum:1, ps:[0,0]},
+    {back:[5,6,7,8], qam:18, ab:1, pad:0, led:0, rum:1, ps:[0,0]},
+    {back:[5,6,7,8], qam:0, ab:0, pad:1, led:0, rum:1, ps:[0,0]},
+    {back:[5,6,7,8], qam:0, ab:0, pad:1, led:0, rum:1, ps:[0,0]},
+  ]
+};
+async function confirmReset(name){
+  return betaPopup({title:"Reset "+name+"?",
+    body:["This will restore "+name+" to factory defaults.","The change is written to the puck immediately."],
+    okText:"Reset", cancelText:"Cancel"});
+}
 let dev=null, epIn=0, epOut=0, ifNum=0, polling=false, capturing=false, backupBusy=false;
 // A ReversePuck CONTROLLER dongle (28DE:1302) speaks a REDUCED subset of this protocol: no status blob /
 // lizard / config, just a paired-pucks list (0xAC) plus the identical firmware-update + DFU ops. When true,
@@ -704,6 +732,10 @@ function setTab(et){
       sel.addEventListener("change",()=>setField(PAD_STICK_FIELD0+et*2+pad, +sel.value));
       rec.padStick.push(sel);
     }
+    const resetRow=document.createElement("div"); resetRow.className="reset-row";
+    const resetBtn=document.createElement("button"); resetBtn.className="reset"; resetBtn.textContent="Reset "+def.name;
+    resetBtn.onclick=()=>resetType(et); resetRow.appendChild(resetBtn); sec.appendChild(resetRow);
+    rec.resetBtn=resetBtn;
     host.appendChild(sec); typeEls.push(rec);
   });
   setTab(0);
@@ -1163,6 +1195,7 @@ function applyBlob(p){
   $("#dpadChords").classList.toggle("hide", !dpadCap);
   $("#dpadOld").classList.toggle("hide", dpadCap);
   if(dpadCap) for(const sel of document.querySelectorAll("select.chordD")){ if(document.activeElement!==sel) sel.value=chordD[+sel.dataset.i]; }
+  updateResetButtons(p);
 }
 function fmtSlider(id,v){ return id==="hapBlockS" ? v+" s" : ""+v; }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
@@ -1399,6 +1432,96 @@ async function importBackup(file){
 }
 async function setField(field,value){
   await send([0x02, field, value&0xff]); const p=await readBlob(); if(p) applyBlob(p);
+}
+async function resetChords(){
+  if(!await confirmReset("chords")) return;
+  for(let i=0;i<3;i++) await setField(CHORD_FIELD[i], DEFAULTS.chordBtn[i]);
+  for(let i=0;i<4;i++) await setField(CHORD_DPAD_FIELD[i], DEFAULTS.chordDpad[i]);
+}
+async function resetMouse(){
+  if(!await confirmReset("mouse sensitivity")) return;
+  await setField(1, DEFAULTS.mDiv); await setField(2, DEFAULTS.mFric);
+}
+async function resetRumble(){
+  if(!await confirmReset("rumble")) return;
+  await setField(22, DEFAULTS.rumbleScale/2); await setField(39, DEFAULTS.rumbleStyle);
+}
+async function resetSwGyro(){
+  if(!await confirmReset("gyro mapping")) return;
+  await setField(38, DEFAULTS.swGyro);
+}
+async function resetType(et){
+  if(!await confirmReset(TYPE_DEFS[et].name+" button mapping")) return;
+  const d=DEFAULTS.type[et], base=40+et*9;
+  for(let i=0;i<4;i++) await setField(base+i, d.back[i]);
+  await setField(base+4, d.qam);
+  await setField(base+5, d.ab);
+  await setField(base+6, d.pad);
+  await setField(base+7, d.led);
+  await setField(base+8, d.rum);
+  await setField(PAD_STICK_FIELD0+et*2, d.ps[0]);
+  await setField(PAD_STICK_FIELD0+et*2+1, d.ps[1]);
+}
+async function resetAllTypes(){
+  if(!await confirmReset("all button mappings")) return;
+  for(let et=0;et<TYPE_DEFS.length;et++){
+    const d=DEFAULTS.type[et], base=40+et*9;
+    for(let i=0;i<4;i++) await setField(base+i, d.back[i]);
+    await setField(base+4, d.qam); await setField(base+5, d.ab);
+    await setField(base+6, d.pad); await setField(base+7, d.led);
+    await setField(base+8, d.rum);
+    await setField(PAD_STICK_FIELD0+et*2, d.ps[0]);
+    await setField(PAD_STICK_FIELD0+et*2+1, d.ps[1]);
+  }
+}
+async function resetAll(){
+  if(!await confirmReset("all settings")) return;
+  for(let i=0;i<3;i++) await setField(CHORD_FIELD[i], DEFAULTS.chordBtn[i]);
+  for(let i=0;i<4;i++) await setField(CHORD_DPAD_FIELD[i], DEFAULTS.chordDpad[i]);
+  await setField(1, DEFAULTS.mDiv); await setField(2, DEFAULTS.mFric);
+  await setField(22, DEFAULTS.rumbleScale/2); await setField(39, DEFAULTS.rumbleStyle);
+  await setField(38, DEFAULTS.swGyro);
+  for(let et=0;et<TYPE_DEFS.length;et++){
+    const d=DEFAULTS.type[et], base=40+et*9;
+    for(let i=0;i<4;i++) await setField(base+i, d.back[i]);
+    await setField(base+4, d.qam); await setField(base+5, d.ab);
+    await setField(base+6, d.pad); await setField(base+7, d.led);
+    await setField(base+8, d.rum);
+    await setField(PAD_STICK_FIELD0+et*2, d.ps[0]);
+    await setField(PAD_STICK_FIELD0+et*2+1, d.ps[1]);
+  }
+}
+function updateResetButtons(p){
+  const D=DEFAULTS;
+  const chord=(p.length>25)?[p[23],p[24],p[25]]:[3,1,4];
+  const dpadCap=(p[0]>=18 && p.length>183);
+  const chordD=dpadCap?[p[180],p[181],p[182],p[183]]:CHORD_DPAD_DEF;
+  const chordsDefault=chord.every((v,i)=>v===D.chordBtn[i]) && chordD.every((v,i)=>v===D.chordDpad[i]);
+  const cb=document.getElementById("resetChordsBtn"); if(cb) cb.disabled=chordsDefault;
+  const mouseDefault=(p[2]===D.mDiv && p[3]===D.mFric);
+  const mb=document.getElementById("resetMouseBtn"); if(mb) mb.disabled=mouseDefault;
+  const rumbleCap=(p[0]>=21 && p.length>193);
+  const rs=rumbleCap?p[51]*2:200, ry=rumbleCap?p[193]:0;
+  const rumbleDefault=(rs===D.rumbleScale && ry===D.rumbleStyle);
+  const rb=document.getElementById("resetRumbleBtn"); if(rb) rb.disabled=rumbleDefault;
+  const gyroCap=(p[0]>=19 && p.length>184);
+  const gyroDefault=!gyroCap || p[184]===D.swGyro;
+  const gb=document.getElementById("resetGyroBtn"); if(gb) gb.disabled=gyroDefault;
+  let anyTypeChanged=false;
+  if(p.length>=73+TYPE_DEFS.length*9){
+    const padStickCap=(p[0]>=20 && p.length>192);
+    typeEls.forEach((rec,et)=>{
+      const q=73+et*9, d=D.type[et];
+      const match=d.back.every((v,i)=>p[q+i]===v) && p[q+4]===d.qam && p[q+5]===d.ab
+        && p[q+6]===d.pad && p[q+7]===d.led && p[q+8]===d.rum
+        && (!padStickCap || (p[185+et*2]===d.ps[0] && p[185+et*2+1]===d.ps[1]));
+      if(rec.resetBtn) rec.resetBtn.disabled=match;
+      if(!match) anyTypeChanged=true;
+    });
+  }
+  const atb=document.getElementById("resetAllTypesBtn"); if(atb) atb.disabled=!anyTypeChanged;
+  const allDefault=chordsDefault && mouseDefault && rumbleDefault && gyroDefault && !anyTypeChanged;
+  const ab=document.getElementById("resetAllBtn"); if(ab) ab.disabled=allDefault;
 }
 function fmtCapEntry(e,maxMs){
   const hex=e.bytes.map(x=>x.toString(16).padStart(2,"0")).join(" ");
