@@ -163,8 +163,12 @@
         <button data-mode="5" class="modebtn">PS5 DualSense</button>
         <button data-mode="6" class="modebtn">HID gyro (DS4)</button>
         <button data-mode="9" class="modebtn">PS3 (DualShock 3)</button>
+        <button data-mode="10" class="modebtn">Original Xbox</button>
+        <button data-mode="11" class="modebtn">DirectInput (sims)</button>
+        <button data-mode="12" class="modebtn">SInput (SDL native)</button>
       </div>
-      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only.</p>
+      <p class="note">Switching reboots the copycat and re-enumerates USB (~2 s). WebUSB works in every mode, including Steam/Lizard with Steam running (Chrome claims the vendor interface; Steam keeps the HID slots). Switch HORIPAD + WebUSB is PC-only. Original Xbox emulates one Microsoft Controller S and uses the Xbox mapping tab; LB/RB become White/Black. It's for a real Original Xbox console — a PC needs a driver for the original Xbox controller to see it as a gamepad.</p>
+      <p class="note"><b>DirectInput</b> is for flight/space sims: every analog input is live at once, split over two joysticks (#1 sticks + triggers + 26 buttons, #2 trackpads + gyro). Trackpad axes hold their last position and re-centre on a pad click. <b>SInput</b> is the open SDL-native protocol — SDL3 / Steam Input read sticks, both analog triggers, gyro, both trackpads and battery from it natively, with rumble back from the host.</p>
       <div class="row"><label>Persist last mode</label>
         <button id="persistMode">off</button>
         <span class="note" style="flex:1">Off (default): every restart / fresh reconnect boots into Steam mode. On: remembers the last mode you selected.</span>
@@ -238,9 +242,6 @@
       </div>
       <div class="row" style="margin:10px 0 0"><button id="ctlrOff">Turn off controller</button>
         <span class="note" style="flex:1">Fires the controller power-off (0x9F "off!", x3) — the same path Steam's "turn off controller" and host-suspend use. Watch the link status to see it disconnect.</span>
-      </div>
-      <div class="row debugonly" style="margin:10px 0 0"><button id="landAll87">off</button>
-        <span class="note" style="flex:1"><strong>Land all 0x87 (experiment).</strong> Relay Steam's full haptic/settings config to the controller verbatim (like the real puck) instead of discarding it. Testing whether the connect buzz is caused by the controller's haptic engine being left misconfigured. If the <em>gyro freezes</em> in Steam, turn this back off.</span>
       </div>
       <div class="row debugonly" style="margin:10px 0 0;border-top:1px solid #272d3d;padding-top:14px"><button id="stabBtn">Test stability</button>
         <span class="v" id="stabStatus" style="flex:0 0 auto;min-width:120px">—</span>
@@ -403,7 +404,7 @@
 </div>
 
 <script>
-const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)"];
+const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)","Original Xbox","DirectInput (sims)","SInput (SDL native)"];
 const CHORD_FIELD = [17, 18, 19];          // back4 + B/X/Y
 const CHORD_DPAD_FIELD = [34, 35, 36, 37]; // back4 + D-pad left/up/right/down (firmware protocol >= 18)
 const CHORD_DPAD_DEF = [9, 8, 7, 2];       // firmware defaults: PS3, DS4 game, PS5 game, Switch HORIPAD
@@ -563,7 +564,7 @@ const TYPE_DEFS = [
   {key:"DS5", name:"DS5", labels:{1:"Cross",2:"Circle",3:"Square",4:"Triangle",5:"L1",6:"R1",7:"L3",8:"R3",9:"Create",10:"Options",11:"PS",19:"L2",20:"R2",...DPAD,16:"Touchpad Click",17:"Mute"}},
 ];
 // Which emulated type a USB mode belongs to (mirror of firmware etypeForMode); -1 = puck mode (no type).
-function etypeForMode(m){ switch(m){case 1:return 0; case 2:case 4:return 1; case 6:case 8:case 9:return 2; case 5:case 7:return 3; default:return -1;} }
+function etypeForMode(m){ switch(m){case 1:case 10:return 0; case 2:case 4:return 1; case 6:case 8:case 9:return 2; case 5:case 7:return 3; default:return -1;} }
 
 // ===================== Lizard (desktop) binding map =====================
 // Mirrors firmware lizard_map.h. A binding is {outType, od:[7], trig, hold}. Output types and the
@@ -760,7 +761,9 @@ function renderSlotTabs(bondedCount) {
   updateSlotDisplay(g_activeSlot);
 }
 
-const USB_FILTERS=[{vendorId:0x28DE},{vendorId:0x045E},{vendorId:0x057E},{vendorId:0x0F0D},{vendorId:0x054C}];
+// Every VID an OpenPuck can enumerate under — the picker/auto-reconnect can only see a device whose VID is
+// listed here, so a new mode with a new identity MUST be added (1209 = DirectInput, 2E8A = SInput).
+const USB_FILTERS=[{vendorId:0x28DE},{vendorId:0x045E},{vendorId:0x057E},{vendorId:0x0F0D},{vendorId:0x054C},{vendorId:0x1209},{vendorId:0x2E8A}];
 // Acquire+set up an already-chosen USBDevice (shared by the manual picker and the no-picker auto-reconnect).
 async function openDevice(d){
   try{
@@ -1100,8 +1103,6 @@ function applyBlob(p){
   checkUpdateNotice(); // needs BOTH the installed version (this blob) and relCache (fetched on connect)
   setSlider("mDiv",mDiv); setSlider("mFric",mFric);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
-  // land-all-0x87 experiment toggle (blob v14/v17, firmware p[181] -> JS p[179])
-  { const la=(p.length>179?p[179]:0); $("#landAll87").textContent = la?"on":"off"; $("#landAll87").classList.toggle("active",!!la); }
   // per-type button config (blob v10/v17): 4 types x 9 bytes. readBlob() strips the 2-byte [0xA5][len] header, so
   // the firmware's buffer index 75 lands at JS index 73 here.
   if(p.length>=73+TYPE_DEFS.length*9){
@@ -2245,7 +2246,6 @@ $("#wipeBoard").onclick=async()=>{
   log("FULL BOARD WIPE sent — the board is erasing firmware + all data (~15–20 s), then reboots as a blank UF2 drive. Flash OpenPuck (.uf2) to restore it.");
 };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
-$("#landAll87").onclick=async()=>{ const on=$("#landAll87").classList.contains("active"); await setField(29, on?0:1); log("land-all-0x87 "+(on?"disabled":"enabled")); };
 // Connection tuning: post-connect haptic block on (field 27) + seconds (field 28). (poll RX window is fixed.)
 for(const id of ["mDiv","mFric"]){
   const field={mDiv:1,mFric:2}[id];

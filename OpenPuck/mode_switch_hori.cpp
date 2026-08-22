@@ -191,6 +191,7 @@ uint8_t SwitchHoriController::maxSlots() const
 void SwitchHoriController::usbIdentity()
 {
 	USBDevice.setID(0x0F0D, 0x0092);
+	USBDevice.setVersion(0x0200);
 	USBDevice.setDeviceVersion(0x0210);
 	USBDevice.setManufacturerDescriptor("HORI CO.,LTD.");
 	USBDevice.setProductDescriptor("POKKEN CONTROLLER");

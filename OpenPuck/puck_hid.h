@@ -34,10 +34,6 @@ bool puckLizardActive();
 extern bool g_cmdCapture;
 void puckCmdLogDrain(void);
 
-// Drop Steam's relayed 0x81 CLEAR_DIGITAL_MAPPINGS in Steam mode (the amp-clicker in Steam's per-connect
-// config; OpenPuck doesn't need it). On by default; console "S81" toggles for A/B.
-extern bool g_drop81;
-
 // Note that a controller power-off (0x9F "off!") was just relayed to `slot` (or ALL used slots for the 0xFF
 // broadcast). The puck then presents that slot as cleanly DISCONNECTED to Steam and HOLDS it there through the
 // controller's messy shutdown -- a real controller keeps streaming F1 for up to ~1s after the off command, and

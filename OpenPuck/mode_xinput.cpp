@@ -17,13 +17,10 @@
 #include "bonds.h"
 #include "usb_mount.h"
 #include "usb_tx.h"
+#include "usb_app_drivers.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
-// custom class-driver API for the XInput interface
-extern "C" {
-#include "device/usbd_pvt.h"
-}
 
 XboxController g_xboxCtl;
 
@@ -193,9 +190,8 @@ static const usbd_class_driver_t g_xiDriver = {
 	.xfer_cb = xi_xfer,
 	.sof = NULL
 };
-extern "C" const usbd_class_driver_t *usbd_app_driver_get_cb(uint8_t *count)
+const usbd_class_driver_t *xinputClassDriver(void)
 {
-	*count = 1;
 	return &g_xiDriver;
 }
 
@@ -485,6 +481,7 @@ void XboxController::usbIdentity()
 {
 	// 045E:028E -> Windows xusb / SDL / Linux xpad all bind it
 	USBDevice.setID(0x045E, 0x028E);
+	USBDevice.setVersion(0x0200);
 	USBDevice.setDeviceVersion(0x0120);
 	USBDevice.setManufacturerDescriptor("Microsoft");
 	USBDevice.setProductDescriptor("Controller");

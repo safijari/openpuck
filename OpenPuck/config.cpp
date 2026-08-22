@@ -96,8 +96,8 @@ struct Cfg {
 	// RUMBLE_SCALE_PCT default. This revives the byte the removed rumble-strength slider used, so the
 	// on-flash layout is unchanged and an existing cfg.bin still loads.
 	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
-	// haptics.h LIZKEEP_MS). landAll87: the verbatim-0x87-relay experiment toggle (haptics.h g_landAll87).
-	uint8_t rxWin10, lizKeep, landAll87;
+	// haptics.h LIZKEEP_MS). rsvd2 used to be landAll87, this is now ignored.
+	uint8_t rxWin10, lizKeep, rsvd2;
 	TypeCfg type[ET_COUNT]; // per-emulated-type back/qam/abSwap/padHaptics
 	// TAIL (appended after CFG_MAGIC 0xCF shipped): back4+D-pad mode assignments. New tail fields go HERE, at
 	// the end, and loadCfg accepts a short file so an upgrade keeps every existing setting -- see CFG_LEN_MIN.
@@ -127,7 +127,7 @@ void saveCfg()
 		  (uint8_t)(g_rumbleScale / 2), // host-rumble strength, pct/2
 		  (uint8_t)(g_rxWin / 10),
 		  g_lizKeep,
-		  g_landAll87,
+		  0, //rsvd2, used to be g_landAll87
 		  {},
 		  { g_chordDpad[0], g_chordDpad[1], g_chordDpad[2],
 		    g_chordDpad[3] },
@@ -211,9 +211,6 @@ void loadCfg()
 			// through -> keep the on default)
 			if (c.lizKeep <= 1)
 				g_lizKeep = c.lizKeep;
-			// verbatim-0x87-relay experiment toggle (0/1; default off)
-			if (c.landAll87 <= 1)
-				g_landAll87 = c.landAll87;
 			// host-rumble strength (pct/2; 0 = never set, or a cfg.bin from before this
 			// field was revived -> keep the RUMBLE_SCALE_PCT default)
 			if (c.rumbScale2) {

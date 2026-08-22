@@ -7,6 +7,7 @@
 #include "rf_link.h"
 #include "triton.h"
 #include "mode_lizard.h"
+#include "steam_commands.h"
 #include "wake_hid.h"
 #include "build_info.h"
 #include "usb_tx.h"
@@ -123,20 +124,6 @@ static const uint8_t PUCK_LIZARD_HID_DESC[] = {
 };
 
 static Adafruit_USBD_HID hid[NSLOT];
-
-// Drop Steam's relayed FEATURE cmd 0x81 = ID_CLEAR_DIGITAL_MAPPINGS in Steam mode (console "S81" toggles; on
-// by default). It's the confirmed amp-clicker in Steam's per-connect config and OpenPuck doesn't need it (own
-// input translation + id9=0 keepalive). Reversible from the console if it regresses.
-// FEATURE-CHANNEL ONLY: the OUTPUT report with id 0x81 is ID_OUT_REPORT_HAPTIC_PULSE, an unrelated command
-// (see handleSet) -- dropping that one costs the trackpad-click / trigger-full-pull haptics (#163, #166).
-bool g_drop81 = true;
-
-// Per-slot shadow of the controller's SET_SETTINGS_VALUES array (id-indexed u16, ids 0..0x52). Steam writes
-// it with 0x87 and READS IT BACK with 0x89 to verify its config "took"; on the real puck the controller
-// answers 0x89 from this array. OpenPuck can't relay-and-return over the NO-ACK RF link, so it maintains the
-// shadow here and answers 0x89 from it -- WITHOUT this, Steam's verify never matches and it re-clears (0x81)
-// + re-writes (0x87) forever = the connect config storm that buzzes the amp and floods the usbd task.
-static uint16_t g_setShadow[NSLOT][0x53];
 
 // ---- feature-command capture (diagnostic) ---------------------------------------------------------------
 // Log the USB feature command channel (Steam's SET/GET) to serial to see the connect handshake -- WITHOUT a
@@ -286,12 +273,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 					     (uint8_t)(n > RELAY_MAXP ?
 							       RELAY_MAXP :
 							       n),
-					     (uint8_t)slot);
-				// Track on/off from what was actually RELAYED (= the controller's believed state): a
-				// BLOCKED stop must leave "on" set (controller may be latched -> reconnect stop-burst),
-				// a blocked ON must not set it (nothing reached the controller -> no spurious clicks).
-				if (rid == 0x82)
-					haptic82HostReport(b, n);
+					     true, (uint8_t)slot);
 			}
 		}
 
@@ -327,52 +309,78 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	// command flood that (theory) overflows it lands in the post-mortem trail rather than being lost with USB.
 	faultDiagTrace(FR_SET, (uint16_t)((rid << 8) | cmd));
 
-	// settings/haptic/LED report (incl. 0x87 lizard-off heartbeat, SDL Triton lizard-disable)
-	if (cmd >= 0x80 && cmd <= 0x89)
-		hostStampAlive();
+	// Disable lizard if requested by host.
+	if (cmd == IBEX_CMD_SET_SETTINGS_VALUES) {
+		// Host sent a settings write. Check if this is a write with the lizard suppression tag.
+		for (int off = 0; off <= len; off += 3) {
+			uint8_t settings_key = pl[off];
+			uint16_t settings_val = pl[off + 1] + 256 * pl[off + 2];
+			if (settings_key == SETTING_LIZARD_MODE &&
+			    settings_val == 0) {
+				hostStampAlive();
+				break;
+			}
+		}
+	}
+
 	// Controller power-off: Steam's "turn off controller" is feature-0x01 frame 9F 04 6F 66 66 21 ("off!"),
 	// confirmed from a real puck capture. The feature-0x01 relay below forwards it once; hapticSendShutdown
 	// bursts it for NO-ACK reliability. Slot-targeted: the command arrived on THIS controller's interface,
 	// so only this controller powers off (broadcasting killed all connected controllers at once).
-	if (rid == 1 && cmd == 0x9F)
+
+	// TODO: Why do we spam this? Doesn't the controller respond with a TAG4 upon command receival?
+	if (rid == 1 && cmd == IBEX_CMD_TURN_OFF_CONTROLLER)
 		hapticSendShutdown((uint8_t)slot);
 
 	// report 0x01 = raw passthrough -> queue for RF relay to the controller
 	if (rid == 1 && n >= 2) {
 		// (feature-1 commands -- haptics, LED, 0x87 settings, 0x9F power-off -- are captured by the
 		// general feature-SET hapLogAdd above.)
-		bool haptic82 = (cmd == 0x82 && len <= pln);
 
 		bool muted = g_resumeMs &&
 			     millis() - g_resumeMs < POST_RESUME_MUTE_MS;
 
-		// Steam-mode: DROP the relayed 0x81 CLEAR_DIGITAL_MAPPINGS (g_drop81, console "S81"). It EXECUTES on
-		// the controller (rid<0x87, legacy framing) and each one re-arms the haptic amp (non-idempotent, ibex
-		// func_0x0001bbf0) = the connect click/buzz; Steam sends ~13 in its per-connect config. OpenPuck does
-		// its OWN input translation and holds mappings cleared via the id9=0 keepalive, so it does NOT need the
-		// controller's mapping engine -> Steam's 0x81 is pure downside here. The manual "Clear stuck buzz"
-		// (hapticReinit) sends its own 0x81 via relayEnqueue directly, so that cure path is unaffected.
-		bool drop =
-			(g_drop81 && g_usbMode == MODE_STEAM && cmd == 0x81);
-		// Do NOT relay commands OpenPuck answers LOCALLY (identity/bond/settings READS). Relaying them to the
-		// controller is pointless (their reply can't come back over the NO-ACK RF link -- we answer from the
-		// handleSet/handleGet switch), and 0x83 GET_ATTRIBUTES in particular is < 0x87 so it EXECUTES on the
-		// controller -- captured as the remaining periodic CLICK, fired every time Steam re-polls identity
-		// (0x83/0xAE on all 4 interfaces). Only actuator/config commands (0x80-0x82/0x84-0x88 haptics+config,
-		// 0x9F power) should reach the controller.
-		bool localAnswer = (cmd == 0x83 || cmd == 0x89 || cmd == 0xAE ||
-				    cmd == 0xA2 || cmd == 0xA3 || cmd == 0xAD ||
-				    cmd == 0xB4 || cmd == 0xED || cmd == 0xA4);
-		// never push haptics while presenting lizard (Steam isn't reading 0x45 -> would buzz-loop).
-		// HR toggle (g_hapticRelay): when off, suppress the actuator/haptic range (0x80-0x86) -- the
-		// trackpad texture-feedback stream Steam pushes while dragging -- to isolate its cost on drag
-		// smoothness. Config (0x87/0x88) and power-off (0x9F) still relay so nothing else regresses.
-		bool hapticCmd = (cmd >= 0x80 && cmd <= 0x86);
-		bool relayOk = hapticRelaySlotOk(slot) && !drop &&
-			       !localAnswer &&
-			       !(haptic82 && (lizardActive() || muted)) &&
-			       !(hapticCmd && !g_hapticRelay);
-		if (relayOk && (!haptic82 || !haptic82Blocked(slot))) {
+		// Reports in relayQuery will be forwarded to the controller if rid==1 and may be answered locally
+		// if it makes sense and rid==2.
+
+		// Reports in localAnswer will always be answered by the puck and not be forwarded.
+
+		// Forwarding uses the type-01 framing PLUS a trailing `01 03 00` (rfConnFlushRelay's `queryTrailer`,
+		// haptics.cpp -- without it the controller only ACKs and never answers), the controller replies --
+		// on a LATER poll -- with a tag-4 TLV carrying `[echoed cmd][len][payload]`, decoded in rf_link.cpp's
+		// F1 walk and written into this slot's `resp` (pendingQueryCmd, bonds.h).
+
+		// If rid==1:
+		// ID in relayQuery: Sent to controller, expect a response.
+		// ID in localAnswer: Not sent to controller, response generated by Puck.
+		// ID in neither: Sent to controller, no response expected.
+
+		// clang-format off
+
+		bool relayQuery =
+			(cmd == IBEX_CMD_GET_DIGITAL_MAPPINGS ||    // 0x82
+			 cmd == IBEX_CMD_GET_ATTRIBUTES_VALUES ||   // 0x83
+			 cmd == IBEX_CMD_GET_SETTINGS_VALUES ||     // 0x89
+			 cmd == IBEX_CMD_GET_SETTINGS_MAXS ||       // 0x8B
+			 cmd == IBEX_CMD_GET_SETTINGS_DEFAULTS ||   // 0x8C
+			 cmd == IBEX_CMD_GET_DEVICE_INFO ||         // 0xA1
+			 cmd == IBEX_CMD_GET_STRING_ATTRIBUTE ||    // 0xAE
+			 cmd == IBEX_CMD_GET_CHIPID ||              // 0xBA
+			 cmd == IBEX_CMD_TRITON_READ_SETTING ||     // 0xED
+			 cmd == IBEX_CMD_GET_SYSTEM_INFO);          // 0xF2
+
+		bool localAnswer =
+			(cmd == IBEX_CMD_TRITON_A2_OBSERVED_PAIRING_RECORD || // 0xA2
+			 cmd == IBEX_CMD_TRITON_A3_BOND_EVENT_OR_STATUS ||    // 0xA3
+			 cmd == IBEX_CMD_ENABLE_PAIRING ||                    // 0xAD
+			 cmd == IBEX_CMD_DONGLE_GET_WIRELESS_STATE ||         // 0xB4
+			 cmd == 0xA4); // Not sure what that's for?
+
+		// clang-format on
+
+		bool queryArmed = false;
+		bool relayOk = hapticRelaySlotOk(slot) && !localAnswer;
+		if (relayOk) {
 			// Relay the DECLARED length (up to the 60B RF frame ceiling), not a truncation: Steam's
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
 			// 18B cap, and the chopped frames were why those settings never landed on the controller.
@@ -383,11 +391,26 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
 					cmd, len, (unsigned)RELAY_MAXP);
 #endif
-			relayEnqueue(cmd, pl, rl, (uint8_t)slot);
+			relayEnqueue(cmd, pl, rl, false, (uint8_t)slot,
+				     relayQuery);
 
-			// track from RELAYED frames only (see the OUTPUT path)
-			if (haptic82)
-				haptic82HostReport(pl, len);
+			if (relayQuery && slot >= 0 && slot < NSLOT) {
+				g_slot[slot].pendingQueryCmd = cmd;
+				queryArmed = true;
+			}
+		}
+		// No real controller answer is EVER coming for this SET: it wasn't a tracked query
+		// (haptics/0x87/0x9F/localAnswer/...), or it was one but couldn't relay right now (link down,
+		// blocked). `resp` must still be made to reflect CMD, not left holding whatever unrelated
+		// command's data happened to be cached there from an earlier request -- otherwise a later
+		// GET(rid=1), seeing pendingQueryCmd==0, would silently hand Steam stale/wrong data instead of
+		// a defined answer. Same echo shape the old always-run `default:` switch case used.
+		if (!queryArmed) {
+			S.resp[0] = cmd;
+			S.resp[1] = len;
+			if (pln)
+				memcpy(S.resp + 2, pl, pln > 60 ? 60 : pln);
+			S.resp_len = 63;
 		}
 	}
 #if OPK_LOG
@@ -401,71 +424,49 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		Serial.println();
 	}
 #endif
-	memset(S.resp, 0, sizeof S.resp);
-	S.resp_len = 0;
+	if (rid == 2) {
+		memset(S.resp, 0, sizeof S.resp);
+		S.resp_len = 0;
+	} else {
+		// If we forwarded the packet to the controller, do NOT clear the buffer.
+		// The controller will respond and put its data into the buffer.
+		return;
+		// rid == 1 will be handled by the controller, no need to respond here.
+	}
 	switch (cmd) {
-	case 0x83:
-		S.resp[0] = 0x83;
+	case IBEX_CMD_GET_ATTRIBUTES_VALUES: // 0x83
+		S.resp[0] = IBEX_CMD_GET_ATTRIBUTES_VALUES;
 		S.resp[1] = sizeof ATTR83;
 		memcpy(S.resp + 2, ATTR83, sizeof ATTR83);
-		// Report-id 1 = an attributes query RELAYED to the bonded CONTROLLER; it must report the CONTROLLER's
-		// product id (0x1302), NOT the puck/dongle's (0x1304) -- else Steam sees "a controller with a dongle's
-		// id" (HANDOFF.md) and drops to the LEGACY 0x81 CLEAR_DIGITAL_MAPPINGS init path, whose rapid re-arm
-		// storm is the connect buzz; with the correct id Steam uses the modern quiet 0x87 id9=0 path. Report-id
-		// 2 stays the puck (0x1304). ATTR83 stores product as u32 LE at offset 1, so only the low byte flips
-		// (0x04 -> 0x02); everything else in the blob is identical.
-		if (rid == 1)
-			S.resp[2 + 1] =
-				0x02; // product 0x1304 -> 0x1302 (controller)
 		S.resp_len = 63;
 		break;
-	case 0xAE: {
+	case IBEX_CMD_GET_STRING_ATTRIBUTE: { // 0xAE
 		uint8_t idx = pln > 0 ? pl[0] : 1;
-		// Report-id 1 = string attributes of the bonded CONTROLLER, not the puck. Steam matches the connected
-		// controller to its bond by SERIAL: it reads the controller's serial here (rid 1) and compares to the
-		// 16-byte serial in the bond record it reads via 0xA3. OpenPuck was returning the PUCK's serial (g_unit,
-		// "FXB..."), which never matches any bond's controller serial ("FXA...") -> Steam can't associate the
-		// controller with a puck -> "paired to" list is EMPTY -> Steam treats it as unconfigured and re-runs the
-		// 0x81/0x87 config storm every connect (the buzz). So on rid 1, answer with the CONTROLLER's serial from
-		// this interface's bond record (rec[8..24], the same 16-byte serial 0xA3 returns). Captured: Steam
-		// hammered this read (AE x39 on rid1) exactly because the identity never matched. rid 2 = puck (unchanged).
-		// idx 0/1/4 = board/unit/alt serial (real controller returns the SAME serial for 0 and 4; the clone
-		// was returning "NA" for idx 4, which failed Steam's read -> retry).
-		S.resp[0] = 0xAE;
-		S.resp[1] = 0x14;
+		// Report-id 1 = string attributes of the bonded CONTROLLER, not the puck. Not handled here, this request
+		// will have been forwarded to the controller by earlier code.
+		S.resp[0] = IBEX_CMD_GET_STRING_ATTRIBUTE;
+		S.resp[1] = 0x14; // todo: is this correct?
 		S.resp[2] = idx;
 		memset(S.resp + 3, 0, 60);
-		if (rid == 1 && slot >= 0 && slot < NSLOT &&
-		    g_slot[slot].used && (idx == 0 || idx == 1 || idx == 4)) {
-			// THIS slot's paired-controller serial, straight from its bond record (rec[8..24], the same
-			// 16-byte serial 0xA3 returns) -- per device, nothing hardcoded. Copied without a stack temp
-			// (this runs on the fragile 800B usbd task; every byte off the stack helps under a Steam
-			// re-enumeration burst).
-			// TODO: This should not be read from the bond record and instead queried from the controller, see #227.
-			memcpy(S.resp + 3, g_slot[slot].rec + 8, 16);
-		} else {
-			// rid 2 = the puck's own board/unit serials (device-derived). Any other idx -> "NA".
-			const char *s = (rid == 1)	       ? "NA" :
-					(idx == 0 || idx == 4) ? g_board :
-					(idx == 1)	       ? g_unit :
-					(idx == 3)	       ? "OpenPuck " :
-								 "NA";
-			memcpy(S.resp + 3, s, strlen(s));
-			if (rid == 2 && idx == 3) {
-				// The official puck has a 12-character GIT commit hash of the firmware in here.
-				// Since I doubt any official process is ever going to parse / use this,
-				// looks like the perfect place to put the OpenPuck version number.
-				char *off = (char *)(S.resp + 3 + strlen(s));
-				memcpy(off, OPK_BUILD_VERSION,
-				       strlen(OPK_BUILD_VERSION));
-				off += strlen(OPK_BUILD_VERSION);
-				memcpy(off, " ", 1);
-				memcpy(off + 1, OPK_GIT_HASH,
-				       strlen(OPK_GIT_HASH));
-				if (OPK_GIT_DIRTY != 0) {
-					off += 1 + strlen(OPK_GIT_HASH);
-					memcpy(off, "-dirty", 6);
-				}
+		// Any other idx -> "NA".
+		const char *s = (idx == 0 || idx == 4) ? g_board :
+				(idx == 1)	       ? g_unit :
+				(idx == 3)	       ? "OpenPuck " :
+							 "NA";
+		memcpy(S.resp + 3, s, strlen(s));
+		if (idx == 3) {
+			// The official puck has a 12-character GIT commit hash of the firmware in here.
+			// Since I doubt any official process is ever going to parse / use this,
+			// looks like the perfect place to put the OpenPuck version number.
+			char *off = (char *)(S.resp + 3 + strlen(s));
+			memcpy(off, OPK_BUILD_VERSION,
+			       strlen(OPK_BUILD_VERSION));
+			off += strlen(OPK_BUILD_VERSION);
+			memcpy(off, " ", 1);
+			memcpy(off + 1, OPK_GIT_HASH, strlen(OPK_GIT_HASH));
+			if (OPK_GIT_DIRTY != 0) {
+				off += 1 + strlen(OPK_GIT_HASH);
+				memcpy(off, "-dirty", 6);
 			}
 		}
 		S.resp_len = 63;
@@ -473,10 +474,10 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	}
 
 	// connection/version state per slot: value 0x02 = controller connected, 0x01 = not
-	case 0xB4:
+	case IBEX_CMD_DONGLE_GET_WIRELESS_STATE: // 0xB4
 		// SDL Triton polls this on init; treat like Steam contact so we forward 0x45
 		hostStampAlive();
-		S.resp[0] = 0xB4;
+		S.resp[0] = IBEX_CMD_DONGLE_GET_WIRELESS_STATE;
 		S.resp[1] = 0x01;
 		// Report disconnected during the post-power-off hold so B4 agrees with the 0x79 disconnect (they used
 		// different windows -- 500ms here vs the 300ms conn/DOWN edge -- so right after a power-off Steam's B4
@@ -488,16 +489,17 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				    0x01;
 		S.resp_len = 63;
 		break;
-	case 0xAD:
+	case IBEX_CMD_ENABLE_PAIRING: // 0xAD
+		// TODO: Check if this should be relayed?
 		g_pairing = (pln > 0 && pl[0] != 0);
 #if OPK_LOG
 		Serial.printf("# pairing %s\n", g_pairing ? "ON" : "off");
 #endif
-		S.resp[0] = 0xAD;
+		S.resp[0] = IBEX_CMD_ENABLE_PAIRING;
 		S.resp[1] = 0;
 		S.resp_len = 63;
 		break;
-	case 0xA2: // write/clear THIS interface's slot
+	case IBEX_CMD_TRITON_A2_OBSERVED_PAIRING_RECORD: // 0xA2: write/clear THIS interface's slot
 		if (len >= 24 && pln >= 24) {
 			if (recEmpty(pl)) {
 				S.used = false;
@@ -512,98 +514,18 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 				      recEmpty(pl) ? "cleared" : "bonded");
 #endif
 		}
-		S.resp[0] = 0xA2;
+		S.resp[0] = IBEX_CMD_TRITON_A2_OBSERVED_PAIRING_RECORD;
 		S.resp[1] = 0;
 		S.resp_len = 63;
 		break;
-	case 0xA3: // read THIS interface's slot
-		S.resp[0] = 0xA3;
+	case IBEX_CMD_TRITON_A3_BOND_EVENT_OR_STATUS: // 0xA3: read THIS interface's slot
+		S.resp[0] = IBEX_CMD_TRITON_A3_BOND_EVENT_OR_STATUS;
 		S.resp[1] = 0x18;
 		memset(S.resp + 2, 0, 24);
 		if (S.used)
 			memcpy(S.resp + 2, S.rec, 24);
 		S.resp_len = 63;
 		break;
-	case 0x87:
-		// SET_SETTINGS_VALUES: payload = N x [id][val16 LE]. Shadow each into g_setShadow[slot] so the 0x89
-		// read-back below matches what Steam wrote -- this is THE fix that stops Steam's endless config-verify
-		// retry (the 0x81/0x87 storm that buzzes the amp). (Still relayed to the controller by the feature-1
-		// path above; this just maintains the dongle-side shadow the real controller would return on 0x89.)
-		// ACK with [0x87][0], not the default payload echo (a clean success reply, like the real dongle).
-		if (slot >= 0 && slot < NSLOT)
-			for (uint16_t i = 0; i + 2 < pln; i += 3) {
-				uint8_t id = pl[i];
-				if (id < 0x53)
-					g_setShadow[slot][id] =
-						(uint16_t)(pl[i + 1] |
-							   (pl[i + 2] << 8));
-			}
-		S.resp[0] = 0x87;
-		S.resp[1] = 0;
-		S.resp_len = 63;
-		break;
-	case 0x89: {
-		// GET_SETTINGS_VALUES: Steam reads back setting `id` (payload[0]) from the id-indexed array. Answer
-		// from the shadow 0x87 populated: [0x89][3][id][val16 LE]. (Steam didn't use 0x89 in the captured
-		// session -- it provisions via 0xED below -- but this is the correct real-dongle behavior; harmless.)
-		uint8_t id = (pln > 0) ? pl[0] : 0;
-		uint16_t v = (slot >= 0 && slot < NSLOT && id < 0x53) ?
-				     g_setShadow[slot][id] :
-				     0;
-		S.resp[0] = 0x89;
-		S.resp[1] = 3;
-		S.resp[2] = id;
-		S.resp[3] = (uint8_t)v;
-		S.resp[4] = (uint8_t)(v >> 8);
-		S.resp_len = 63;
-		break;
-	}
-	case 0xED: {
-		// GET-SETTING-BY-PATH (keyed). Steam SETs the path string, then GETs the value; the REAL controller
-		// returns the setting's value, but OpenPuck was ECHOING the path -> Steam sees the controller as
-		// un-provisioned/un-bonded and re-runs its full LEGACY config every connect (0x81 CLEAR_DIGITAL_MAPPINGS
-		// = the amp clicks/buzz; captured: 0xED reads of "esb/bond"/"user/wireless_transport" that got echoed).
-		// Answer the paths Steam checks at connect so it treats the controller as provisioned + bonded:
-		//   esb/bond          -> this slot's 24-byte bond record (the controller's record of ITS puck)
-		//   esb/bond_2        -> a 2nd-puck bond; OpenPuck bonds one puck per slot -> absent (empty)
-		//   user/wireless_transport -> 1 byte = the ACTIVE (connected) slot's transport code (see below)
-		// Anything else -> empty ([0xED][0]) rather than a garbage path echo.
-		const char *p = (const char *)pl;
-		uint16_t pl_n = pln;
-		auto pathIs = [&](const char *k) -> bool {
-			uint16_t kl = (uint16_t)strlen(k);
-			return pl_n >= kl && memcmp(p, k, kl) == 0 &&
-			       (pl_n == kl || p[kl] == 0);
-		};
-		S.resp[0] = 0xED;
-		if (slot >= 0 && slot < NSLOT && g_slot[slot].used &&
-		    pathIs("esb/bond")) {
-			S.resp[1] = 0x18;
-			memcpy(S.resp + 2, g_slot[slot].rec, 24);
-		} else if (pathIs("user/wireless_transport")) {
-			// Steam reads this (a CONTROLLER setting, relayed rid1) to mark which bond slot is ACTIVE in the
-			// pairing list, mapping active_slot = value XOR 2 (HANDOFF: slot0->0x02, slot1->0x03, slot2->0x00,
-			// slot3->0x01). It's a single DONGLE-WIDE value = the currently-connected slot, NOT this
-			// interface's own index (returning the raw index made Steam mark slot^2 active -> the live puck
-			// showed "Inactive"). Report the connected slot's code so Steam marks the live puck active.
-			int act = 0;
-			unsigned long best = 0, now = millis();
-			for (int s2 = 0; s2 < NSLOT; s2++)
-				if (g_slot[s2].used && g_connReplyMs[s2] &&
-				    (now - g_connReplyMs[s2]) < 1200u &&
-				    (best == 0 || g_connReplyMs[s2] > best)) {
-					best = g_connReplyMs[s2];
-					act = s2;
-				}
-			S.resp[1] = 1;
-			S.resp[2] = (uint8_t)(act ^ 2);
-		} else {
-			S.resp[1] =
-				0; // absent/empty -- valid "no value" reply, not a path echo
-		}
-		S.resp_len = 63;
-		break;
-	}
 	default:
 		S.resp[0] = cmd;
 		S.resp[1] = len;
@@ -616,7 +538,6 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 			  uint8_t *buf, uint16_t reqlen)
 {
-	(void)rid;
 	if (type != HID_REPORT_TYPE_FEATURE)
 		return 0;
 
@@ -628,6 +549,37 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	// heartbeat ~every 3s, and 0x82 haptics), which stamp g_steamAliveMs on the handleSet paths. So drop the
 	// GET-based stamp entirely; a read alone no longer suppresses lizard.
 	Slot &S = g_slot[slot];
+
+	// A feature-01 query (0x83/0xAE/0xED, relayed for real when rid==1 -- see handleSet's `relayQuery`)
+	// is still waiting on the controller's actual reply: `resp` only holds the local placeholder for it
+	// right now (pendingQueryCmd, bonds.h; cleared by rf_link.cpp when the real answer lands).
+	// STALL this GET so the host retries shortly after (-EPIPE), like the real Puck does.
+	//
+	// Returning plain 0 does NOT stall here: this device's reports are all NUMBERED (report id 1/2), and
+	// TinyUSB's callback (adafruit/Adafruit_TinyUSB_Arduino, src/class/hid/hid_device.c)
+	// auto-prepends that report id byte into the reply BEFORE calling this callback --
+	//   uint16_t xferlen = 0;
+	//   if (report_id != HID_REPORT_TYPE_INVALID && req_len > 1) { *report_buf++ = report_id; xferlen++; }
+	//   xferlen += tud_hid_get_report_cb(...);   // <- our return value lands here
+	//   TU_ASSERT(xferlen > 0);                  // stalls the control transfer iff this is false
+	// -- so xferlen is already 1 before we're even asked, and adding our 0 leaves it at 1: the assert
+	// never fires and TinyUSB happily ships that lone prepended report-id byte as a "successful" 1-byte
+	// reply.
+	// This bug has been reported to upstream at https://github.com/hathach/tinyusb/issues/3814
+	//
+	// `xferlen` is uint16_t, so returning (uint16_t)-1 (0xFFFF) makes `1 + 0xFFFF` wrap to exactly 0
+	// -- landing on the SAME TU_ASSERT(xferlen > 0) failure a genuinely-empty callback would have hit,
+
+	// The additional check for rid is necessary so if the controller never replies, a new query for a
+	// puck feature can get the puck un-stuck.
+
+	// TODO: This is a very, very, very ugly solution and may break with library updates. Can we find a cleaner one?
+	if (rid == 1 && S.pendingQueryCmd != 0 && reqlen > 1) {
+		return 0xFFFF;
+	}
+
+	// rf_link.cpp will set pendingQueryCmd to 0 once the controller answered.
+
 	uint16_t n = S.resp_len ? S.resp_len : 63;
 	if (n > reqlen)
 		n = reqlen;
@@ -701,15 +653,20 @@ static setcb_t SETCB[NSLOT] = { setcb0, setcb1, setcb2, setcb3 };
 void SteamPuckController::begin()
 {
 	USBDevice.setID(0x28DE, 0x1304);
-	// Distinct bcdDevice so Windows keys a FRESH usbflags entry (cache is VID:PID:bcdDevice) and actually runs
-	// MS OS 2.0 / WinUSB binding for the WebUSB vendor interface, instead of reusing a stale "no WinUSB" entry
-	// tied to the real Steam Controller (28DE:1304, no WebUSB interface). The normal (wake-mouse) and one-shot
-	// debug (CDC) boots present DIFFERENT interface sets, so they need DIFFERENT bcdDevice values or Windows
-	// serves one's cached descriptor for the other across a reboot.
-	USBDevice.setDeviceVersion(
-		g_debugCdcThisBoot ?
-			0x0212 :
-			(g_usbMode == MODE_LIZARD ? 0x0213 : 0x0211));
+	USBDevice.setVersion(0x0201); // bcdUSB 2.01
+	USBDevice.setDeviceVersion(2);
+
+	// Distinct serial number so Windows keys a FRESH usbflags entry.
+	if (g_debugCdcThisBoot) {
+		snprintf(g_usbSerial, sizeof g_usbSerial, "%sC", g_unit);
+		USBDevice.setSerialDescriptor(g_usbSerial);
+	} else if (g_usbMode == MODE_LIZARD) {
+		snprintf(g_usbSerial, sizeof g_usbSerial, "%sL", g_unit);
+		USBDevice.setSerialDescriptor(g_usbSerial);
+	} else {
+		USBDevice.setSerialDescriptor(g_unit);
+	}
+
 	USBDevice.setManufacturerDescriptor("Valve Software");
 	USBDevice.setProductDescriptor("Steam Controller Puck");
 	const uint8_t *desc = (g_usbMode == MODE_LIZARD) ?

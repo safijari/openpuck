@@ -208,6 +208,7 @@ uint8_t HidGyroController::maxSlots() const
 void HidGyroController::usbIdentity()
 {
 	USBDevice.setID(0x054C, 0x05C4);
+	USBDevice.setVersion(0x0200);
 	USBDevice.setDeviceVersion(0x0120);
 	USBDevice.setManufacturerDescriptor("Sony Computer Entertainment");
 	USBDevice.setProductDescriptor("Wireless Controller");

@@ -81,12 +81,15 @@ just points at the `OpenPuck` directory). Modules are layered low → high:
 | `mode_switch_pro.{h,cpp}` | **Switch Pro** personality: the full Nintendo USB handshake/subcommand state machine + SPI calibration + gyro. |
 | `mode_ps5.{h,cpp}` | **PS5 DualSense** personality: gyro + split trackpad. |
 | `mode_hidgyro.{h,cpp}` | **DS4-layout** generic HID gyro personality (motion-aware PC games). |
+| `mode_dinput.{h,cpp}` | **DirectInput** personality: two joystick collections so every analog input (sticks, triggers, both trackpads, gyro) is bindable at once in flight/space sims. |
+| `mode_sinput.{h,cpp}` | **SInput** personality: the open SDL-native gamepad protocol (sticks, analog triggers, IMU, two touchpads, battery, rumble). |
 | `rf_link.{h,cpp}` | The operational puck protocol: host-frame beacons, connected-mode poll loop, `0xF1` decode + dispatch, chord detection, remote wakeup, QoS hopping, stats. |
 | `rf_diag.{h,cpp}` | RF reverse-engineering / calibration tooling: raw capture, CRC-validating config sweeps, frame replay, address listen, scan-then-respond, live-session sniffer. Not used in normal operation. |
 | `webusb_config.{h,cpp}` | The WebUSB binary config channel for the browser panel. |
 | `serial_console.{h,cpp}` | The CDC single-letter debug command line. |
 | `wake_hid.{h,cpp}` | A boot-mouse HID interface added to the clean controller modes so the host honors USB remote-wakeup (see "Wake from sleep"). |
 | `status_led.{h,cpp}` | Wake-sent LED indicator: dark in all steady states; flashes 500 ms at each `remoteWakeup()`. Drives both the Feather user LED (P1.15) and the SuperMini clone's blue LED (P0.15); pins/polarity overridable. |
+| `pwr_switch.{h,cpp}` | Optional (`-DOPK_PWR_SWITCH=1`): pulses a GPIO wired to the HOST motherboard's power-switch header on a Steam-button short press while the host is off. See "Host power-switch trigger" below. |
 
 ## The controller abstraction
 
@@ -270,6 +273,31 @@ change a mode's interfaces (as adding the wake mouse did) without bumping that m
 Windows keeps serving the stale cached descriptor — the change is invisible and wake silently breaks, with no
 fix short of the user manually uninstalling the device. So: **whenever you change a mode's USB descriptor, bump
 its `bcdDevice`.** The clean modes were bumped for the wake interface; each `begin()` documents its value.
+
+## Host power-switch trigger
+
+Optional feature (`pwr_switch.{h,cpp}`, compiled out unless built with `-DOPK_PWR_SWITCH=1`, see `config.h`):
+pulses a GPIO wired to the HOST motherboard's front-panel power-switch header, so a Steam Controller can power
+the PC on directly, with no USB host present to talk to yet.
+
+**Gating.** The gesture is the same **Steam-button short press** (down+up within 1 s) the wake-from-sleep path
+already recognizes — but the condition is the opposite: instead of firing while the host is suspended-but-
+attached, this fires only while the host is genuinely **off**: `USBDevice.mounted()` reading `false`
+continuously for `HOST_OFF_DEBOUNCE_MS` (~1.5 s), so a brief re-enumeration blip (e.g. this device's own
+`modeSwitchReboot()`, or a cable reseat) can't false-trigger. It's a deliberately independent detector — reading
+`g_in[]`/`g_connReplyMs[]` directly from its own `pwrSwitchTask()` rather than hooking into `rf_link.cpp` —
+mirroring how `haptics.cpp`'s `hapticOnReconnect` already re-derives the link-up signal independently instead of
+sharing state with `rf_link.cpp`'s own edge detector. A per-slot link-up guard (same 300 ms threshold as
+`anySlotLinkUp()`) keeps a mid-press link drop — which zeroes `g_in[s]` — from reading as a spurious release.
+Once fired, the pin is held for `PULSE_MS` (~300 ms, non-blocking, same timeout idiom as `status_led.cpp`) and a
+`RETRIGGER_COOLDOWN_MS` (~5 s) window guards against a rapid double-fire.
+
+**Assumptions** (both stated as hard preconditions, not detected/enforced): the USB port keeps standby power
+while the host is off, so this firmware — and its RF listen loop — never stops running; and the controller is
+already bonded (there's no pairing UI reachable from an unpowered host).
+
+**Hardware note:** the pin must drive an isolating stage (relay / optocoupler / transistor) wired across the
+motherboard's switch header — never a bare GPIO-to-header short. The firmware only knows how to toggle one pin.
 
 ## RF reverse-engineering tooling
 

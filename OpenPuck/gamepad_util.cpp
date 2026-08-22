@@ -246,9 +246,10 @@ uint8_t psShouldersByte(uint32_t b, uint8_t lt, uint8_t rt)
 	return ((b & TB_LB) ? 0x01 : 0) | ((b & TB_RB) ? 0x02 : 0) |
 	       ((lt > SW_TRIG_ON || (b & 0x8000000u)) ? 0x04 : 0) |
 	       ((rt > SW_TRIG_ON || (b & 0x800000u)) ? 0x08 : 0) |
-	       ((b & TB_MENU) ? 0x10 : 0) |
-	       ((b & TB_VIEW) ? 0x20 : 0) // Menu=Options, View=Create/Share
-	       | ((b & TB_L3) ? 0x40 : 0) | ((b & TB_R3) ? 0x80 : 0);
+	       // 0x10 = Create/Share, 0x20 = Options; TB_MENU/TB_VIEW are the
+	       // Select/Start-side buttons respectively (see triton.h)
+	       ((b & TB_MENU) ? 0x10 : 0) | ((b & TB_VIEW) ? 0x20 : 0) |
+	       ((b & TB_L3) ? 0x40 : 0) | ((b & TB_R3) ? 0x80 : 0);
 }
 uint8_t psHatNibble(uint32_t b)
 {

@@ -70,7 +70,7 @@ make build FQBN=adafruit:nrf52:somethingelse          # a different nRF52840 boa
 `#error`s without them (so a forgotten flag fails loudly instead of shipping a broken/deadlock-prone image):
 
 ```bash
-arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" OpenPuck
+arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=tud_vendor_control_xfer_cb" OpenPuck
 ```
 
 ### 4a. Raytac MDBT50Q-CX-40

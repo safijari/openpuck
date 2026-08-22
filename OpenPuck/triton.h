@@ -14,6 +14,10 @@
 #define TB_Y 0x8u
 #define TB_QAM 0x10u
 #define TB_R3 0x20u
+// TB_VIEW / TB_MENU are named BACKWARDS with respect to the physical buttons: TB_VIEW is the Start-side
+// button (Xbox Start / Switch +, Options on PlayStation) and TB_MENU is the Select-side one (Xbox Back /
+// Switch -, Create/Share). Every hardware-verified mode maps them that way (mode_xinput, mode_switch_pro,
+// psShouldersByte); reading the names literally swaps Start and Select on the host.
 #define TB_VIEW 0x40u
 #define TB_R4 0x80u
 #define TB_R5 0x100u

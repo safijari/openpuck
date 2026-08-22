@@ -914,6 +914,7 @@ uint8_t SwitchProController::maxSlots() const
 void SwitchProController::usbIdentity()
 {
 	USBDevice.setID(0x057E, 0x2009);
+	USBDevice.setVersion(0x0200);
 	USBDevice.setDeviceVersion(0x0220);
 	USBDevice.setManufacturerDescriptor("Nintendo Co., Ltd.");
 	USBDevice.setProductDescriptor("Pro Controller");

@@ -17,6 +17,26 @@
 
 Adafruit_USBD_WebUSB usb_web;
 
+// Vendor-type control requests and the vendor interface's class requests both land on one global TinyUSB
+// callback, which the Adafruit core defines for WebUSB. Linker wrapping (-Wl,--wrap, set in the Makefile)
+// gives MODE_XBOX_OG first refusal on the XID requests without copying that router; whatever it declines, and
+// every other mode, must still reach __real_ -- that answers WebUSB's 0x22, whose connected flag gates
+// the panel sends.
+bool xboxOgVendorControlXfer(uint8_t rhport, uint8_t stage,
+			     const tusb_control_request_t *request);
+extern "C" bool
+__real_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+				  const tusb_control_request_t *request);
+extern "C" bool
+__wrap_tud_vendor_control_xfer_cb(uint8_t rhport, uint8_t stage,
+				  const tusb_control_request_t *request)
+{
+	if (g_usbMode == MODE_XBOX_OG &&
+	    xboxOgVendorControlXfer(rhport, stage, request))
+		return true;
+	return __real_tud_vendor_control_xfer_cb(rhport, stage, request);
+}
+
 // Panel-blob send is deferred to the usbd task: webusbPoll() (loop) just sets this, and webusbSofDrain()
 // (registered with usb_tx, runs from tud_sof_cb on the usbd task) does the actual write+flush. usb_web.flush()
 // goes through the same blocking osd_queue_send path as HID sends, so doing it from loop() could stall the
@@ -282,7 +302,7 @@ static void webusbSendBlob()
 		q[8] = g_slotRelayps[s];
 	}
 	// v14/v17: verbatim-0x87-relay experiment toggle (panel reflects + toggles it)
-	p[181] = g_landAll87;
+	p[181] = 0; // used to be g_landAll87
 	// v18: back4+D-pad mode assignments (panel renders these as selects next to the B/X/Y ones)
 	p[182] = g_chordDpad[CHD_LEFT];
 	p[183] = g_chordDpad[CHD_UP];
@@ -1061,10 +1081,9 @@ void webusbPoll()
 					// (field 25, poll RX window, removed -- g_rxWin is now FIXED/not configurable)
 					// (fields 27/28, post-connect haptic block, removed -- permanently disabled)
 
-				// EXPERIMENT: land ALL relayed 0x87 config verbatim (real-puck relay)
-				// instead of the discard-whitelist. Persisted; blob p[181] reflects state.
+				// Used to be experimental g_landAll87. Persisted; blob p[181] reflects state. Now ignored.
 				case 29:
-					g_landAll87 = v ? 1 : 0;
+					// g_landAll87 = v ? 1 : 0;
 					break;
 				}
 				if (persist)

@@ -15,7 +15,7 @@ Three contexts matter for every piece of state below:
 
 | Context | Priority / stack | What runs here |
 |---|---|---|
-| **loop task** | Arduino FreeRTOS "loop" task, low priority, ~4 KB stack | Everything called from `loop()`: `webusbPoll`, `g_active->task()`, `serialConsolePoll`, `rfDiagTask`, `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`. Also all of the RF radio code (it is driven synchronously from `rfLinkTask`/`rfDiagTask`). Also `setup()`. |
+| **loop task** | Arduino FreeRTOS "loop" task, low priority, ~4 KB stack | Everything called from `loop()`: `webusbPoll`, `g_active->task()`, `serialConsolePoll`, `rfDiagTask`, `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`, `pwrSwitchTask` (only under `OPK_PWR_SWITCH`). Also all of the RF radio code (it is driven synchronously from `rfLinkTask`/`rfDiagTask`). Also `setup()`. |
 | **usbd task** | TinyUSB "usbd" task, **high priority, ~800-byte stack** | All TinyUSB HID `set_report`/`get_report` callbacks, the custom XInput class-driver xfer callbacks, and (in the Adafruit core) HID `sendReport` queuing context. This is where host→device control transfers are decoded. **Stack is tiny — a `Serial.printf` here can overflow it (the suspected LOCKUP cause), which is why all per-report logging is `#if OPK_LOG` gated.** |
 | **ISR** | Hardware exception | `HardFault_Handler` (fault_diag.cpp). The RADIO is **polled, not interrupt-driven** — there is no radio ISR. |
 
@@ -56,8 +56,10 @@ re-add wake mouse + `g_active->mountSlots(k)` + WebUSB in locked instance order,
 1. Feeds the watchdog (`NRF_WDT->RR[0]`).
 2. If `g_dirty`, `saveBonds()` (flash write in loop context).
 3. Calls, in order: `webusbPoll`, `g_active->task`, `serialConsolePoll`, `rfDiagTask`,
-   `rfLinkTask`, `hapticTask`, `ledTask`, `usbMountTask`.
-   `#if OPK_LOG` wraps each in `micros()` timing for the WebUSB panel.
+   `rfLinkTask`, `hapticTask`, `ledTask`, `pwrSwitchTask` (only under `OPK_PWR_SWITCH`),
+   `usbMountTask`.
+   `#if OPK_LOG` wraps each in `micros()` timing for the WebUSB panel (`pwrSwitchTask`
+   is untimed, like `usbMountTask`/`usbTxPump`).
 
 ### State owned
 - `g_usbCfgDesc[512]` — config-descriptor build buffer (puck composite + WebUSB exceeds 256 B).
@@ -352,6 +354,40 @@ DS4-layout (054C:05C4) + gyro. Same structure as PS5.
 calib helper `psNeutralCalib` writes 34 bytes (buf[6..33]) while callers return 36/40
 (remainder zeroed by the prior memset).
 
+## 10b. Open / generic personalities
+
+### `mode_dinput.cpp` / `mode_dinput.h`  (`g_dinputCtl`, MODE_DINPUT)
+Generic DirectInput joystick (1209:4F50). Dynamic-mount, STREAM-style, **no report
+callbacks → no usbd-task user code** (input-only: DirectInput force feedback is the PID
+class, not the vendor rumble reports the other modes decode).
+- **Descriptor**: ONE `DI_HID_DESC` with **two top-level Application collections** →
+  Windows makes one HIDClass PDO (= one DirectInput device) per collection, which is how
+  13 analog inputs fit a format capped at 8 axes/device. Report 1 = sticks/triggers/hat +
+  26 buttons; report 2 = both trackpads + gyro XYZ + 4 pad buttons. Both 15 payload bytes.
+- **loop task**: `task()` rate-gated (`USB_STREAM_MS`), `diBuildStick` + `diBuildMotion`
+  from `g_in[bond]`, two `usbTxHid` sends per slot per tick.
+- **State**: `g_padAxis[NSLOT]` — LATCHED trackpad axes (a pad only reports while touched,
+  so the axis holds the last position and a pad CLICK re-centres it). Loop-context only.
+- Buttons are the RAW `TB_*` bits (no `psButtonsFromSteam` remap; `etypeForMode` = ET_NONE).
+
+### `mode_sinput.cpp` / `mode_sinput.h`  (`g_sinputCtl`, MODE_SINPUT)
+SInput, the open SDL-native gamepad protocol (2E8A:10C6 = the generic ID SDL's SInput
+driver matches). Dynamic-mount, STREAM-style. **Registers a set-report callback.**
+- **Wire format** (SDL `SDL_hidapi_sinput.c` + the MIT-0 reference lib): 64-byte input
+  `0x01` = plug/charge, 4 button bytes, 6×s16 sticks+triggers, u32 IMU timestamp, 6×s16
+  accel+gyro, 2×(s16 x, y, pressure) touchpads; 64-byte input `0x02` = command replies;
+  48-byte output `0x03` = `[cmd]` HAPTIC(1) / FEATURES(2) / PLAYERLED(3) / RGB(4).
+- **usbd task**: `sinSetCommon` → FEATURES sets `g_sinFeatReq[slot]`; HAPTIC type 1
+  (freq/amp pairs, louder band per side) or type 2 (ERM amplitudes) →
+  `hapticSteamRumble(lo, hi, bond)`.
+- **loop task**: `task()` answers a pending FEATURES **ahead of the stream gate** (SDL's
+  init gives up after ~100 ms) via `sinBuildFeatures` → `usbTxHid(0x02,…)`, then the
+  rate-gated `sinBuild` → `usbTxHid(0x01,…)`.
+- **Cross-task**: `g_sinFeatReq[NSLOT]` (`volatile`, set usbd / cleared loop);
+  `g_usbToBond[]` read in usbd (bounds-checked), as in the PS modes.
+- IMU passes through raw: the SInput wire frame (+x left, +y forward, +z up) IS the SC2's
+  own frame, and accel/gyro keep the SAME permutation (the fusion-handedness constraint).
+
 ### `gamepad_util.cpp` / `gamepad_util.h` — shared report-builders (called from loop task)
 `swStick`, `psNeutralCalib` (writes through `buf[33]`), trackpad→touch mappers
 (`touchPackPads` writes 8 bytes = two 4-byte points), `psButtonsFromSteam` (back-paddle/
@@ -474,6 +510,18 @@ Reads `g_qamMap`/`g_abSwap`/`g_back[]`. Pure transforms, no buffers beyond calle
 ### `status_led.cpp` / `status_led.h` (loop task)
 Drives two GPIO pins (LED_BUILTIN + pin 24) together. `ledWakePulse()` lights them and
 stamps `g_pulseMs`; `ledTask()` clears after `PULSE_MS=500`. No buffers/delays/radio.
+
+### `pwr_switch.cpp` / `pwr_switch.h` (loop task; compiled in only under `OPK_PWR_SWITCH`)
+Drives one GPIO pin, wired externally to the HOST motherboard's power-switch header, to
+power the PC on. `pwrSwitchTask()`: (1) debounces `USBDevice.mounted()==false` for
+`HOST_OFF_DEBOUNCE_MS` into a `hostOff` flag; (2) per slot, independently re-derives the
+Steam-button short-press edge already detected in `rf_link.cpp` by reading `g_in[s].buttons`
++ `g_connReplyMs[s]` directly (same pattern `haptics.cpp`'s `hapticOnReconnect` uses against
+`rf_link.cpp`'s own link-up edge) — gated on that slot being link-up so a mid-press link drop
+(which zeroes `g_in[s]`) can't read as a release; (3) on a completed short press with
+`hostOff` true, outside a `RETRIGGER_COOLDOWN_MS` window, and no pulse already in flight,
+pulses the pin for `PULSE_MS` (non-blocking release, same idiom as `status_led.cpp`). No new
+cross-task shared state — every static here is loop-task-only.
 
 ### `fault_diag.cpp` / `fault_diag.h`
 - **`HardFault_Handler()` (ISR / exception context)** — a **strong override** of the

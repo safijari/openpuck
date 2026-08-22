@@ -334,6 +334,7 @@ void Ps3Controller::usbIdentity()
 {
 	// Genuine Sixaxis / DualShock 3 identity. The PS3 recognises the pad by exactly this VID/PID.
 	USBDevice.setID(0x054C, 0x0268);
+	USBDevice.setVersion(0x0200);
 	USBDevice.setDeviceVersion(0x0100);
 	USBDevice.setManufacturerDescriptor("Sony");
 	USBDevice.setProductDescriptor("PLAYSTATION(R)3 Controller");

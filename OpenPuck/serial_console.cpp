@@ -35,12 +35,6 @@ void serialConsolePoll()
 				delay(40);
 				faultDiagArmIntentionalReset();
 				NVIC_SystemReset();
-			} else if (!strcmp(line, "AMP")) {
-				// A/B: land Steam's amp/haptic 0x87 config (0x18/0x2E/0x34/0x35) so haptics play as ticks
-				g_landAmp = !g_landAmp;
-				Serial.printf(
-					"# land amp/haptic 0x87 config %s\n",
-					g_landAmp ? "ON" : "off");
 			} else if (!strcmp(line, "CD")) {
 				// A/B: content dedup on the Steam input forward (drop reports whose body minus the
 				// free-running counter is unchanged) -- caps delivered rate at the controller's real
@@ -114,13 +108,6 @@ void serialConsolePoll()
 				Serial.printf("# rumble style -> %u (%s)\n",
 					      g_rumbleStyle,
 					      RY_NAME[g_rumbleStyle]);
-			} else if (!strcmp(line, "S81")) {
-				// A/B: drop Steam's relayed FEATURE cmd 0x81 CLEAR_DIGITAL_MAPPINGS (the connect
-				// amp-clicker). Does NOT touch OUTPUT report 0x81 = HAPTIC_PULSE (always relayed).
-				g_drop81 = !g_drop81;
-				Serial.printf(
-					"# drop relayed feature 0x81 (Steam mode) %s\n",
-					g_drop81 ? "ON" : "off");
 			} else if (!strcmp(line, "FC")) {
 				// feature-command capture: log Steam's USB SET/GET commands to serial + suppress I45
 				g_cmdCapture = !g_cmdCapture;
@@ -128,14 +115,6 @@ void serialConsolePoll()
 					"# feature-cmd capture %s (I45 %s)\n",
 					g_cmdCapture ? "ON" : "off",
 					g_cmdCapture ? "suppressed" : "on");
-			} else if (!strcmp(line, "L87")) {
-				// EXPERIMENT: land all relayed 0x87 config verbatim (real-puck relay) vs the discard-whitelist.
-				// Exact-match string (single letters are all taken; 'l' alone = rfListenStart).
-				g_landAll87 = !g_landAll87;
-				saveCfg();
-				Serial.printf(
-					"# land-all-0x87 (verbatim 0x87 relay) %s\n",
-					g_landAll87 ? "ON" : "off");
 			} else if (!strcmp(line, "FR")) {
 				// re-dump the flight recorder trail captured before the last watchdog hang (also printed
 				// automatically at boot, but CDC may not be attached yet then -- this reprints on demand).
@@ -212,7 +191,7 @@ void serialConsolePoll()
 					g_lizKeep ? "ON" : "off");
 			}
 
-			// switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro 7=ps5-game/clean 8=ds4-game/clean 9=ps3(dualshock3)
+			// switch USB mode: 0=steam 1=xbox 2=hori 3=lizard 4=swpro 5=ps5 6=hidgyro 7=ps5-game/clean 8=ds4-game/clean 9=ps3(dualshock3) 10=original xbox
 			else if (line[0] == 'x') {
 				uint8_t m = strtoul(line + 1, 0, 10);
 				if (modeValid(m)) {
@@ -391,7 +370,7 @@ void serialConsolePoll()
 				uint8_t pl[3] = { id, (uint8_t)(val & 0xFF),
 						  (uint8_t)(val >> 8) };
 				// console-injected writes go to all connected controllers (no specific slot in scope)
-				relayEnqueue(0x87, pl, 3, 0xFF);
+				relayEnqueue(0x87, pl, 3, false, 0xFF);
 				Serial.printf(
 					"# queued SET-SETTINGS id=0x%02X val=%u (relay 0x87) — watch new=/s\n",
 					id, val);
