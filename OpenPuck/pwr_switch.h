@@ -16,7 +16,7 @@
 #ifndef PWR_SWITCH_PIN
 // Arduino pin number for physical P0.17 ("017" on this SuperMini clone's silkscreen) under the
 // Adafruit Feather core this builds against (variants/feather_nrf52840_express/variant.cpp:
-// g_ADigitalPinMap[29] == 17) -- confirmed by blink_test/blink_test.ino on real hardware. The
+// g_ADigitalPinMap[29] == 17) -- confirmed on real hardware with a standalone blink sketch. The
 // silkscreen number is NOT the Arduino pin number; don't assume identity on a different board.
 #define PWR_SWITCH_PIN 29
 #endif
