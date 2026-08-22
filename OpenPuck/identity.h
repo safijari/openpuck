@@ -10,7 +10,8 @@ extern char g_board[16]; // "MXB99602xxxxx"
 extern char g_usbSerial
 	[18]; // per-mode USB serial (Steam uses g_unit; others get a suffix)
 
-// 0x83 attributes, returned by the puck feature command channel.
-extern const uint8_t ATTR83[25];
+// 0x83 attributes, returned by the feature command channel.
+extern const uint8_t ATTR83_MACHINE[25];
+extern const uint8_t ATTR83_PUCK[25];
 
 void genSerial();

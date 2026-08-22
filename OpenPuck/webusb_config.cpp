@@ -125,16 +125,29 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (21 = +rumble style (field 39, blob p[195]) and the REVIVED rumble-strength field 22
-	// at blob p[53], now carrying percent/2; 20 = +per-type trackpad->stick mapping (fields 80..87, blob
-	// p[187..194]); 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the Switch report-rate and
-	// gyro-scale settings (fields 23/24, blob p[54..55]) are GONE -- those bytes read 0; 18 = +configurable back4+D-pad chords (fields 34..37, blob p[182..185]);
-	// 17 = per-type rumble field (TypeCfg k=8), per-type stride 8->9; 16 = +configurable
-	// lizard-map ops 0x11..0x15 / 0xAA frame, payload unchanged -- the panel MUST see >=16 before it dares
+	// clang-format off
+	// protocol version
+	// (21 = +rumble style (field 39, blob p[195]) and the REVIVED rumble-strength field 22 at blob p[53], 
+	// now carrying percent/2; 
+	// 20 = +per-type trackpad->stick mapping (fields 80..87, blob p[187..194]); 
+	// 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the Switch report-rate and
+	// gyro-scale settings (fields 23/24, blob p[54..55]) are GONE -- those bytes read 0; 
+	// 18 = +configurable back4+D-pad chords (fields 34..37, blob p[182..185]);
+	// 17 = per-type rumble field (TypeCfg k=8), per-type stride 8->9; 
+	// 16 = +configurable lizard-map ops 0x11..0x15 / 0xAA frame, payload unchanged -- the panel MUST see >=16 before it dares
 	// send 0x11, or a blocking readLizard() would hang forever against a firmware that silently drops the
-	// unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87 toggle; 13 = +per-slot link
-	// stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type
-	// cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
+	// unknown op; 
+	// 15 = +staged firmware-update ops 0x20..0x24; 
+	// 14 = +landAll87 toggle; 
+	// 13 = +per-slot link stats; 
+	// 12 = +relay rate + clock fingerprint; 
+	// 11 = +reset cause; 
+	// 10 = +ledBright per type; 
+	// 9 = +per-type cfg; 
+	// 8 = +per-slot link status; 
+	// 7 = +raw accel; 
+	// 6 = +swPro120/gyroScale)
+	// clang-format on
 	p[2] = 21;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
@@ -301,8 +314,8 @@ static void webusbSendBlob()
 		q[7] = g_slotNoRxps[s];
 		q[8] = g_slotRelayps[s];
 	}
-	// v14/v17: verbatim-0x87-relay experiment toggle (panel reflects + toggles it)
-	p[181] = 0; // used to be g_landAll87
+	// v14/v17: verbatim-0x87-relay (g_landAll87), later repurposed for Machine toggle
+	p[181] = (uint8_t)(g_isMachineInternal ? 0xEE : 0);
 	// v18: back4+D-pad mode assignments (panel renders these as selects next to the B/X/Y ones)
 	p[182] = g_chordDpad[CHD_LEFT];
 	p[183] = g_chordDpad[CHD_UP];
@@ -310,13 +323,13 @@ static void webusbSendBlob()
 	p[185] = g_chordDpad[CHD_DOWN];
 	// v19: Switch Pro gyro mapping (0 = corrected/default, 1 = legacy pre-#189 raw axes)
 	p[186] = g_swGyroLegacy;
-	// v21: host-rumble style (RUMBLE_STYLE_* -- see haptics.h)
-	p[195] = g_rumbleStyle;
 	// v20: per-type trackpad->stick mapping, {left pad, right pad} per emulated type
 	for (int et = 0; et < ET_COUNT; et++) {
 		p[187 + et * 2] = g_padStickCfg[et][0];
 		p[188 + et * 2] = g_padStickCfg[et][1];
 	}
+	// v21: host-rumble style (RUMBLE_STYLE_* -- see haptics.h)
+	p[195] = g_rumbleStyle;
 	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
 	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
 	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
@@ -1081,9 +1094,9 @@ void webusbPoll()
 					// (field 25, poll RX window, removed -- g_rxWin is now FIXED/not configurable)
 					// (fields 27/28, post-connect haptic block, removed -- permanently disabled)
 
-				// Used to be experimental g_landAll87. Persisted; blob p[181] reflects state. Now ignored.
+				// Used to be g_landAll87, now g_isMachineInternal. Persisted to blob p[181].
 				case 29:
-					// g_landAll87 = v ? 1 : 0;
+					g_isMachineInternal = v ? 0xEE : 0;
 					break;
 				}
 				if (persist)

@@ -436,9 +436,16 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	switch (cmd) {
 	case IBEX_CMD_GET_ATTRIBUTES_VALUES: // 0x83
 		S.resp[0] = IBEX_CMD_GET_ATTRIBUTES_VALUES;
-		S.resp[1] = sizeof ATTR83;
-		memcpy(S.resp + 2, ATTR83, sizeof ATTR83);
-		S.resp_len = 63;
+		if (g_isMachineInternal) {
+			S.resp[1] = sizeof ATTR83_MACHINE;
+			memcpy(S.resp + 2, ATTR83_MACHINE,
+			       sizeof ATTR83_MACHINE);
+			S.resp_len = 63;
+		} else {
+			S.resp[1] = sizeof ATTR83_PUCK;
+			memcpy(S.resp + 2, ATTR83_PUCK, sizeof ATTR83_PUCK);
+			S.resp_len = 63;
+		}
 		break;
 	case IBEX_CMD_GET_STRING_ATTRIBUTE: { // 0xAE
 		uint8_t idx = pln > 0 ? pl[0] : 1;
@@ -652,7 +659,13 @@ static setcb_t SETCB[NSLOT] = { setcb0, setcb1, setcb2, setcb3 };
 // ===================== IController =====================
 void SteamPuckController::begin()
 {
-	USBDevice.setID(0x28DE, 0x1304);
+	if (g_isMachineInternal) {
+		// Emulating a Steam Machine's internal receiver.
+		USBDevice.setID(0x28DE, 0x1305);
+	} else {
+		// Emulating a Steam Controller Puck.
+		USBDevice.setID(0x28DE, 0x1304);
+	}
 	USBDevice.setVersion(0x0201); // bcdUSB 2.01
 	USBDevice.setDeviceVersion(2);
 

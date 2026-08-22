@@ -134,6 +134,8 @@ extern bool g_persistMode;
 // one-shot: boot into this mode once then clear (!persistMode + explicit switch)
 extern uint8_t g_bootMode;
 
+extern bool g_isMachineInternal;
+
 // One-shot debug CDC. Puck mode normally DROPS the CDC serial console to free the USB endpoint its wake-mouse
 // interface needs (to wake a sleeping Windows host). Arming this keeps CDC for the NEXT boot only -- dropping
 // the wake mouse that boot -- to attach the serial debugger; the boot after reverts automatically.

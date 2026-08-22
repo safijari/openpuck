@@ -258,6 +258,9 @@
       <div class="row" style="margin:10px 0 0"><button id="ctlrOff">Turn off controller</button>
         <span class="note" style="flex:1">Fires the controller power-off (0x9F "off!", x3) — the same path Steam's "turn off controller" and host-suspend use. Watch the link status to see it disconnect.</span>
       </div>
+      <div class="row" style="margin:10px 0 0"><button id="isMachineInternal">off</button>
+        <span class="note" style="flex:1"><strong>Emulate Steam Machine.</strong> If this setting is enabled, OpenPuck will emulate a Steam Machine's internal receiver instead of a Steam Controller Puck.</span>
+      </div>
       <div class="row debugonly" style="margin:10px 0 0;border-top:1px solid #272d3d;padding-top:14px"><button id="stabBtn">Test stability</button>
         <span class="v" id="stabStatus" style="flex:0 0 auto;min-width:120px">—</span>
         <span class="note" style="flex:1">Buzzes the controllers every 10 s (keeps them awake) and times how long the puck stays up. On a reset it records the uptime and shows it by <em>Last reset</em>; it auto-resumes after the puck reconnects. The count is kept in this tab (a page refresh clears it).</span>
@@ -1118,6 +1121,7 @@ function applyBlob(p){
   checkUpdateNotice(); // needs BOTH the installed version (this blob) and relCache (fetched on connect)
   setSlider("mDiv",mDiv); setSlider("mFric",mFric);
   $("#persistMode").textContent = persistMode? "on":"off"; $("#persistMode").classList.toggle("active",!!persistMode);
+  { const la=(p.length>179?p[179] === 0xEE:false); $("#isMachineInternal").textContent = la?"on":"off"; $("#isMachineInternal").classList.toggle("active",!!la); }
   // per-type button config (blob v10/v17): 4 types x 9 bytes. readBlob() strips the 2-byte [0xA5][len] header, so
   // the firmware's buffer index 75 lands at JS index 73 here.
   if(p.length>=73+TYPE_DEFS.length*9){
@@ -1265,6 +1269,7 @@ function buildBackup(p, bp){
   // those settings existed carry rumble/swProRate/swGyro10 keys instead — now-removed settings, ignored.)
   if(p[0]>=18 && p.length>183) cfg.chordD=[p[180],p[181],p[182],p[183]];
   if(p[0]>=19 && p.length>184) cfg.swGyroLegacy=p[184];
+  if(p[0]>=21 && p.length>179) cfg.emulateSteamMachine=p[179];
   // version 2: include the lizard map so it survives a backup/restore cycle.
   // Guard on !lizardBusy to avoid a race with the one-shot lazy load (lizardExchange sets
   // lizardBusy while the initial 0x11 fetch is in flight); if the load is still pending the
@@ -1347,6 +1352,8 @@ async function importBackup(file){
     // Switch Pro gyro mapping (v19+ backups only). Backups also carry rumble/swProRate/swGyro10 from the
     // removed settings; those fields no longer exist on the puck, so they are not replayed.
     if(c.swGyroLegacy!==undefined) await sf(38, c.swGyroLegacy?1:0);
+    if(c.emulateSteamMachine!==undefined) await sf(29, c.emulateSteamMachine==0xEE?1:0);
+    
     // c.types is absent in some very old backups created before per-type paddle/haptic config
     // was added to the panel export; guard so a missing field never crashes the import mid-flight.
     if(typeN){
@@ -2297,6 +2304,7 @@ $("#wipeBoard").onclick=async()=>{
   log("FULL BOARD WIPE sent — the board is erasing firmware + all data (~15–20 s), then reboots as a blank UF2 drive. Flash OpenPuck (.uf2) to restore it.");
 };
 $("#persistMode").onclick=()=>{ const on=$("#persistMode").classList.contains("active"); setField(16, on?0:1); };
+$("#isMachineInternal").onclick=async()=>{ const on=$("#isMachineInternal").classList.contains("active"); await setField(29, on?0:1); };
 // Connection tuning: post-connect haptic block on (field 27) + seconds (field 28). (poll RX window is fixed.)
 for(const id of ["mDiv","mFric"]){
   const field={mDiv:1,mFric:2}[id];
