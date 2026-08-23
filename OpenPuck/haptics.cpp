@@ -569,7 +569,6 @@ void hapticReinit(uint8_t slot)
 
 	// clang-format off
 	static const uint8_t haptic_reset_data_1[] = { 
-			SETTING_IMU_MODE, 0x00, 0x00, 
 			SETTING_LEFT_TRACKPAD_MODE, 0x07, 0x00, 
 			SETTING_RIGHT_TRACKPAD_MODE, 0x07, 0x00, 
 			SETTING_WIRELESS_PACKET_VERSION, 0x02, 0x00, 
@@ -646,6 +645,19 @@ void hapticOnReconnect(int slot)
 	g_rumble80Ms[slot] = 0;
 	// Scrub haptics queued before the link came up (stale across the reconnect) -- this slot only.
 	hapticCancelPendingOn(slot);
+	if (g_usbMode == MODE_SW_PRO) {
+		static const uint8_t RAW_IMU[] = {
+			SETTING_IMU_MODE,
+			SETTING_GYRO_MODE_SEND_RAW_ACCEL |
+				SETTING_GYRO_MODE_SEND_RAW_GYRO,
+			0x00
+		};
+
+		// Steam can leave the controller's persisted IMU mode off. Switch
+		// Pro reports require the raw RF samples that setting suppresses.
+		relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, RAW_IMU,
+			     sizeof RAW_IMU, false, (uint8_t)slot);
+	}
 	// NO automatic haptic re-init. hapticReinit lands 0x81 (CLEAR DIGITAL MAPPINGS -- rid < 0x87 so it
 	// EXECUTES even on legacy framing). 0x81 is NON-IDEMPOTENT (ibex FUN_0001f554): EVERY call re-runs the
 	// lizard-disable event + func_0x0001bbf0 (a hardware peripheral re-arm unique to the 0x81 path) -- so

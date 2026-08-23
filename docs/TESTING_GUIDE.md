@@ -16,6 +16,23 @@
 - Is battery level shown and correct?
 - Is the polling rate and response rate the same? Is it around 250hz?
 
+### Testing Steam settings relay and Switch Pro gyro
+
+This test catches controller-side IMU state changes that survive an ordinary
+firmware downgrade:
+
+1. Factory-erase the puck, pair the controller, and let Steam finish its normal
+   controller configuration.
+2. Switch directly to Switch Pro mode without calibrating motion controls.
+3. Confirm that all three gyro axes respond, then power-cycle the controller and
+   confirm them again.
+
+Steam's `0x87 SET_SETTINGS` blocks can contain setting `0x30` (`IMU_MODE`). In
+Steam mode the puck must relay every complete settings tuple, including IMU
+mode. Switch Pro mode must write `0x18` (raw accelerometer + raw gyroscope) when
+the controller connects; otherwise Steam's retained IMU-off state suppresses
+the RF motion samples used for Switch motion reports.
+
 ### Testing the DirectInput mode (mode 11)
 
 Windows has a built-in DirectInput tester: run `joy.cpl` (or Settings → Bluetooth & devices → Devices → More
