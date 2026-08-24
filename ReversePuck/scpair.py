@@ -151,19 +151,52 @@ class HidDev:
     def get_feature(self, rid, max_len=64):
         buf = bytearray(max_len)
         buf[0] = rid
-        try: 
-            fcntl.ioctl(self.fd, _IOC_GF(max_len), buf, True)
-        except: 
-            # wireless connections sometimes take two attempts ...
-            time.sleep(0.05)
-            fcntl.ioctl(self.fd, _IOC_GF(max_len), buf, True)
-        return bytes(buf)
+        attempts = 2
+        while attempts > 0:
+            try: 
+                fcntl.ioctl(self.fd, _IOC_GF(max_len), buf, True)
+                return bytes(buf)
+            except: 
+                # wireless connections sometimes take two attempts ...
+                time.sleep(0.02)
+                attempts = attempts - 1
+        return False
+
+    def set_get_feature(self, rid, cmd, payload=b"", max_len=64):
+        attempts = 5
+        while attempts > 0:
+            self.set_feature(rid, cmd, payload)
+            r = self.get_feature(rid, max_len)
+
+            if isinstance(r, bool):
+                # set_get failed, wait and try again
+                time.sleep(0.03)
+                attempts = attempts - 1
+                continue
+
+            if r[0] != rid or r[1] != cmd: 
+                # Controller responded to a different request. 
+                # This can happen if it disconnects and reconnects mid-request, 
+                # or if other tools like Steam interact with the controller
+                # at the same time. 
+                time.sleep(0.03)
+                attempts = attempts - 1
+                continue
+
+            return r
+
+        return None
+
 
     def read_attribute_values(self, rid, cmd):
-        self.set_feature(rid, cmd)
-        data = self.get_feature(rid, 256)   # Feature report with attributes can be longer than 64.
+        # Feature report with attributes can be longer than 64.
+        data = self.set_get_feature(rid, cmd, max_len=256)
+
+        if data is None: 
+            return None
 
         data = data[3:]
+
         attribute_count = len(data) // 5
         padding_len = len(data) - (attribute_count * 5)
 
@@ -193,7 +226,10 @@ class HidDev:
                 # Valve device uses a BCD other than 2. Maybe a prototype?
                 attrs = self.read_attribute_values(1, 0xa6)
 
-        return attrs[4]
+        try: 
+            return attrs[4]
+        except:
+            return None
 
     def read_serial(self, force_esb = False, index = 1):
         # When sent to a Puck, force_esb=False will return the puck's serial, 
@@ -209,19 +245,16 @@ class HidDev:
         r = None
 
         if self.pid in CTRL_PIDS or force_esb:
-            self.set_feature(1, 0xae, bytes([index]))
-            r = self.get_feature(1)
+            r = self.set_get_feature(1, 0xae, bytes([index]))
               
         elif self.pid in PUCK_PIDS:
             if self.get_bcd_version() == 2:
-                # 2 = Valve Puck or Machine, 211-213 OpenPuck? Unclear why.
-                self.set_feature(2, 0xae, bytes([index]))
-                r = self.get_feature(2)
+                # 2 = Valve Puck or Machine
+                r = self.set_get_feature(2, 0xae, bytes([index]))
             else: 
                 # I wonder which official Valve device uses 
                 # a BCD other than 2. Maybe a prototype?
-                self.set_feature(1, 0xa4, bytes([index]))
-                r = self.get_feature(1)
+                r = self.set_get_feature(1, 0xa4, bytes([index]))
 
         if r is None: 
             return None
@@ -273,16 +306,22 @@ def enumerate_devices():
         # If we're here, this is a Puck. Let's detect and display its type.
         # OpenPuck can be detected by the OpenPuck mouse wake interface. 
 
+        # Check device type:
         devnode = iface_dir.parent
+        isOpenpuck = False
         device_vendor = "Valve Puck"
 
+        for subnode in glob.glob(str(devnode) + "/" + devnode.name + ":*/interface"):
+            txt = Path(subnode).read_text().strip()
+            if "OpenPuck" in txt:
+                isOpenpuck = True
+
         if pid == 0x1305:
-            device_vendor = "Valve Steam Machine"
-        else:
-            for subnode in glob.glob(str(devnode) + "/" + devnode.name + ":*/interface"):
-                txt = Path(subnode).read_text().strip()
-                if "OpenPuck" in txt:
-                    device_vendor = "OpenPuck"
+            device_vendor = "Steam Machine"
+            if isOpenpuck:
+                device_vendor = "OpenPuck internal"
+        elif isOpenpuck:
+            device_vendor = "OpenPuck"
 
         try:
             dev = HidDev(node, vid, pid, device_vendor)
@@ -355,16 +394,15 @@ def read_slots(puck_list):
         for esb in esb_devices:
             try:
 
-                esb.set_feature(2, 0xA3)
-                r = esb.get_feature(2)  # [02 A3 18 <8 uuid><16 serial>]
+                r = esb.set_get_feature(2, 0xA3) # [02 A3 18 <8 uuid><16 serial>]
+
                 rec = r[3:3 + 24]
                 used = any(rec[0:8])
                 serial = rec[8:24].split(b"\x00")[0].decode("latin1", "replace") if used else ""
                 key = rec[:8].hex()
     
                 # Check if a controller is currently connected to this slot:
-                esb.set_feature(2, 0xB4)
-                r = esb.get_feature(2)
+                r = esb.set_get_feature(2, 0xB4)
                 active = (r[0] == 0x02 and r[1] == 0xb4 and r[3] == 2)
     
                 slots.append({"idx": idx, "dev": esb, "used": used, "active": active, "serial": serial, "rec": rec})
@@ -597,21 +635,32 @@ def write_controller_slot(controller_serial=None, slot=0, puck_serial=None, pkey
 
 def get_single_controller_pairings(controller_dev):
 
+    # Check which of the two controller slots is currently selected:
+    bondslot = controller_dev.set_get_feature(1, 0xED, b"user/wireless_transport\x00")
+    active_controller_slot = None
+    if bondslot[0] == 0x01 and bondslot[1] == 0xed and bondslot[2] == 1:
+        if bondslot[3] == 2:
+            # Connected to ESB slot 0
+            active_controller_slot = 0
+        elif bondslot[3] == 3:
+            active_controller_slot = 1
+
     slots = []
-    i = 0
+    idx = 0
     for bond_str in [b"esb/bond\x00", b"esb/bond_2\x00"]:
-        controller_dev.set_feature(1, 0xED, bond_str)
-        bond = controller_dev.get_feature(1)
+        bond = controller_dev.set_get_feature(1, 0xED, bond_str)
+        if bond is None: 
+            return None
 
         if bond[0] == 0x01 and bond[1] == 0xed and bond[2] > 0:
             bond_len = bond[2]
             bond_key = bond[3:3+8]
-            bond_name = bond[11:11+(bond_len-8)]
-            slots.append({"idx": i, "used": True, "key": bond_key.hex(), "serial": bond_name.decode("latin1", "replace").split('\x00')[0]})
+            bond_name = bond[11:11+(bond_len-8)].split(b'\x00')[0].decode("latin1", "replace")
+            slots.append({"idx": idx, "used": True, "active": (active_controller_slot == idx), "serial": bond_name, "key": bond_key.hex()})
         else: 
-            slots.append({"idx": i, "used": False})
+            slots.append({"idx": idx, "used": False, "active": (active_controller_slot == idx)})
 
-        i = i + 1
+        idx = idx + 1
 
     return {"serial": controller_dev.read_serial(True), 
             "firmware_ts": controller_dev.read_firmware_version(True), 
@@ -730,6 +779,8 @@ def cmd_list():
                 continue
 
             cdata = get_single_controller_pairings(c)
+            if cdata is None: 
+                continue
 
             firmware_str = hex(cdata['firmware_ts']).replace('0x', '').upper() + " (" + cdata['firmware_commit']  + ")"
         
@@ -737,9 +788,9 @@ def cmd_list():
 
             for s in cdata['slots']:
                 if s['used']:
-                    print("  slot %d: %s (key %s)" % (s["idx"], s["serial"], s["key"]))
+                    print("  slot %d: %s (key %s)%s" % (s["idx"], s["serial"], s["key"], (', selected' if s['active'] else '')))
                 else:
-                    print("  slot %d: Empty" % (s["idx"]))
+                    print("  slot %d: Empty%s" % (s["idx"], (', selected' if s['active'] else '')))
 
             print()
 
