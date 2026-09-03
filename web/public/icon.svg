@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="OpenPuck">
+  <rect width="512" height="512" rx="96" fill="#11131a"/>
+  <!-- The puck: a disc with the RF link arcing off it. -->
+  <circle cx="256" cy="286" r="104" fill="none" stroke="#5bd6a0" stroke-width="26"/>
+  <circle cx="256" cy="286" r="30" fill="#5bd6a0"/>
+  <g fill="none" stroke="#5b9bd6" stroke-width="24" stroke-linecap="round">
+    <path d="M150 150a150 150 0 0 1 212 0"/>
+    <path d="M196 196a86 86 0 0 1 120 0"/>
+  </g>
+</svg>

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenPuck RF Sniffer</title>
+<style>
+  :root{ --bg:#0d1117; --fg:#c9d1d9; --mut:#8b949e; --acc:#2f81f7; --up:#238636; --dn:#8b949e; --warn:#d29922; --card:#161b22; --line:#30363d; }
+  *{ box-sizing:border-box; }
+  body{ margin:0; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; background:var(--bg); color:var(--fg); }
+  header{ padding:14px 18px; border-bottom:1px solid var(--line); display:flex; gap:14px; align-items:center; flex-wrap:wrap; }
+  h1{ font-size:15px; margin:0; font-weight:600; }
+  .pill{ padding:2px 9px; border-radius:11px; font-size:11px; }
+  .pill.up{ background:#1f3d2a; color:#3fb950; } .pill.dn{ background:#21262d; color:var(--mut); }
+  button{ background:#21262d; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:6px 12px; cursor:pointer; font:inherit; }
+  button:hover{ border-color:var(--acc); } button:disabled{ opacity:.4; cursor:default; }
+  button.cap{ background:#3d1f1f; border-color:#6e2c2c; } button.cap.on{ background:#8b1d1d; color:#fff; }
+  input[type=number]{ width:54px; background:#0d1117; color:var(--fg); border:1px solid var(--line); border-radius:5px; padding:4px; font:inherit; }
+  .row{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .note{ color:var(--mut); font-size:11px; }
+  .stats{ padding:8px 18px; border-bottom:1px solid var(--line); display:flex; gap:22px; flex-wrap:wrap; }
+  .stats b{ color:#fff; font-weight:600; }
+  #wrap{ padding:0; }
+  table{ width:100%; border-collapse:collapse; }
+  th,td{ text-align:left; padding:3px 8px; border-bottom:1px solid #1c2128; white-space:nowrap; }
+  th{ position:sticky; top:0; background:var(--card); color:var(--mut); font-weight:600; font-size:11px; }
+  td.hex{ white-space:pre; color:#9ad; font-family:inherit; }
+  tr.pc td.dir{ color:#d29922; } tr.cp td.dir{ color:#3fb950; }
+  tr.bad{ opacity:.5; }
+  #tbl{ max-height:calc(100vh - 200px); overflow:auto; }
+  #log{ padding:6px 18px; color:var(--mut); font-size:11px; white-space:pre-wrap; max-height:90px; overflow:auto; border-top:1px solid var(--line); }
+  code{ color:#9ad; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpenPuck RF Sniffer</h1>
+  <button id="connect">Connect sniffer</button>
+  <span id="state" class="pill dn">disconnected</span>
+  <button id="cap" class="cap" disabled>● Start Cap</button>
+  <button id="clear" disabled>Clear</button>
+  <button id="dl" disabled>Download JSON</button>
+  <button id="dltxt" disabled>Download text</button>
+  <span style="flex:1"></span>
+  <button id="reacq" disabled>Re-acquire</button>
+  <button id="survey" disabled>Survey ch2</button>
+  <button id="forget" disabled>Forget bonds</button>
+  <label class="note">lock ibex <input type="text" id="tgtIbex" placeholder="EF7171B4" style="width:84px;background:#0d1117;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:4px;font:inherit"></label>
+  <button id="setTgt" disabled>Lock</button>
+  <label class="note">pin ch <input type="number" id="pinCh" min="1" max="80" placeholder="auto"></label>
+  <button id="setch" disabled>Set</button>
+  <label class="note">pin session <input type="text" id="pinSess" placeholder="b0 b1 b2 b3 pfx ch (hex)" style="width:170px;background:#0d1117;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:4px;font:inherit"></label>
+  <button id="setsess" disabled>Pin</button>
+</header>
+<div class="stats">
+  <span>link: <b id="acq">—</b></span>
+  <span>rx: <b id="rx">0 B</b></span>
+  <span>session: <b id="sess">—</b></span>
+  <span>E1 advertises: <b id="adv">—</b></span>
+  <span>captured: <b id="nrec">0</b></span>
+  <span>P→C: <b id="npc">0</b></span>
+  <span>C→P: <b id="ncp">0</b></span>
+  <span>crc-bad: <b id="nbad">0</b></span>
+  <span>drops: <b id="ndrop">0</b></span>
+  <span>bond: <b id="nbond">none yet</b></span>
+  <span>shown: <b id="nshown">0</b></span>
+</div>
+<div class="stats" style="border-top:none;padding-top:0">
+  <label class="note"><input type="checkbox" id="fHideRoutine"> hide input/polls (49-byte F1 + bare E3)</label>
+  <label class="note">dir <select id="fDir" style="background:#0d1117;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:3px;font:inherit"><option value="">all</option><option value="P→C">P→C</option><option value="C→P">C→P</option></select></label>
+  <label class="note">op <input type="text" id="fOp" placeholder="f1" style="width:48px;background:#0d1117;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:3px;font:inherit"></label>
+  <label class="note">len <select id="fLen" style="background:#0d1117;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:3px;font:inherit"><option value="">any</option><option value="ne49">≠ 49 (non-input)</option><option value="gt49">&gt; 49</option><option value="gt1">&gt; 1</option></select></label>
+  <label class="note">hex <input type="text" id="filter" placeholder="9f" style="width:90px;background:#0d1117;color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:3px;font:inherit"></label>
+  <span class="note">↑ to find battery: <b>hide input/polls</b> + dir <b>C→P</b>, then read the controller's battery in Steam.</span>
+</div>
+<div id="tbl"><table><thead><tr>
+  <th>#</th><th>t (ms)</th><th>dir</th><th>ch</th><th>pipe</th><th>op</th><th>crc</th><th>rssi</th><th>len</th><th>payload (from opcode)</th>
+</tr><tbody id="rows"></tbody></table></div>
+<div id="log"></div>
+
+<script>
+const $=s=>document.querySelector(s);
+let dev=null, epIn=0, epOut=0, ifNum=0, reading=false;
+let capturing=false, t0=0, rec=[], nPC=0, nCP=0, nBad=0;
+let acqState=-1, sessTxt="—", rxBytes=0, gotData=false;
+const MAXROWS=600;            // live table cap (full record kept in `rec` for export)
+function log(m){ const l=$("#log"); l.textContent=(new Date().toLocaleTimeString()+"  "+m+"\n"+l.textContent).slice(0,1500); }
+const hex=b=>Array.from(b,x=>x.toString(16).padStart(2,"0")).join(" ");
+
+async function connect(){
+  try{
+    dev=await navigator.usb.requestDevice({filters:[{vendorId:0x28DE}]});
+    await dev.open();
+    if(dev.configuration===null) await dev.selectConfiguration(1);
+    let found=null;
+    for(const itf of dev.configuration.interfaces){
+      const a=itf.alternate; if(a.interfaceClass!==0xFF || a.interfaceSubClass===0x5D) continue;
+      let bin=0,bout=0;
+      for(const e of a.endpoints){ if(e.type==="bulk"){ if(e.direction==="in")bin=e.endpointNumber; else bout=e.endpointNumber; } }
+      if(bin&&bout){ found={ifNum:itf.interfaceNumber,epIn:bin,epOut:bout}; break; }
+    }
+    if(!found){ log("no WebUSB bulk interface — is this the sniffer board (OpenPuck Sniffer)?"); return; }
+    ifNum=found.ifNum; epIn=found.epIn; epOut=found.epOut;
+    await dev.claimInterface(ifNum);
+    await dev.controlTransferOut({requestType:"class",recipient:"interface",request:0x22,value:0x01,index:ifNum});
+    $("#state").textContent="connected"; $("#state").className="pill up"; $("#connect").textContent="Reconnect";
+    for(const id of ["cap","clear","dl","dltxt","reacq","survey","forget","setTgt","setch","setsess"]) $("#"+id).disabled=false;
+    navigator.usb.addEventListener("disconnect",e=>{ if(e.device===dev) onGone(); });
+    log(`connected — iface ${ifNum} epIn ${epIn} epOut ${epOut} — waiting for stream…`);
+    rxBytes=0; gotData=false;
+    setTimeout(()=>{ if(dev && !gotData) log("⚠ connected but NO bytes from sniffer in 2s — firmware not streaming (re-flash the updated sniffer build) or wrong interface."); }, 2000);
+    reading=true; readLoop();
+  }catch(e){ log("connect failed: "+e.message); }
+}
+function onGone(){ reading=false; dev=null; capturing=false; $("#state").textContent="disconnected"; $("#state").className="pill dn"; $("#cap").classList.remove("on"); $("#cap").textContent="● Start Cap"; log("sniffer disconnected"); }
+async function cmd(...b){ if(dev) try{ await dev.transferOut(epOut,new Uint8Array(b)); }catch(e){ log("write err: "+e.message); } }
+
+let acc=new Uint8Array(0);
+function append(buf){ const m=new Uint8Array(acc.length+buf.length); m.set(acc); m.set(buf,acc.length); acc=m; }
+function parse(){
+  let i=0;
+  while(i+2<=acc.length){
+    if(acc[i]===0xC1 && acc[i+1]===0xDE){            // status (22 bytes)
+      if(i+22>acc.length) break;
+      acqState=acc[i+2];
+      const ch=acc[i+3], b=acc.slice(i+4,i+8), pfx=acc[i+8];
+      const advCh=acc[i+12], ab=acc.slice(i+13,i+17), apfx=acc[i+17], lastMatch=acc[i+18];
+      const drops=acc[i+19]|(acc[i+20]<<8);          // frames lost to a full ring on the device (0 = lossless)
+      const bondInfo=acc[i+21], camped=!!(bondInfo&0x80), nbonds=(bondInfo>>4)&0x7, bchans=bondInfo&0xF;
+      sessTxt=`ch ${ch}  addr ${hex(b)}/${pfx.toString(16).padStart(2,"0")}  (last pipe ${lastMatch})`;
+      $("#acq").textContent=acqState===1?(camped?"CAPTURE (auto-camped on learned bond)":"CAPTURE (session locked)"):"ACQUIRE (scanning ibex/ch2)";
+      $("#acq").style.color=acqState===1?"#3fb950":"#d29922";
+      $("#sess").textContent=sessTxt;
+      $("#adv").textContent = advCh ? `ch ${advCh}  addr ${hex(ab)}/${apfx.toString(16).padStart(2,"0")}` : "— (no E1 yet)";
+      const de=$("#ndrop"); if(de){ de.textContent=drops; de.style.color = drops? "#f85149" : "#3fb950"; }
+      const be=$("#nbond"); if(be){ be.textContent = nbonds? `${nbonds} learned${camped?` · camped (${bchans} ch)`:""}` : "none yet"; be.style.color = camped? "#3fb950" : (nbonds?"#d29922":"#8b949e"); }
+      i+=22; continue;
+    }
+    if(acc[i]===0xC0 && acc[i+1]===0xDE){            // packet
+      if(i+3>acc.length) break;
+      const n=acc[i+2]; if(n>98){ i++; continue; }   // bad len -> resync (frames up to MAXLEN+2)
+      if(i+11+n>acc.length) break;
+      const t=acc[i+3]|(acc[i+4]<<8)|(acc[i+5]<<16)|(acc[i+6]*16777216);
+      const ch=acc[i+7], crc=acc[i+8]&1, rssi=acc[i+9], match=acc[i+10];
+      const raw=acc.slice(i+11,i+11+n);
+      onPacket(t,ch,crc,rssi,match,raw);
+      i+=11+n; continue;
+    }
+    i++;                                             // resync
+  }
+  acc=acc.slice(i);
+}
+let allFrames=[], seqCtr=0, nShown=0;          // ring of recent frames so filters can re-render; seq = stable # column
+let lastShownSeq=0, dirty=false;               // throttled-render bookkeeping (see renderTick)
+const FRAMEBUF=8000;
+// Hot path (runs per frame at the full capture rate, inside the USB read loop): keep it CHEAP so transferIn is
+// never blocked -- a blocked read backs up the device FIFO, stalls its drain, and makes the on-device ring drop
+// (the `drops` counter). So we store the raw bytes and defer the expensive hex-string formatting (ensureHex) and
+// all DOM work to a throttled renderTick that only touches frames actually displayed/exported.
+function onPacket(t_us,ch,crc,rssi,match,raw){
+  // raw = [LENGTH, S1, payload...]; opcode = raw[2]; dir from opcode high nibble
+  const op=raw.length>2?raw[2]:0;
+  const dir=(op&0xF0)===0xE0?"P→C":(op&0xF0)===0xF0?"C→P":"?";
+  if(dir==="P→C")nPC++; else if(dir==="C→P")nCP++; if(!crc)nBad++;
+  const ent={seq:++seqCtr,t_us,ms:(t_us/1000),ch,pipe:match,dir,op:op.toString(16).padStart(2,"0"),crc,rssi:-rssi,len:raw.length>0?raw[0]:0,bytes:raw};
+  if(capturing) rec.push(ent);
+  allFrames.push(ent);
+  if(allFrames.length>FRAMEBUF*2) allFrames.splice(0,allFrames.length-FRAMEBUF); // bulk trim, amortized O(1) (was per-frame shift = O(n))
+  dirty=true;
+}
+// Lazily fill in the hex strings only when a frame is rendered, filtered-by-hex, or exported -- never in the hot path.
+function ensureHex(e){ if(e.raw===undefined){ e.raw=hex(e.bytes); e.payload=hex(e.bytes.subarray(2)); } return e; }
+// Render the table on a display-rate tick instead of per frame: append only the frames newer than the last shown,
+// so DOM work is bounded by the screen refresh, not the 500+/s capture rate.
+function renderTick(){
+  if(dirty){
+    dirty=false;
+    let i=allFrames.length-1; const fresh=[];
+    while(i>=0 && allFrames[i].seq>lastShownSeq){ fresh.push(allFrames[i]); i--; }
+    for(let k=fresh.length-1;k>=0;k--){ const e=fresh[k]; if(passesFilter(e)) addRow(e); }
+    if(allFrames.length) lastShownSeq=allFrames[allFrames.length-1].seq;
+    $("#npc").textContent=nPC; $("#ncp").textContent=nCP; $("#nbad").textContent=nBad; $("#nrec").textContent=rec.length;
+  }
+  requestAnimationFrame(renderTick);
+}
+requestAnimationFrame(renderTick);
+const rows=$("#rows");
+function passesFilter(e){
+  if($("#fHideRoutine").checked){                    // drop the 99% spam: input replies + bare polls
+    if(e.dir==="C→P" && e.op==="f1" && e.len===49) return false;
+    if(e.dir==="P→C" && e.op==="e3" && e.len<=1) return false;
+  }
+  const d=$("#fDir").value; if(d && e.dir!==d) return false;
+  const op=$("#fOp").value.trim().toLowerCase(); if(op && e.op!==op) return false;
+  const lf=$("#fLen").value;
+  if(lf==="ne49" && e.len===49) return false;
+  if(lf==="gt49" && e.len<=49) return false;
+  if(lf==="gt1"  && e.len<=1)  return false;
+  const hx=$("#filter").value.trim().toLowerCase().replace(/ /g,""); if(hx && !ensureHex(e).payload.replace(/ /g,"").includes(hx)) return false;
+  return true;
+}
+function addRow(e){
+  ensureHex(e);
+  const tr=document.createElement("tr");
+  tr.className=(e.dir==="P→C"?"pc":e.dir==="C→P"?"cp":"")+(e.crc?"":" bad");
+  tr.innerHTML=`<td>${e.seq}</td><td>${e.ms.toFixed(1)}</td><td class="dir">${e.dir}</td><td>${e.ch}</td><td>${e.pipe}</td><td>${e.op}</td><td>${e.crc?"ok":"BAD"}</td><td>${e.rssi}</td><td>${e.len}</td><td class="hex">${e.payload}</td>`;
+  rows.appendChild(tr);
+  nShown++;
+  while(rows.childElementCount>MAXROWS){ rows.removeChild(rows.firstChild); }
+  $("#nshown").textContent=nShown;
+  const w=$("#tbl"); if(w.scrollTop+w.clientHeight>=w.scrollHeight-40) w.scrollTop=w.scrollHeight;
+}
+function applyFilters(){                              // re-render visible table from the buffer with current filters
+  rows.innerHTML=""; nShown=0;
+  for(const e of allFrames.slice(-MAXROWS)) if(passesFilter(e)) addRow(e);
+  lastShownSeq=allFrames.length?allFrames[allFrames.length-1].seq:0; // keep renderTick appending after a manual re-render
+}
+for(const id of ["fHideRoutine","fDir","fOp","fLen","filter"]) $("#"+id).addEventListener("input",applyFilters);
+async function readLoop(){
+  while(reading && dev){
+    try{
+      const r=await dev.transferIn(epIn,16384);
+      if(r.status==="ok" && r.data.byteLength){
+        const u=new Uint8Array(r.data.buffer);
+        if(!gotData){ gotData=true; log("✓ receiving — first bytes: "+hex(u.slice(0,24))); }
+        rxBytes+=u.length; $("#rx").textContent=(rxBytes<1024?rxBytes+" B":(rxBytes/1024).toFixed(1)+" KB");
+        append(u); parse();
+      }
+      else if(r.status==="stall"){ await dev.clearHalt("in",epIn); }
+    }catch(e){ if(dev) log("read err: "+e.message); break; }
+  }
+}
+
+$("#connect").onclick=connect;
+$("#cap").onclick=async()=>{
+  capturing=!capturing;
+  $("#cap").classList.toggle("on",capturing);
+  $("#cap").textContent=capturing?"■ End Cap":"● Start Cap";
+  if(capturing){ rec=[]; t0=Date.now(); await cmd(0x01); log("CAP STARTED — recording"); }
+  else{ await cmd(0x02); log(`CAP ENDED — ${rec.length} packets recorded`); }
+  $("#nrec").textContent=rec.length;
+};
+$("#clear").onclick=()=>{ rec=[]; allFrames=[]; seqCtr=0; lastShownSeq=0; dirty=false; rows.innerHTML=""; nPC=nCP=nBad=nShown=0; for(const id of ["nrec","npc","ncp","nbad","nshown"]) $("#"+id).textContent=0; };
+$("#reacq").onclick=()=>{ $("#pinCh").value=""; cmd(0x03); log("re-acquire requested"); };
+$("#forget").onclick=()=>{ cmd(0x08); log("forgot all learned bonds — will relearn from the next E1"); };
+let surveying=false;
+$("#survey").onclick=()=>{ surveying=!surveying; $("#survey").classList.toggle("active",surveying); cmd(0x06); log(surveying?"SURVEY on — listing every E1 beacon on ch2 (no lock). Each distinct 'op e1' payload = one puck/slot session.":"survey off"); };
+$("#setTgt").onclick=()=>{ const v=$("#tgtIbex").value.trim().replace(/^0x/i,""); if(/^[0-9a-fA-F]{8}$/.test(v)){ const u=parseInt(v,16); cmd(0x07,u&0xff,(u>>8)&0xff,(u>>16)&0xff,(u>>24)&0xff); log("locking ibex_uuid 0x"+v.toUpperCase()+" — only that slot's E1 (then hunting its channels for F1)"); } else log("enter ibex_uuid as 8 hex digits from pairtui, e.g. EF7171B4"); };
+$("#setch").onclick=()=>{ const c=parseInt($("#pinCh").value); if(c>=1&&c<=80){ cmd(0x04,c); log("pinned channel "+c); } };
+$("#setsess").onclick=()=>{   // "b0 b1 b2 b3 pfx ch" -- base/prefix as hex, channel decimal or hex. Read these
+  const v=$("#pinSess").value.trim().split(/[\s,]+/).filter(x=>x.length);   // off a captured E1 (bytes 13..17 of its payload = base, byte 17 = prefix, byte 9 = ch)
+  if(v.length!==6){ log("pin session needs 6 values: b0 b1 b2 b3 pfx ch"); return; }
+  const b=v.slice(0,5).map(x=>parseInt(x,16)); const ch=parseInt(v[5], v[5].toLowerCase().startsWith("0x")?16:10);
+  if(b.some(isNaN)||isNaN(ch)||ch<1||ch>80){ log("bad pin-session values"); return; }
+  cmd(0x05,b[0],b[1],b[2],b[3],b[4],ch); log(`pinned session addr ${v.slice(0,4).join(" ")}/${v[4]} ch ${ch}`);
+};
+function save(name,text,type){ const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([text],{type})); a.download=name; a.click(); }
+$("#dl").onclick=()=>{
+  // materialize hex + drop the raw byte array so the JSON matches the old shape (seq,ms,ch,dir,op,crc,rssi,len,raw,payload)
+  const out=rec.map(e=>{ ensureHex(e); const{bytes,...r}=e; return r; });
+  save("sniff-"+Date.now()+".json", JSON.stringify(out,null,1), "application/json");
+};
+$("#dltxt").onclick=()=>{
+  const lines=rec.map(e=>`${e.ms.toFixed(1)}ms ch${e.ch} ${e.dir} ${e.crc?"":"BAD "}rssi${e.rssi} op=${e.op} | ${ensureHex(e).payload}`);
+  save("sniff-"+Date.now()+".txt", lines.join("\n"), "text/plain");
+};
+if(!navigator.usb) log("This browser has no WebUSB. Use Chrome/Edge over https or localhost.");
+</script>
+</body>
+</html>

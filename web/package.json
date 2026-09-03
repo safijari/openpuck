@@ -1,0 +1,38 @@
+{
+	"name": "openpuck-panel",
+	"private": true,
+	"version": "0.0.0",
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview",
+		"theme": "node tools/gen-theme.mjs",
+		"theme:check": "node tools/gen-theme.mjs && git diff --exit-code -- src/openpuck-theme.css",
+		"check": "svelte-check --tsconfig ./tsconfig.json",
+		"test": "vitest run",
+		"format": "prettier --write .",
+		"format:check": "prettier --check .",
+		"prebuild": "node tools/clean-docs.mjs"
+	},
+	"devDependencies": {
+		"@sveltejs/vite-plugin-svelte": "^7.3.0",
+		"@tailwindcss/vite": "^4.3.3",
+		"@types/node": "^26.4.0",
+		"@types/w3c-web-usb": "^1.0.14",
+		"prettier": "^3.9.6",
+		"prettier-plugin-svelte": "^4.1.1",
+		"svelte": "^5.57.0",
+		"svelte-check": "^4.7.6",
+		"tailwindcss": "^4.3.3",
+		"typescript": "^6.0.3",
+		"vite": "^8.2.2",
+		"vite-plugin-pwa": "^1.3.0",
+		"vitest": "^4.1.11"
+	},
+	"dependencies": {
+		"@lucide/svelte": "^1.37.0",
+		"@skeletonlabs/skeleton": "^5.0.1",
+		"@skeletonlabs/skeleton-svelte": "^5.0.1"
+	}
+}

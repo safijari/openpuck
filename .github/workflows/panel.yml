@@ -1,0 +1,65 @@
+name: Panel
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'web/**'
+      - 'docs/**'
+      - '.github/workflows/panel.yml'
+  pull_request:
+    paths:
+      - 'web/**'
+      - 'docs/**'
+      - '.github/workflows/panel.yml'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Theme is in sync with its generator
+        run: npm run theme:check
+
+      - name: Type check
+        run: npm run check
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      # docs/ is committed and is what Pages serves, so a source change pushed
+      # without a rebuild would leave the live panel silently stale. Rebuilding
+      # here and diffing catches that; asset filenames are content-hashed, so
+      # any real source change shows up as a different file.
+      - name: docs/ is up to date with web/src
+        working-directory: .
+        run: |
+          if ! git diff --quiet -- docs/; then
+            echo "::error::docs/ is stale — run 'cd web && npm run build' and commit the result."
+            git diff --stat -- docs/
+            exit 1
+          fi
+          echo "docs/ matches the sources."

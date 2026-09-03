@@ -1,0 +1,9 @@
+node_modules
+dist
+.svelte-kit
+
+# The repo root ignores *.json wholesale (for firmware build artifacts), which
+# silently swallows the files that define this project -- package.json, the
+# lockfile, tsconfig.json. Re-include JSON under web/; the directory rules above
+# still keep node_modules and dist out, since git never descends into those.
+!*.json

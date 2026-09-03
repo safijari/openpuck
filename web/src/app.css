@@ -1,0 +1,40 @@
+@import 'tailwindcss';
+@import '@skeletonlabs/skeleton';
+@import './openpuck-theme.css';
+
+@source '../src/**/*.{svelte,ts}';
+
+/* Skeleton v5 resolves every colour through CSS light-dark(), which keys off
+   color-scheme rather than a class. Its globals set color-scheme inside
+   `@variant dark`, so pointing Tailwind's dark variant at a root class is what
+   actually flips the whole system -- components in portals included. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+	--font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+	/* Semantic surfaces for the app chrome. The dark side reproduces the
+	   original panel's palette exactly: #11131a body, #1b1f2b cards,
+	   #0e1017 recessed wells, #272d3d borders, #8a93a6 muted text. */
+	--color-app-bg: light-dark(var(--color-surface-50), var(--color-surface-900));
+	--color-app-chrome: light-dark(var(--color-surface-100), var(--color-surface-900));
+	--color-app-card: light-dark(#ffffff, var(--color-surface-800));
+	--color-app-well: light-dark(var(--color-surface-100), var(--color-surface-950));
+	--color-app-line: light-dark(var(--color-surface-200), var(--color-surface-700));
+	--color-app-line-soft: light-dark(var(--color-surface-100), var(--color-surface-800));
+	--color-app-muted: light-dark(var(--color-surface-500), var(--color-surface-300));
+	--color-app-faint: light-dark(var(--color-surface-400), var(--color-surface-400));
+	--color-app-hover: light-dark(var(--color-surface-100), var(--color-surface-700));
+	--color-app-strong: light-dark(var(--color-surface-950), var(--color-surface-50));
+}
+
+/* A named utility for the responsive card grids, so the same
+   repeat(auto-fit, minmax(N, 1fr)) is not spelled out as an arbitrary property
+   at every call site. */
+@utility autofit-* {
+	grid-template-columns: repeat(auto-fit, minmax(--value([*]), 1fr));
+}
+
+@utility autofill-* {
+	grid-template-columns: repeat(auto-fill, minmax(--value([*]), 1fr));
+}

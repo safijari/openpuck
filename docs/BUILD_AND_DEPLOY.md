@@ -16,6 +16,7 @@ Software:
 - Adafruit nRF52 Arduino core
 - `adafruit-nrfutil` (Python package, for DFU packaging - see "Build the firmware")
 - Chrome or Edge for the WebUSB app
+- Node 20+ and npm, only if you are changing the WebUSB panel (see section 8)
 
 ## 2. Install Arduino CLI
 
@@ -291,33 +292,51 @@ Note on the serial method: puck (Steam/Lizard) mode drops the CDC console by def
 
 ## 8. Run the WebUSB app locally
 
-WebUSB requires a secure context. `http://localhost` qualifies.
+The panel lives in `web/` (Vite + Svelte + Skeleton) and **builds into `docs/`**,
+which is what GitHub Pages serves. `web/README.md` is the orientation for anyone
+who has not used Svelte or Skeleton before. `docs/index.html`, `docs/sniffer.html` and
+`docs/assets/` are generated -- edit the sources under `web/src/`, never those.
 
-### macOS / Linux
+Requires Node 20+.
 
 ```bash
-cd docs
-python3 -m http.server 8008
+cd web
+npm install
+npm run dev      # http://localhost:5173  (hot reload)
 ```
 
-Open:
+WebUSB requires a secure context; `http://localhost` qualifies.
 
-```text
-http://localhost:8008
+Useful URLs:
+
+| URL | What it does |
+|---|---|
+| `/` | the config panel |
+| `/sniffer.html` | the RF sniffer |
+| `?debug=true` | reveals the debug-only diagnostics |
+| `?beta=true` | unlocks firmware flashing without the warning prompt |
+| `?fixture=true` | renders against a recorded status blob, with no device attached |
+| `?fixture=dongle` | renders the reduced ReversePuck layout |
+
+Other scripts:
+
+```bash
+npm run build         # writes docs/ (leaves the .md files and .nojekyll alone)
+npm test              # vitest: the protocol decoders
+npm run check         # svelte-check
+npm run format        # prettier
 ```
 
-### Windows
+To serve the built output exactly as Pages does:
 
-```powershell
-cd docs
-py -m http.server 8008
+```bash
+cd web && npm run build
+cd .. && python3 -m http.server 8008     # then open http://localhost:8008/docs/
 ```
 
-Open:
-
-```text
-http://localhost:8008
-```
+The previous hand-written single-file panel is kept as `docs/legacy.html` and
+`docs/legacy-sniffer.html` for one release, in case a regression needs a
+side-by-side comparison against a real puck.
 
 ## 9. Known operational details
 
