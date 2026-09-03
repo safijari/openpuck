@@ -14,8 +14,7 @@
 #include <string.h>
 
 // CDC commands: l=listen, s=stop, cN=channel, p<hex>=prefix, a<8hex>=base addr, b=bonds, etc.
-// Command order matters: else-if chain, FIRST matching letter wins. 'C' and 'H' appear twice; the second
-// occurrence is unreachable.
+// Command order matters: else-if chain, FIRST matching letter wins.
 void serialConsolePoll()
 {
 	static char line[24];
@@ -178,7 +177,7 @@ void serialConsolePoll()
 					g_slot[0].rec[2], g_slot[0].rec[3],
 					g_slot[0].rec[4], g_slot[0].rec[5],
 					g_slot[0].rec[6], g_slot[0].rec[7]);
-			} else if (line[0] == 'C') {
+			} else if (line[0] == 'R' && line[1] == 'S') {
 				g_rfBeacon = g_rfListen = g_rfRaw = g_rfSweep =
 					g_rfHost = false;
 				rfRespondStart();
@@ -303,11 +302,62 @@ void serialConsolePoll()
 					"# conn verbose %s (F1 seen=%lu)\n",
 					g_connVerbose ? "ON" : "off",
 					(unsigned long)g_connF1);
+				// 'C' without args: survey 2.4 GHz spectrum across candidate channels and print noise table.
+				// 'C <1..80>': set session channel, migrate active links, and persist to cfg.bin.
 			} else if (line[0] == 'C') {
-				g_sessCh = strtoul(line + 1, 0, 10);
-				Serial.printf(
-					"# session channel=%u (re-pair/reconnect to apply)\n",
-					g_sessCh);
+				if (!line[1] || (line[1] == ' ' && !line[2])) {
+					Serial.printf(
+						"# current session channel=%u\n",
+						g_sessCh);
+					Serial.println(
+						"# scanning RF noise on candidates...");
+					uint8_t bestCh = 0, bestNoise = 0;
+					for (int i = 0;
+					     i <
+					     (int)(sizeof(g_cleanCandidates) /
+						   sizeof(g_cleanCandidates[0]));
+					     i++) {
+						uint8_t ch =
+							g_cleanCandidates[i];
+						uint8_t n =
+							rfMeasureChannelNoise(
+								ch, 1200);
+						if (n > bestNoise) {
+							bestNoise = n;
+							bestCh = ch;
+						}
+						const char *note = "";
+						if (ch >= 1 && ch <= 23)
+							note = " [Wi-Fi 1]";
+						else if (ch >= 26 && ch <= 48)
+							note = " [Wi-Fi 6]";
+						else if (ch >= 51 && ch <= 73)
+							note = " [Wi-Fi 11]";
+						else if (ch > 73)
+							note = " [Above Wi-Fi]";
+						Serial.printf(
+							"#   ch %2u (%u MHz): -%2u dBm%s%s\n",
+							ch, 2400 + ch, n, note,
+							(ch == g_sessCh) ?
+								" [ACTIVE]" :
+								"");
+					}
+					rfConfig(g_rfCh);
+					Serial.printf(
+						"# cleanest candidate: ch %u (-%u dBm)\n",
+						bestCh, bestNoise);
+				} else {
+					uint8_t nc = strtoul(line + 1, 0, 10);
+					if (nc >= 1 && nc <= 80) {
+						rfSetSessionChannel(nc, true);
+						Serial.printf(
+							"# session channel=%u (saved to config)\n",
+							g_sessCh);
+					} else {
+						Serial.println(
+							"# channel must be 1..80");
+					}
+				}
 			} else if (line[0] == 'E') {
 				g_mDiv = strtoul(line + 1, 0, 10);
 				if (g_mDiv < 4)
@@ -417,10 +467,15 @@ void serialConsolePoll()
 					      g_relaySub);
 			} else if (line[0] == 'h') {
 				uint8_t nc = strtoul(line + 1, 0, 10);
-				Serial.printf(
-					"# HOP %u->%u (advertise on current ch, then poll new). Watch F1=/s\n",
-					g_sessCh, nc);
-				rfHopTo(nc);
+				if (nc >= 1 && nc <= 80) {
+					Serial.printf(
+						"# HOP %u->%u (advertise on current ch, then poll new)\n",
+						g_sessCh, nc);
+					rfSetSessionChannel(nc, true);
+				} else {
+					Serial.println(
+						"# channel must be 1..80");
+				}
 			} else if (line[0] == 'z') {
 				g_qos = !g_qos;
 				g_hopIdx = 0;

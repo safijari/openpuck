@@ -232,6 +232,7 @@
 
       <!-- Global stats (sums over ALL controllers; the per-slot grid above shows the selected controller's own rates) -->
       <div class="statgrid">
+        <div class="stat"><div class="k">RF Channel</div><div class="v" id="stTopChannel">—</div></div>
         <div class="stat"><div class="k">Delivered (all)</div><div class="v" id="stRate">—</div></div>
         <div class="stat"><div class="k">New reports (all)</div><div class="v" id="stNew">—</div></div>
         <div class="stat"><div class="k">Polls/s (all)</div><div class="v" id="stPolls">—</div></div>
@@ -262,6 +263,37 @@
         <span class="v" id="stabStatus" style="flex:0 0 auto;min-width:120px">—</span>
         <span class="note" style="flex:1">Buzzes the controllers every 10 s (keeps them awake) and times how long the puck stays up. On a reset it records the uptime and shows it by <em>Last reset</em>; it auto-resumes after the puck reconnects. The count is kept in this tab (a page refresh clears it).</span>
       </div>
+    </div>
+
+    <div class="card" id="rfChannelCard">
+      <h2>RF Channel &amp; Interference</h2>
+      <div class="row">
+        <label>Session channel</label>
+        <select id="rfChannelSelect" style="flex:1;max-width:280px"></select>
+        <span class="v" id="rfChannelFreq" style="font-size:0.9em;margin-left:8px;color:#8ba2c4">—</span>
+        <span id="rfActiveBadge" class="pill up" style="margin-left:8px">Ch —</span>
+      </div>
+      <p id="rfChannelOld" class="note hide" style="color:var(--bad, #f87171);margin-top:6px">This puck's firmware predates dynamic channel selection (protocol v22) — flash the latest firmware to enable channel switching.</p>
+      <div class="row" style="margin-top:8px">
+        <label>Auto clean channel</label>
+        <input type="checkbox" id="rfAutoChToggle" style="margin-right:8px">
+        <span class="note" style="flex:1">Automatically survey spectrum and choose the least noisy channel at startup / when idle.</span>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="rfScanBtn">Survey RF Noise</button>
+        <button id="rfPickCleanBtn" style="margin-left:8px">Switch to Cleanest</button>
+        <span class="note" id="rfScanStatus" style="flex:1;margin-left:8px">Scan candidate channels for 2.4 GHz Wi-Fi interference.</span>
+      </div>
+      <div id="rfSpectrumView" style="margin-top:12px;display:none">
+        <div style="font-size:0.85em;color:#8ba2c4;margin-bottom:6px;display:flex;justify-content:space-between">
+          <span>Candidate Noise Floor (higher -dBm magnitude = quieter)</span>
+          <span id="rfCleanestReport" style="font-weight:bold;color:#4ade80"></span>
+        </div>
+        <div id="rfSpectrumBars" style="display:flex;gap:6px;align-items:flex-end;height:70px;background:#151821;padding:8px;border-radius:6px;border:1px solid #272d3d"></div>
+      </div>
+      <p class="note" style="margin-top:8px">
+        OpenPuck's default channel 18 (2418 MHz) sits inside 2.4 GHz Wi-Fi Channel 1. In congested areas, channels 74–80 (2474–2480 MHz) or guard-band channel 52 avoid Wi-Fi packet collisions and eliminate signal dropouts.
+      </p>
     </div>
 
     <div class="card" id="mouseCard">
@@ -735,24 +767,56 @@ const RUMBLE_SCALES=[50,75,100,150,200,250,300,400,500];
     const o=document.createElement("option"); o.value=v; o.textContent=v+"%"+(v===200?" (default)":""); sel.appendChild(o); }
 }
 
+const RF_CHANNEL_PRESETS = [
+  [80, "Channel 80 (2480 MHz) — Above Wi-Fi 11, Cleanest"],
+  [78, "Channel 78 (2478 MHz) — Above Wi-Fi 11"],
+  [76, "Channel 76 (2476 MHz) — Above Wi-Fi 11"],
+  [74, "Channel 74 (2474 MHz) — Above Wi-Fi 11"],
+  [68, "Channel 68 (2468 MHz) — Upper Wi-Fi 11 edge"],
+  [52, "Channel 52 (2452 MHz) — Guard band (Wi-Fi 6 / 11)"],
+  [46, "Channel 46 (2446 MHz) — Upper Wi-Fi 6 edge"],
+  [26, "Channel 26 (2426 MHz) — Guard band (Wi-Fi 1 / 6)"],
+  [22, "Channel 22 (2422 MHz) — Upper Wi-Fi 1 edge"],
+  [18, "Channel 18 (2418 MHz) — Default (Inside Wi-Fi 1)"],
+];
+{ const sel=document.getElementById("rfChannelSelect");
+  if(sel){
+    for(const [ch, lbl] of RF_CHANNEL_PRESETS){
+      const o=document.createElement("option"); o.value=ch; o.textContent=lbl; sel.appendChild(o);
+    }
+  }
+}
+
 // ---- per-slot tab state ----
 let g_activeSlot = 0;
 let g_slotData = []; // [{up, battery, rssi}] indexed by slot 0..3, only set for bonded slots
+let g_lastKnownBattery = [0, 0, 0, 0];
 
 function updateSlotDisplay(slotIdx) {
   const d = g_slotData[slotIdx];
   if (!d) { $("#stLink").innerHTML="—"; $("#stBatt").textContent="—"; $("#stRssi").textContent="—";
             $("#stSlotPolls").textContent="—"; $("#stSlotF1").textContent="—"; $("#stSlotFail").textContent="—"; return; }
-  $("#stLink").innerHTML = d.up ? '<span class="pill up">up</span>' : '<span class="pill dn">down</span>';
-  $("#stBatt").textContent = (d.up && d.battery) ? d.battery+"%" : "—";
-  $("#stRssi").textContent = (d.up && d.rssi) ? ("-"+d.rssi+" dBm") : "—";
+  if (d.battery) g_lastKnownBattery[slotIdx] = d.battery;
+
+  if (d.up) {
+    $("#stLink").innerHTML = '<span class="pill up">connected</span>';
+    $("#stBatt").textContent = d.battery ? d.battery+"%" : (g_lastKnownBattery[slotIdx] ? g_lastKnownBattery[slotIdx]+"%" : "—");
+    $("#stRssi").textContent = d.rssi ? ("-"+d.rssi+" dBm") : "—";
+  } else {
+    $("#stLink").innerHTML = '<span class="pill dn">idle / asleep</span>';
+    $("#stBatt").textContent = g_lastKnownBattery[slotIdx] ? (g_lastKnownBattery[slotIdx]+"% (saved)") : "—";
+    $("#stRssi").textContent = "offline";
+  }
+
   // blob v13: this controller's OWN rates (the global grid's numbers are the sum over all controllers)
   if (d.stats) {
     $("#stSlotPolls").textContent = d.stats.polls+" /s";
-    $("#stSlotF1").textContent = d.up ? (d.stats.f1+" /s ("+d.stats.newps+" new)") : "—";
+    $("#stSlotF1").textContent = d.up ? (d.stats.f1+" /s ("+d.stats.newps+" new)") : "0 /s (idle)";
     $("#stSlotFail").textContent = d.stats.crc+" · "+d.stats.norx+" · "+d.stats.relay;
   } else {
-    $("#stSlotPolls").textContent="—"; $("#stSlotF1").textContent="—"; $("#stSlotFail").textContent="—";
+    $("#stSlotPolls").textContent="—";
+    $("#stSlotF1").textContent = d.up ? "—" : "0 /s (idle)";
+    $("#stSlotFail").textContent="—";
   }
 }
 
@@ -935,6 +999,10 @@ function applyBlob(p){
   // Rumble shaping (protocol v21): firmware p[53]/p[195] = payload p[51]/p[193]. Strength is percent/2.
   const rumbleCap=(p[0]>=21 && p.length>193);
   const rumbleScale=rumbleCap?p[51]*2:200, rumbleStyle=rumbleCap?p[193]:0;
+  // Channel selection & auto-channel (protocol v22): firmware p[196]/p[197] = payload p[194]/p[195]
+  const channelCap=(p[0]>=22 && p.length>194);
+  const sessCh=channelCap?p[194]:18;
+  const autoCh=channelCap?p[195]:0;
   const rssi=(p.length>37?p[37]:0);
 
   // per-slot link status (protocol v8, p.length >= 73)
@@ -993,14 +1061,14 @@ function applyBlob(p){
   } else {
     // old firmware: single-slot display
     $("#slotTabs").style.display="none";
-    $("#stLink").innerHTML = up? '<span class="pill up">up</span>' : '<span class="pill dn">down</span>';
-    $("#stBatt").textContent = (up && battery)? battery+"%" : "—";
-    $("#stRssi").textContent = (up && rssi)? ("-"+rssi+" dBm") : "—";
+    $("#stLink").innerHTML = up? '<span class="pill up">connected</span>' : '<span class="pill dn">idle / asleep</span>';
+    $("#stBatt").textContent = (up && battery)? battery+"%" : (battery ? battery+"% (saved)" : "—");
+    $("#stRssi").textContent = (up && rssi)? ("-"+rssi+" dBm") : "offline";
   }
 
   // global stats
-  $("#stRate").textContent = up? f1+" /s" : "—";
-  $("#stNew").textContent = up? newps+" /s" : "—";
+  $("#stRate").textContent = up? f1+" /s" : "0 /s (idle)";
+  $("#stNew").textContent = up? newps+" /s" : "0 /s (idle)";
   // Poll TX + RF-fail counts: shown ALWAYS (even when the link reads down) so a wedge is diagnosable --
   // polls>0 here while Delivered is "—" means the puck is still polling but getting no usable replies.
   $("#stPolls").textContent = polls+" /s";
@@ -1163,6 +1231,30 @@ function applyBlob(p){
   $("#dpadChords").classList.toggle("hide", !dpadCap);
   $("#dpadOld").classList.toggle("hide", dpadCap);
   if(dpadCap) for(const sel of document.querySelectorAll("select.chordD")){ if(document.activeElement!==sel) sel.value=chordD[+sel.dataset.i]; }
+  { const csel=$("#rfChannelSelect"), autoTog=$("#rfAutoChToggle"), freqSpan=$("#rfChannelFreq"), badge=$("#rfActiveBadge"), oldNote=$("#rfChannelOld"), topCh=$("#stTopChannel");
+    if(oldNote) oldNote.classList.toggle("hide", channelCap);
+    if(topCh) {
+      topCh.innerHTML = channelCap ?
+        `<span class="pill ${sessCh>=74?'up':(sessCh===18?'dn':'')}">Ch ${sessCh} · ${2400+sessCh} MHz</span>` :
+        `<span class="pill dn">v${p[0]} (fixed 18)</span>`;
+    }
+    if(csel && document.activeElement!==csel){
+      csel.value = sessCh;
+      if(csel.value != sessCh){
+        const opt = document.createElement("option");
+        opt.value = sessCh;
+        opt.textContent = `Channel ${sessCh} (${2400+sessCh} MHz)`;
+        csel.appendChild(opt);
+        csel.value = sessCh;
+      }
+    }
+    if(autoTog && document.activeElement!==autoTog) autoTog.checked = !!autoCh;
+    if(freqSpan) freqSpan.textContent = (2400+sessCh) + " MHz";
+    if(badge){
+      badge.textContent = channelCap ? `Active: Ch ${sessCh}` : "Fixed: Ch 18";
+      badge.className = channelCap ? (sessCh >= 74 ? "pill up" : (sessCh === 18 ? "pill dn" : "pill")) : "pill dn";
+    }
+  }
 }
 function fmtSlider(id,v){ return id==="hapBlockS" ? v+" s" : ""+v; }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
@@ -2308,6 +2400,68 @@ $("#rumbleTest").onclick=async()=>{ if(dev){ await send([0x16]); log("test rumbl
 $("#rumbleStyle").addEventListener("change", ()=>setField(39, +$("#rumbleStyle").value));
 $("#rumbleScale").addEventListener("change", ()=>setField(22, (+$("#rumbleScale").value)/2));
 $("#swGyroMap").addEventListener("change", ()=>setField(38, +$("#swGyroMap").value));
+$("#rfChannelSelect").addEventListener("change", async()=>{
+  const val = +$("#rfChannelSelect").value;
+  $("#rfChannelSelect").blur();
+  const badge = $("#rfActiveBadge");
+  if(badge){ badge.textContent = `Setting Ch ${val}...`; badge.className = "pill"; }
+  await setField(90, val);
+  log("Session channel set to " + val + " (" + (2400 + val) + " MHz)");
+});
+$("#rfAutoChToggle").addEventListener("change", async()=>{
+  const on = $("#rfAutoChToggle").checked ? 1 : 0;
+  await setField(91, on);
+  log("Auto clean channel mode " + (on ? "enabled" : "disabled"));
+});
+$("#rfPickCleanBtn").onclick = async()=>{
+  if(!dev) return;
+  $("#rfScanStatus").textContent = "Scanning and adopting cleanest channel...";
+  await setField(92, 1);
+  $("#rfScanStatus").textContent = "Cleanest channel selected!";
+  setTimeout(()=>{ $("#rfScanStatus").textContent = "Scan candidate channels for 2.4 GHz Wi-Fi interference."; }, 3000);
+};
+$("#rfScanBtn").onclick = async()=>{
+  if(!dev) return;
+  $("#rfScanStatus").textContent = "Surveying candidate channels...";
+  try {
+    await send([0x18]);
+    const resp = await readFrame(0xAD, 3, 64);
+    if(resp && resp.length >= 3){
+      const count = resp[0];
+      const barsDiv = $("#rfSpectrumBars");
+      barsDiv.innerHTML = "";
+      let cleanestCh = 0, bestNoise = 0;
+      for(let i = 0; i < count; i++){
+        const ch = resp[1 + i*2];
+        const noise = resp[2 + i*2];
+        if(noise > bestNoise){ bestNoise = noise; cleanestCh = ch; }
+        const pct = Math.max(10, Math.min(100, Math.round(((noise - 40) / 55) * 100)));
+        const col = noise >= 80 ? "#4ade80" : (noise >= 65 ? "#facc15" : "#f87171");
+        const barCol = document.createElement("div");
+        barCol.style.cssText = "flex:1;display:flex;flex-direction:column;align-items:center;height:100%;justify-content:flex-end;cursor:pointer;";
+        barCol.title = `Ch ${ch} (${2400+ch} MHz): -${noise} dBm (Click to adopt)`;
+        barCol.innerHTML = `
+          <div style="font-size:9px;color:#8ba2c4;margin-bottom:2px">-${noise}</div>
+          <div style="width:100%;height:${pct}%;background:${col};border-radius:2px 2px 0 0;min-height:4px"></div>
+          <div style="font-size:10px;font-weight:bold;margin-top:3px;color:${ch===(+$("#rfChannelSelect").value)?'#38bdf8':'#cbd5e1'}">${ch}</div>
+        `;
+        barCol.onclick = async()=>{
+          $("#rfChannelSelect").value = ch;
+          await setField(90, ch);
+          log("Adopted channel " + ch + " from survey");
+        };
+        barsDiv.appendChild(barCol);
+      }
+      $("#rfCleanestReport").textContent = `Cleanest: Ch ${cleanestCh} (-${bestNoise} dBm)`;
+      $("#rfSpectrumView").style.display = "";
+      $("#rfScanStatus").textContent = `Survey complete. Click any bar to switch to that channel.`;
+    } else {
+      $("#rfScanStatus").textContent = "Survey timed out or unsupported by firmware.";
+    }
+  } catch(e) {
+    $("#rfScanStatus").textContent = "Survey error: " + e.message;
+  }
+};
 for(const sel of document.querySelectorAll("select.chord")){
   sel.addEventListener("change", ()=>setField(CHORD_FIELD[+sel.dataset.i], +sel.value));
 }
@@ -2322,6 +2476,8 @@ for(const b of document.querySelectorAll(".modebtn")){
 }
 updateUf2UI();
 updateFwGate(); // start gated: stays inert until the first status blob proves the firmware speaks v15+
+window.addEventListener("visibilitychange", ()=>{ if(document.visibilityState==="visible" && dev && !inflight) refresh(); });
+window.addEventListener("focus", ()=>{ if(dev && !inflight) refresh(); });
 if(!("usb" in navigator)) $("#connectBtn").outerHTML='<b style="color:var(--bad)">WebUSB not supported — use Chrome or Edge.</b>';
 else autoConnect(); // reopen an already-authorized puck on load, no picker (first-ever connect still needs the button)
 </script>

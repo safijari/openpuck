@@ -1,4 +1,5 @@
 #include "config.h"
+#include "radio.h"
 #include "rf_link.h" // g_rxWin (poll RX window persisted here)
 #include "haptics.h" // g_hapticBlockOn, g_hapticBlockMs
 #include <Adafruit_LittleFS.h>
@@ -109,6 +110,10 @@ struct Cfg {
 	// autonomous controller power-off on host sleep (see haptics.h g_suspendOff). 0/1; 0xFF (short
 	// pre-tail file) -> compiled default (on)
 	uint8_t suspendOff;
+	// RF session channel (1..80; 0xFF -> default 18)
+	uint8_t sessCh;
+	// 0 = manual, 1 = auto clean channel select at boot/idle; 0xFF -> default 0
+	uint8_t autoChannel;
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 // Shortest cfg.bin we still accept: the layout as of CFG_MAGIC 0xCF, i.e. everything before the appended tail.
@@ -136,7 +141,9 @@ void saveCfg()
 		    g_chordDpad[3] },
 		  {},
 		  g_rumbleStyle,
-		  g_suspendOff };
+		  g_suspendOff,
+		  g_sessCh,
+		  g_autoChannel };
 	for (int i = 0; i < ET_COUNT; i++) {
 		c.type[i] = g_type[i];
 		c.padStick[i][0] = g_padStickCfg[i][0];
@@ -231,6 +238,10 @@ void loadCfg()
 			// suspend power-off enable (0xFF = a cfg.bin predating this tail field -> keep the on default)
 			if (c.suspendOff <= 1)
 				g_suspendOff = c.suspendOff;
+			if (c.sessCh >= 1 && c.sessCh <= 80)
+				g_sessCh = c.sessCh;
+			if (c.autoChannel <= 1)
+				g_autoChannel = c.autoChannel;
 			// The poll RX window is now FIXED (g_rxWin is const) -- any persisted rxWin10 is ignored.
 		}
 		f.close();

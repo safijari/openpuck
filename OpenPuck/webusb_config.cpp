@@ -1,6 +1,7 @@
 #include "webusb_config.h"
 #include "board_config.h"
 #include "config.h"
+#include "radio.h"
 #include "bonds.h"
 #include "rf_link.h"
 #include "haptics.h"
@@ -100,7 +101,8 @@ static bool boardCommand(uint8_t op)
 //                [v20: p[187..194] per-type trackpad->stick map, 4x2B {left pad, right pad} (PS_OFF/LEFT/RIGHT)]
 //                [v21: p[53] rumble strength as PERCENT/2 (field 22, revived); p[195] rumble style
 //                 (field 39, RUMBLE_STYLE_* in haptics.h)]
-#define WB_PAYLEN 194
+//                [v22: p[196] g_sessCh (field 90); p[197] g_autoChannel (field 91)]
+#define WB_PAYLEN 196
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -125,7 +127,8 @@ static void webusbSendBlob()
 	p[0] = 0xA5;
 	p[1] = WB_PAYLEN;
 
-	// protocol version (21 = +rumble style (field 39, blob p[195]) and the REVIVED rumble-strength field 22
+	// protocol version (22 = +channel selection field 90 / blob p[197], auto-channel field 91 / blob p[198];
+	// 21 = +rumble style (field 39, blob p[195]) and the REVIVED rumble-strength field 22
 	// at blob p[53], now carrying percent/2; 20 = +per-type trackpad->stick mapping (fields 80..87, blob
 	// p[187..194]); 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the Switch report-rate and
 	// gyro-scale settings (fields 23/24, blob p[54..55]) are GONE -- those bytes read 0; 18 = +configurable back4+D-pad chords (fields 34..37, blob p[182..185]);
@@ -135,7 +138,7 @@ static void webusbSendBlob()
 	// unknown op; 15 = +staged firmware-update ops 0x20..0x24; 14 = +landAll87 toggle; 13 = +per-slot link
 	// stats; 12 = +relay rate + clock fingerprint; 11 = +reset cause; 10 = +ledBright per type; 9 = +per-type
 	// cfg; 8 = +per-slot link status; 7 = +raw accel; 6 = +swPro120/gyroScale)
-	p[2] = 21;
+	p[2] = 22;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -312,6 +315,9 @@ static void webusbSendBlob()
 	p[186] = g_swGyroLegacy;
 	// v21: host-rumble style (RUMBLE_STYLE_* -- see haptics.h)
 	p[195] = g_rumbleStyle;
+	// v22: active RF session channel + auto-channel select flag
+	p[196] = g_sessCh;
+	p[197] = g_autoChannel;
 	// v20: per-type trackpad->stick mapping, {left pad, right pad} per emulated type
 	for (int et = 0; et < ET_COUNT; et++) {
 		p[187 + et * 2] = g_padStickCfg[et][0];
@@ -358,6 +364,33 @@ static void webusbSendBondExport()
 	// Same anti-hang rule as the status blob: drop the frame if the FIFO can't take it whole, never spin.
 	if (tud_vendor_write_available() >= sizeof p) {
 		usb_web.write(p, sizeof p);
+		usb_web.flush();
+	}
+}
+
+// RF channel noise survey response frame (0xAD):
+//   dev->host: [0xAD][len][count][ch0][noise0][ch1][noise1]...
+// Uses marker 0xAD (0xAC is reserved for ReversePuck dongle status).
+// Follows the same anti-hang discipline as the status blob: drop the frame if
+// the vendor IN FIFO cannot take it whole, preventing loop() from stalling.
+static void webusbSendChannelSurvey()
+{
+	if (!usb_web.connected())
+		return;
+	const uint8_t count = (uint8_t)(sizeof(g_cleanCandidates) /
+					sizeof(g_cleanCandidates[0]));
+	static uint8_t frame[2 + 1 + 10 * 2];
+	frame[0] = 0xAD;
+	frame[1] = (uint8_t)(1 + count * 2);
+	frame[2] = count;
+	for (uint8_t i = 0; i < count; i++) {
+		uint8_t ch = g_cleanCandidates[i];
+		frame[3 + i * 2] = ch;
+		frame[4 + i * 2] = rfMeasureChannelNoise(ch, 800);
+	}
+	rfConfig(g_rfCh);
+	if (tud_vendor_write_available() >= sizeof frame) {
+		usb_web.write(frame, sizeof frame);
 		usb_web.flush();
 	}
 }
@@ -652,9 +685,9 @@ void webusbPoll()
 			if (n == 0)
 				break;
 			uint8_t op = buf[0];
-			// 0x16 = test rumble (v21); extend this range whenever a new opcode is added, or the
-			// parser drops it as garbage and the handler below never runs.
-			if ((op < 0x01 || op > 0x16) &&
+			// 0x16 = test rumble (v21), 0x18 = channel survey (v22); extend this range
+			// whenever a new opcode is added, or the parser drops it as garbage.
+			if ((op < 0x01 || op > 0x18) &&
 			    (op < 0x20 || op > 0x25)) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
@@ -734,6 +767,11 @@ void webusbPoll()
 			// rumble test buzz: exercises the current style/strength (protocol v21)
 			else if (op == 0x16) {
 				hapticTestRumble();
+			}
+
+			// RF channel noise survey (protocol v22): replies with 0xAC frame
+			else if (op == 0x18) {
+				webusbSendChannelSurvey();
 			}
 
 			// trigger controller power-off (same path Steam 0x9F / host-suspend use)
@@ -1090,6 +1128,36 @@ void webusbPoll()
 				case 29:
 					// g_landAll87 = v ? 1 : 0;
 					break;
+
+				// Set RF session channel (1..80). If changed, migrates connected
+				// controllers via keepalive announcement and persists to cfg.bin.
+				case 90:
+					if (v >= 1 && v <= 80)
+						rfSetSessionChannel(v, true);
+					break;
+
+				// Auto-channel mode (0 = manual, 1 = auto clean channel select at boot/idle).
+				// When enabled while idle, immediately surveys spectrum and adopts cleanest channel.
+				case 91:
+					g_autoChannel = v ? 1 : 0;
+					if (g_autoChannel && !anySlotLinkUp()) {
+						uint8_t ch =
+							rfFindCleanestChannel(
+								NULL, 0);
+						if (ch && ch != g_sessCh)
+							rfSetSessionChannel(
+								ch, true);
+					}
+					break;
+
+				// On-demand survey: sweep spectrum, find cleanest candidate, adopt immediately.
+				case 92: {
+					uint8_t ch =
+						rfFindCleanestChannel(NULL, 0);
+					if (ch && ch != g_sessCh)
+						rfSetSessionChannel(ch, true);
+					break;
+				}
 				}
 				if (persist)
 					saveCfg();

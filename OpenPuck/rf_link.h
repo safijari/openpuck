@@ -120,7 +120,9 @@ extern volatile uint8_t g_batteryState[NSLOT];
 // no reply, so they don't burn a full ~1.2ms window of dead air per haptic.
 uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		 uint16_t rxWinUs = 0);
-// Mid-session channel hop: advertise newCh on the current channel a few times, then move the poll to newCh.
+// Mid-session channel hop: burst newCh announcements on current frequency before migrating poll loop.
 void rfHopTo(uint8_t newCh);
+// Adopt session channel: migrates active controllers if changed, and optionally persists to cfg.bin.
+void rfSetSessionChannel(uint8_t newCh, bool persist);
 // Per-loop: host-frame beacons + connected-mode poll + remote-wakeup + QoS hop + per-second stats.
 void rfLinkTask();

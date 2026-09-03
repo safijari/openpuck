@@ -205,6 +205,8 @@ void swProSaveCfg();
 // smoothness bug was never the rate -- it was onReport45 dropping ~1/3 of captured reports via a bogus
 // hid.ready() gate; see puck_hid.cpp. Poll rate is live-tunable via console "PR<hz>" for sweeps.)
 #define POLL_US_DEFAULT 4000u
+// Default RF session channel (18 = standard puck channel)
+#define CH_DEFAULT 18
 // host-side HID stream cadence for translated modes (~250 Hz)
 #define USB_STREAM_MS 4u
 // How long a USB suspend must PERSIST before we power the controllers off. A brief selective-suspend

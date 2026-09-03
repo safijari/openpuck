@@ -29,6 +29,10 @@ extern uint8_t g_rfCh; // current TX/RX channel (hopped during beacon/poll)
 extern uint8_t g_rfBase[4]; // "ibex"
 // connected-session channel: a CLEAN data channel off the congested adv ch2 (shared by all slots on a puck)
 extern uint8_t g_sessCh;
+// 0 = manual g_sessCh, 1 = auto clean channel select at boot/idle
+extern uint8_t g_autoChannel;
+// Candidate clean channels outside / between standard 2.4GHz Wi-Fi channels
+extern const uint8_t g_cleanCandidates[10];
 
 // Per-bond SESSION address (base+prefix). Discovery stays on the SHARED "ibex" address (g_rfBase) so any
 // controller can find us; the host frame advertises THIS slot's unique address and the controller adopts it
@@ -65,3 +69,9 @@ uint8_t rfBitrev8(uint8_t x);
 void rfSetAddr(const uint8_t b4[4], uint8_t prefix);
 // Program MODE/FREQUENCY/PCNF/CRC/whitening from the tunables above onto channel ch (radio left disabled).
 void rfConfig(uint8_t ch);
+// Measure peak RF noise on channel ch over sampleUs microseconds. Returns magnitude |dBm|
+// from RSSISAMPLE (e.g. 50 = -50 dBm, 90 = -90 dBm); higher values indicate cleaner spectrum.
+uint8_t rfMeasureChannelNoise(uint8_t ch, uint16_t sampleUs);
+// Sweep candidate channels and return the frequency with the lowest peak RF noise.
+// If cands is NULL, evaluates g_cleanCandidates.
+uint8_t rfFindCleanestChannel(const uint8_t *cands, uint8_t count);

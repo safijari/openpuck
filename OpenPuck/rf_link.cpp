@@ -240,22 +240,48 @@ static void rfHostFrameOnce(int slot, bool discovery)
 	NRF_RADIO->EVENTS_DISABLED = 0;
 }
 
+// Mid-session channel migration: announce newCh to connected controllers on the
+// current frequency across all active slots before migrating the polling loop.
+//
+// A degrading channel experiences elevated packet loss, so a single unacknowledged
+// frame is easily missed. Bursting 8 E1 announcements per used slot gives active
+// controllers multiple chances to decode byte 11 (newCh) and retune their radios.
+// If a controller misses the migration burst entirely, it will drop to Channel 2
+// discovery on link timeout, where the continuous E1 beacon advertises g_sessCh.
 void rfHopTo(uint8_t newCh)
 {
-	// QoS hop is shared across all slots -- we run all connected sessions on the same channel for simplicity.
-	// The per-slot session ADDRESS is what isolates the controllers from each other; the channel is global.
-	if (g_curSlot < 0 || newCh == g_sessCh)
+	if (newCh < 1 || newCh > 80 || newCh == g_sessCh)
 		return;
-	uint8_t cur = g_sessCh, savedRfCh = g_rfCh;
+
+	uint8_t cur = g_sessCh;
 	g_sessCh = newCh;
-	// host frame now advertises newCh but is TXed on cur (per-slot session addr)
-	g_rfCh = cur;
-	for (int s = 0; s < NSLOT; s++)
-		for (int k = 0; k < 6; k++) {
-			rfHostFrameOnce(s, false);
-			delayMicroseconds(700);
+
+	if (anySlotLinkUp()) {
+		uint8_t savedRfCh = g_rfCh;
+		g_rfCh = cur;
+		for (int s = 0; s < NSLOT; s++) {
+			if (!g_slot[s].used)
+				continue;
+			for (int k = 0; k < 8; k++) {
+				rfHostFrameOnce(s, false);
+				delayMicroseconds(600);
+			}
 		}
-	g_rfCh = savedRfCh; // poll + session beacon now run on g_sessCh=newCh
+		g_rfCh = savedRfCh;
+	}
+	g_rfCh = g_sessCh;
+}
+
+// Set active session channel. Migrates connected controllers if different from
+// current channel, and optionally persists to flash so cold boots retain it.
+void rfSetSessionChannel(uint8_t newCh, bool persist)
+{
+	if (newCh < 1 || newCh > 80)
+		return;
+	if (newCh != g_sessCh)
+		rfHopTo(newCh);
+	if (persist)
+		saveCfg();
 }
 
 // TX one connected packet [LEN][S1][payload] on channel ch, then RX the reply into rfrx; decodes 0xF1.
@@ -304,7 +330,9 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		// reply arrived but CRC failed -> RF quality (channel/interference)
 		if (!crcok) {
 			g_stCrc[slot]++;
-			g_qosBad++;
+			if (g_slot[slot].used && g_connReplyMs[slot] != 0 &&
+			    (millis() - g_connReplyMs[slot]) < 1000u)
+				g_qosBad++;
 		}
 		// F1 input ~46B; 0x43-augmented ~66B -> allow up to MAXLEN(96)
 		if (crcok && rxlen && rxlen <= 96) {
@@ -831,7 +859,12 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		// RX window expired with no packet at all
 	} else {
 		g_stNoRx[slot]++;
-		g_qosBad++;
+		// Only count missed replies toward QoS degradation if this slot was actively
+		// communicating within the last second; offline/unpowered bonded slots must
+		// never trigger false adaptive channel hops.
+		if (g_slot[slot].used && g_connReplyMs[slot] != 0 &&
+		    (millis() - g_connReplyMs[slot]) < 1000u)
+			g_qosBad++;
 	}
 	NRF_RADIO->TASKS_DISABLE = 1;
 	RWAIT_DISABLED();
@@ -1142,23 +1175,38 @@ void rfLinkTask()
 		}
 		wasRfConn = nowRfConn;
 	}
-	// QoS: if the current channel is degrading (crcfail+noRx), hop to the next clean candidate (conservative).
-	if (g_qos && g_curSlot >= 0 && millis() - g_qosCheckMs >= 600) {
+	// QoS: if the current channel is degrading, survey candidate channels and hop to the cleanest one.
+	if (g_qos && anySlotLinkUp() && millis() - g_qosCheckMs >= 600) {
 		uint16_t bad = g_qosBad;
 		g_qosBad = 0;
 		g_qosCheckMs = millis();
-		if (bad > 20 && millis() - g_qosLastHopMs > 2000) {
-			for (int k = 0; k < (int)sizeof g_hopCand; k++) {
-				g_hopIdx = (g_hopIdx + 1) % (sizeof g_hopCand);
-				if (g_hopCand[g_hopIdx] != g_sessCh)
-					break;
+		if (bad > 50 && millis() - g_qosLastHopMs > 3000) {
+			uint8_t nextCh = rfFindCleanestChannel(NULL, 0);
+			if (nextCh && nextCh != g_sessCh) {
+				if (Serial.availableForWrite() > 60)
+					Serial.printf(
+						"# QoS: ch%u bad=%u -> hop clean ch%u\n",
+						g_sessCh, bad, nextCh);
+				rfSetSessionChannel(nextCh, true);
+				g_qosLastHopMs = millis();
 			}
-			if (Serial.availableForWrite() > 60)
-				Serial.printf(
-					"# QoS: ch%u bad=%u -> hop ch%u\n",
-					g_sessCh, bad, g_hopCand[g_hopIdx]);
-			rfHopTo(g_hopCand[g_hopIdx]);
-			g_qosLastHopMs = millis();
+		}
+	}
+	// Auto-channel: at boot or when all slots are idle, survey candidate channels and adopt the cleanest.
+	if (g_autoChannel && !anySlotLinkUp()) {
+		static unsigned long s_lastAutoScanMs = 0;
+		static bool s_bootScanned = false;
+		if (!s_bootScanned || (millis() - s_lastAutoScanMs > 30000u)) {
+			s_bootScanned = true;
+			s_lastAutoScanMs = millis();
+			uint8_t clean = rfFindCleanestChannel(NULL, 0);
+			if (clean && clean != g_sessCh) {
+				if (Serial.availableForWrite() > 60)
+					Serial.printf(
+						"# Auto-channel: ch%u -> cleanest ch%u\n",
+						g_sessCh, clean);
+				rfSetSessionChannel(clean, true);
+			}
 		}
 	}
 	if (g_connOn && millis() - g_stMs >= 1000) {
