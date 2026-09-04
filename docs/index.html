@@ -589,7 +589,7 @@ const TYPE_DEFS = [
   {key:"DS5", name:"DS5", labels:{1:"Cross",2:"Circle",3:"Square",4:"Triangle",5:"L1",6:"R1",7:"L3",8:"R3",9:"Create",10:"Options",11:"PS",19:"L2",20:"R2",...DPAD,16:"Touchpad Click",17:"Mute"}},
 ];
 // Which emulated type a USB mode belongs to (mirror of firmware etypeForMode); -1 = puck mode (no type).
-const SW2_SOURCE_NAMES = ["L4 (back upper-left)","R4 (back upper-right)","L5 (back lower-left)","R5 (back lower-right)","View","Menu","Steam","QAM (3 dots)"];
+const SW2_SOURCE_NAMES = ["L4 (back upper-left)","R4 (back upper-right)","L5 (back lower-left)","R5 (back lower-right)","View (Start side)","Menu (Select side)","Steam","QAM (3 dots)"];
 const SW2_TARGETS = [[1,"A"],[2,"B"],[3,"X"],[4,"Y"],[5,"L"],[6,"R"],[7,"L-Stick"],[8,"R-Stick"],[9,"Minus"],[10,"Plus"],[11,"Home"],[12,"D-pad Up"],[13,"D-pad Down"],[14,"D-pad Left"],[15,"D-pad Right"],[18,"Capture"],[19,"ZL"],[20,"ZR"],[21,"C"],[22,"GR"],[23,"GL"]];
 const sw2MapEls=[];
 (function buildSw2Map(){
@@ -963,7 +963,9 @@ function applyBlob(p){
 
   // Eight Switch 2 Pro physical-source mappings occupy payload p[194..201].
   const sw2MapCap=(p[0]>=23 && p.length>201);
-  const sw2Map=sw2MapCap?p.slice(194,202):[18,18,23,22,9,10,11,21];
+  // Mirrors def[] in mode_switch2_pro.cpp: View is the START-side button (-> Plus) and Menu
+  // the SELECT-side one (-> Minus); see the TB_VIEW/TB_MENU note in triton.h.
+  const sw2Map=sw2MapCap?p.slice(194,202):[18,18,23,22,10,9,11,21];
   // per-slot link status (protocol v8, p.length >= 73)
   const hasSlotsData = p.length >= 73;
   if (hasSlotsData) {

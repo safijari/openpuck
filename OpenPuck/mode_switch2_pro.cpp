@@ -69,7 +69,13 @@ static const uint8_t SWITCH2_PRO_CFG_BODY[] = {
 static_assert(sizeof SWITCH2_PRO_CFG_BODY == 259,
 	      "Switch 2 Pro configuration body must remain byte-exact");
 
-static volatile uint8_t g_sw2ActiveReport = 0x09;
+// Report 0x05 is the only input report that carries motion: per SWITCH2_PRO_HID_DESC, 0x09 is
+// 2 vendor bytes + 21 button bits + four 12-bit axes and has no IMU fields at all, while 0x05
+// is the 63-byte vendor blob whose tail sw2Build05 fills with accel/gyro. Defaulting to 0x09
+// made gyro structurally impossible on any host that never sends the 0x03/0x0a report select
+// (buttons still worked, which is what made it look like an IMU problem). An explicit host
+// selection is still honoured either way.
+static volatile uint8_t g_sw2ActiveReport = 0x05;
 static volatile uint8_t g_sw2Features = 0;
 static volatile uint8_t g_sw2FeatureMask = 0;
 static volatile bool g_sw2InputEnabled = false;
@@ -78,7 +84,15 @@ static volatile uint32_t g_sw2Counter32 = 0;
 static int8_t g_sw2LastRumbleBond = -1;
 static uint16_t g_sw2LastRumbleLeft = 0;
 static uint16_t g_sw2LastRumbleRight = 0;
-static const uint8_t def[8] = { 18, 18, 23, 22, 9, 10, 11, 21 };
+// L4, R4, L5, R5, View, Menu, Steam, QAM -> Switch 2 button codes. Mind the naming trap
+// documented in triton.h: TB_VIEW is the START-side button (Switch +) and TB_MENU the
+// SELECT-side one (Switch -), so View maps to Plus and Menu to Minus -- reading the names
+// literally swaps Start and Select on the host.
+static const uint8_t def[8] = { 18, 18, 23, 22, 10, 9, 11, 21 };
+// cfgExt[0] versions this table. A puck that already persisted the reversed Plus/Minus
+// defaults would otherwise keep them forever; bumping the version re-normalises once.
+#define SW2_MAP_FMT_INDEX 0u
+#define SW2_MAP_FMT_VERSION 2u
 static uint8_t g_sw2Map[8];
 static bool g_sw2MapLoaded = false;
 
@@ -87,10 +101,11 @@ static void switch2ProLoadMap()
 	if (g_sw2MapLoaded)
 		return;
 	g_sw2MapLoaded = true;
-	bool normalize = false;
+	const bool stale = cfgExtRead(SW2_MAP_FMT_INDEX) != SW2_MAP_FMT_VERSION;
+	bool normalize = stale;
 	for (uint8_t i = 0; i < 8; i++) {
 		const uint8_t saved = cfgExtRead((uint8_t)(3u + i));
-		if (saved <= 23u) {
+		if (!stale && saved <= 23u) {
 			g_sw2Map[i] = saved;
 		} else {
 			g_sw2Map[i] = def[i];
@@ -98,8 +113,10 @@ static void switch2ProLoadMap()
 			normalize = true;
 		}
 	}
-	if (normalize)
+	if (normalize) {
+		cfgExtWrite(SW2_MAP_FMT_INDEX, SW2_MAP_FMT_VERSION);
 		saveCfg();
+	}
 }
 
 uint8_t switch2ProMapGet(uint8_t index)
@@ -916,7 +933,7 @@ static void sw2DriverReset(uint8_t rhport)
 	g_sw2VendorCommandPending = false;
 	g_sw2VendorInFlight = false;
 	g_sw2InputEnabled = false;
-	g_sw2ActiveReport = 0x09;
+	g_sw2ActiveReport = 0x05;
 	g_sw2Features = 0;
 	g_sw2FeatureMask = 0;
 	g_sw2LastRumbleBond = -1;
