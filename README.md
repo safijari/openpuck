@@ -43,6 +43,7 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | WebUSB panel → mode 10 | Original Xbox Controller S | Enumerates on a real Original Xbox |
 | WebUSB panel → mode 11 | DirectInput (flight/space sims) | Every axis at once, as two DirectInput joysticks |
 | WebUSB panel → mode 12 | SInput (SDL-native) | Sticks + analog triggers + gyro + both trackpads + battery |
+| WebUSB panel → mode 13 | Switch 2 Pro Controller | Only one controller can work and no gyro yet |
 
 **DirectInput mode** exists because Steam Input funnels everything through XInput, so only a handful of the
 controller's analog inputs can be live at once — a problem for flight and space sims, which bind axes through
