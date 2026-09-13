@@ -101,7 +101,7 @@ nrfutil install device
 #### First-time S140 provisioning
 
 OpenPuck requires S140 6.1.1 (`0xB6`). Download and extract Nordic's
-[nRF5 SDK](https://www.nordicsemi.com/Products/Development-software/nRF5-SDK),
+[nRF5 SDK](https://www.nordicsemi.com/Products/Development-software/nRF5-SDK) v15.3.0,
 then provision its SoftDevice before installing OpenPuck for the first time:
 
 ```bash
