@@ -47,10 +47,10 @@ class IController {
 	{
 	}
 
-	// a wake gesture fired while suspended; queue any post-resume input the host needs to actually wake
-	virtual void wakeEvent()
-	{
-	}
+	// A deliberate wake gesture fired while suspended. Personalities that use the
+	// shared boot-mouse wake interface inherit the default nudge; puck modes override
+	// this because their wake behavior depends on the selected puck USB contract.
+	virtual void wakeEvent();
 	virtual bool isPuck() const
 	{
 		return false;

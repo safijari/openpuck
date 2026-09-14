@@ -5,5 +5,6 @@ extern "C" {
 #include "device/usbd_pvt.h"
 }
 
+const usbd_class_driver_t *puckHidClassDriver(void);
 const usbd_class_driver_t *xinputClassDriver(void);
 const usbd_class_driver_t *xboxOgClassDriver(void);

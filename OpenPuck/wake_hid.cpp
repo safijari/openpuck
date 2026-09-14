@@ -47,6 +47,59 @@ bool wakeHidMove(int8_t dx, int8_t dy)
 	return true;
 }
 
+// A device-level resume can be accepted
+// yet still fail to wake some Windows hosts until a real input report arrives on
+// the HID interface the host armed as a wake source. Emit a harmless net-zero
+// boot-mouse nudge after resume. Strict-console personalities omit this interface,
+// so this state machine stays inert there.
+#define NUDGE_JIGGLE_PX 10
+#define NUDGE_STEP_MS 15u
+#define NUDGE_EXPIRE_MS 5000u
+static uint8_t g_wakeNudgeStep = 0; // 0=idle, 1=+X, 2=-X
+static unsigned long g_wakeNudgeArmMs = 0;
+static unsigned long g_wakeNudgeStepMs = 0;
+
+void wakeHidArmNudge()
+{
+	if (!g_wakeHidPresent)
+		return; // intentional strict-console/debug-CDC exception
+	g_wakeNudgeStep = 1;
+	g_wakeNudgeArmMs = millis();
+	g_wakeNudgeStepMs = 0;
+}
+
+void wakeHidTask()
+{
+	if (!g_wakeNudgeStep)
+		return;
+	if (!g_wakeHidPresent) {
+		g_wakeNudgeStep = 0;
+		return;
+	}
+	unsigned long now = millis();
+	if (now - g_wakeNudgeArmMs > NUDGE_EXPIRE_MS) {
+		g_wakeNudgeStep = 0;
+		return;
+	}
+	if (USBDevice.suspended() || !wakeHidReady())
+
+		// wait until the bus has actually resumed and the HID can accept input
+		return;
+	if (g_wakeNudgeStepMs && now - g_wakeNudgeStepMs < NUDGE_STEP_MS)
+		return;
+	int8_t dx = (g_wakeNudgeStep == 1) ? NUDGE_JIGGLE_PX : -NUDGE_JIGGLE_PX;
+	if (!wakeHidMove(dx, 0))
+		return;
+	g_wakeNudgeStepMs = now;
+	if (g_wakeNudgeStep == 1)
+		g_wakeNudgeStep = 2;
+	else
+		g_wakeNudgeStep =
+
+			// +10 then -10: net-zero cursor displacement, no clicks
+			0;
+}
+
 void wakeHidAddInterface()
 {
 	TinyUSBDevice.addInterface(g_wakeHid);

@@ -1,5 +1,6 @@
 #include "controllers.h"
 #include "config.h"
+#include "wake_hid.h"
 #include "puck_hid.h"
 #include "mode_xinput.h"
 #include "mode_switch_hori.h"
@@ -12,6 +13,12 @@
 #include "mode_xbox_og.h"
 
 IController *g_active = nullptr;
+// Personalities without a specialized wake fallback use the dedicated boot-mouse
+// interface registered by setup().
+void IController::wakeEvent()
+{
+	wakeHidArmNudge();
+}
 
 // Map a USB-presentation mode to its singleton controller. Steam and Lizard share the puck controller (the
 // lizard-vs-forward decision is made per-report inside it).

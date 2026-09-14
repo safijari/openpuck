@@ -4,6 +4,8 @@
 #include "config.h"
 #include "triton.h"
 #include "haptics.h"
+#include "rf_timing.h"
+#include "steam_commands.h"
 #include "puck_hid.h" // g_cmdCapture (suppress I45 during feature-command capture)
 #include "controllers.h"
 #include "status_led.h"
@@ -11,6 +13,8 @@
 #include "usb_mount.h" // modeSwitchReboot()
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
+#include <nrf.h>
+#include <nrf_sdm.h>
 #include <string.h>
 
 bool g_rfHost = true;
@@ -51,6 +55,12 @@ bool g_connVerbose = false;
 // field, and doing so silently starves the poll cycle. Any persisted/old value is ignored.
 const uint32_t g_rxWin = 1200;
 unsigned long g_connCooldown = 0;
+
+static inline bool connCooldownDone()
+{
+	// Zero means no post-disconnect cooldown.
+	return g_connCooldown == 0 || millis() - g_connCooldown > 2500u;
+}
 
 uint8_t g_connSt = 0; // 0=announce awake, 1=poll loop
 uint8_t g_connStep = 0; // repeat counter within a state
@@ -292,11 +302,37 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
 			    RADIO_SHORTS_ADDRESS_RSSISTART_Msk |
 			    RADIO_SHORTS_DISABLED_RSSISTOP_Msk;
+	// Clear sticky packet-event latches before arming the bounded feature-response
+	// timer so captures belong to this RX window.
+	NRF_RADIO->EVENTS_ADDRESS = 0;
+	NRF_RADIO->EVENTS_PAYLOAD = 0;
+	NRF_RADIO->EVENTS_CRCOK = 0;
+	NRF_RADIO->EVENTS_CRCERROR = 0;
+	NRF_RADIO->EVENTS_RSSIEND = 0;
 	NRF_RADIO->EVENTS_END = 0;
+	// RX window (tunable 'r'; or relay override)
+	// The bounded timing guard below decides whether a late radio END still belongs to this transaction.
+	const bool timingArmed = rfTimingArm();
 	NRF_RADIO->TASKS_RXEN = 1;
-	uint32_t t0 = micros();
-	while (!NRF_RADIO->EVENTS_END && (micros() - t0) < win) {
-	} // RX window (tunable 'r'; or relay override)
+	const uint32_t rxStartUs = micros();
+	while (!NRF_RADIO->EVENTS_END &&
+	       (uint32_t)(micros() - rxStartUs) < win) {
+	}
+	if (timingArmed)
+		rfTimingCaptureDecision();
+
+	uint32_t completionDeadline = 0;
+	bool completionGuard = false;
+	if (timingArmed && !NRF_RADIO->EVENTS_END &&
+	    rfTimingBeginCompletionGuard(400u, &completionDeadline)) {
+		completionGuard = true;
+		while (!NRF_RADIO->EVENTS_END &&
+		       !rfTimingCompletionDeadlineReached(completionDeadline)) {
+		}
+	}
+	if (timingArmed && !completionGuard && !NRF_RADIO->EVENTS_END)
+		rfTimingWaitForAcquisition(100u, 400u, 250u);
+
 	uint8_t rxlen = 0;
 	if (NRF_RADIO->EVENTS_END) {
 		NRF_RADIO->EVENTS_END = 0;
@@ -367,8 +403,10 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 								  8u) :
 							rs;
 			}
-			if (rtype == 0xF1)
+			if (rtype == 0xF1) {
 				g_stF1[slot]++;
+				g_connF1++;
+			}
 			// controller disconnecting/powering off -> back off 2.5s so we don't immediately re-wake it.
 			// BUT only when no OTHER slot is still live: g_connCooldown is global and gates ALL polling +
 			// beacons, so backing off because ONE controller powered off would drop every other connected
@@ -421,7 +459,6 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 			if (isF1 && (g_curSlot < 0 || g_curSlot >= NSLOT))
 				isF1 = false;
 			if (isF1) {
-				g_connF1++;
 				// walk ALL type6 TLVs (= HID report 0x45); taking only [0] halves the rate. idx is INT,
 				// not uint8_t: tlen 0xFE would make idx+=tlen+2 wrap mod-256 -> infinite loop -> USB hang.
 				int idx = 3, end = rxlen + 2;
@@ -688,13 +725,19 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 								uint8_t)(TB_A |
 									 TB_B |
 									 TB_X |
-									 TB_Y);
+									 TB_Y |
+									 TB_R4);
 							((uint8_t *)rep)[3] &= ~(
-								uint8_t)((TB_DDN |
+								uint8_t)((TB_R5 |
+									  TB_DDN |
 									  TB_DRT |
 									  TB_DLF |
 									  TB_DUP) >>
 									 8);
+							((uint8_t *)rep)[4] &= ~(
+								uint8_t)((TB_L4 |
+									  TB_L5) >>
+									 16);
 						}
 						// Hand the report to the active controller. STREAM modes ignore it (they emit from task() reading
 						// g_in); PUSH modes (Xbox, puck/lizard) build + send their host report here.
@@ -764,44 +807,215 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					} else if ((ttype == 2 || ttype == 4) &&
 						   tlen >= 1 &&
 						   (size_t)(idx + 2) + tlen <=
-							   sizeof(rfrx)) {
-						// tag 0x02 ("control/status field") and tag 0x04 ("bulk data blob") --
-						// docs/PROTOCOL.md sec 7.3. CONFIRMED from a real puck<->controller capture
-						// (2026-08-10): tag-2 (`00 00 00 00`) is an immediate "request received" ack
-						// for a landed feature-01 query; tag-4, arriving on a LATER poll, carries the
-						// query's real answer as `[echoed report_id][len][payload]`. This is the reply
-						// channel for the feature-01 queries (0x83/0xAE/0xED) puck_hid.cpp now relays
-						// for real when rid==1 -- route it into whichever slot is waiting on exactly
-						// this cmd (pendingQueryCmd, bonds.h), so a stray/late/mismatched tag-4 can't
-						// clobber a slot that has moved on to a different query.
+							   sizeof(rfrx) &&
+						   g_curSlot >= 0 &&
+						   g_curSlot < NSLOT) {
+						// Type-2 is transaction status; Type-4 carries a
+						// feature reply as [cmd][len][payload]. Type-4 may
+						// arrive on a later poll, so acceptance must match
+						// the pending command, selector, and generation.
 						const uint8_t *rec =
 							&rfrx[idx + 2];
-						if (ttype == 4 && tlen >= 2 &&
-						    rec[0] != 0 &&
-						    (uint16_t)(2 + rec[1]) <=
-							    tlen &&
-						    rec[1] <= 61 &&
-						    g_curSlot >= 0 &&
-						    g_curSlot < NSLOT &&
-						    g_slot[g_curSlot].pendingQueryCmd ==
-							    rec[0]) {
-							// `resp`/`resp_len` are also written from handleSet (switch(cmd)) and
-							// read from handleGet -- both on the usbd task. Match the PRIMASK-guard
-							// pattern the rest of this file uses for usbd<->loop shared state
-							// (relayEnqueue/hapLogAdd/fcPush) so a GET_FEATURE can't observe a torn
-							// write mid-memcpy.
-							Slot &S =
-								g_slot[g_curSlot];
-							uint32_t pm =
-								__get_PRIMASK();
-							__disable_irq();
-							S.resp[0] = rec[0];
-							S.resp[1] = rec[1];
-							memcpy(S.resp + 2,
-							       rec + 2, rec[1]);
-							S.resp_len = 63;
-							S.pendingQueryCmd = 0;
-							__set_PRIMASK(pm);
+						Slot &S = g_slot[g_curSlot];
+						if (ttype == 4) {
+							uint8_t reason = 0;
+							if (tlen < 2)
+								reason |= 0x01;
+							else {
+								if (rec[0] == 0)
+									reason |=
+										0x02;
+								if ((uint16_t)(2 +
+									       rec[1]) >
+								    tlen)
+									reason |=
+										0x04;
+								if (rec[1] > 61)
+									reason |=
+										0x08;
+								if (!S.pendingQueryCmd)
+									reason |=
+										0x10;
+								else if (S.pendingQueryCmd !=
+									 rec[0])
+									reason |=
+										0x20;
+								if (rfConnFeatureFetchPending(
+									    (uint8_t)
+										    g_curSlot))
+									reason |=
+
+										// explicit FETCH not complete
+										0x80;
+								if (S.pendingQuerySelectorValid &&
+								    S.pendingQueryCmd ==
+									    IBEX_CMD_GET_STRING_ATTRIBUTE &&
+								    rec[0] ==
+									    S.pendingQueryCmd &&
+								    (rec[1] <
+									     1 ||
+								     tlen < 3 ||
+								     rec[2] !=
+									     S.pendingQuerySelector))
+									reason |=
+										0x40;
+							}
+
+							// Observation only; response acceptance below remains authoritative.
+							rfConnFeatureObserveType4(
+								(uint8_t)
+									g_curSlot,
+								tlen ? rec[0] :
+								       0,
+								reason);
+							rfConnFeatureObserveType4DuringDelayedProbe(
+								(uint8_t)
+									g_curSlot);
+							rfConnFeatureObserveType4AfterStaleReplay(
+								(uint8_t)
+									g_curSlot,
+								tlen ? rec[0] :
+								       0,
+								reason);
+							rfConnFeatureObserveType4DuringPostStaleSilence(
+								(uint8_t)
+									g_curSlot);
+							rfConnFeatureObserveType4AfterNoType4Replay(
+								(uint8_t)
+									g_curSlot,
+								tlen ? rec[0] :
+								       0,
+								reason);
+							rfConnFeatureObserveType4ForPostNoType4Stale(
+								(uint8_t)
+									g_curSlot,
+								tlen ? rec[0] :
+								       0,
+								reason);
+						}
+						if (ttype == 2 && tlen == 4) {
+							// Type-2 is transaction status, never feature data. T1-T3
+							// hardware validation observed zero ACKs and 0xFFFFFFEA rejection.
+							uint32_t raw =
+								(uint32_t)
+									rec[0] |
+								((uint32_t)rec[1]
+								 << 8) |
+								((uint32_t)rec[2]
+								 << 16) |
+								((uint32_t)rec[3]
+								 << 24);
+
+							uint32_t now = millis();
+							bool shutdownOwned =
+								S.shutdownStatusOwnerMs &&
+								(uint32_t)(now -
+									   S.shutdownStatusOwnerMs) <=
+									SHUTDOWN_STATUS_OWNER_MS;
+							if (shutdownOwned) {
+								S.shutdownStatusOwnerMs =
+									0;
+							} else if (S.pendingQueryCmd &&
+								   raw != 0) {
+								uint32_t pm =
+									__get_PRIMASK();
+								__disable_irq();
+								S.pendingQueryCmd =
+									0;
+								S.pendingQueryGeneration =
+									0;
+								S.pendingQueryDeadlineMs =
+									0;
+								S.pendingQuerySelectorValid =
+									0;
+								S.pendingQueryFailed =
+									1;
+								__set_PRIMASK(
+									pm);
+							}
+						} else if (
+							ttype == 4 &&
+							!rfConnFeatureFetchPending(
+								(uint8_t)
+									g_curSlot) &&
+							tlen >= 2 &&
+							rec[0] != 0 &&
+							(uint16_t)(2 +
+								   rec[1]) <=
+								tlen &&
+							rec[1] <= 61 &&
+							S.pendingQueryCmd ==
+								rec[0]) {
+							bool selectorOk =
+								!S.pendingQuerySelectorValid ||
+								(S.pendingQueryCmd ==
+									 IBEX_CMD_GET_STRING_ATTRIBUTE &&
+								 rec[1] >= 1 &&
+								 rec[2] ==
+									 S.pendingQuerySelector);
+							if (selectorOk) {
+								uint32_t pm =
+									__get_PRIMASK();
+								__disable_irq();
+								S.resp[0] =
+									rec[0];
+								S.resp[1] =
+									rec[1];
+								// `resp`/`resp_len` are also written from handleSet (switch(cmd)) and
+								// read from handleGet -- both on the usbd task. Match the PRIMASK-guard
+								// pattern the rest of this file uses for usbd<->loop shared state
+								// (relayEnqueue/hapLogAdd/fcPush) so a GET_FEATURE can't observe a torn
+								// write mid-memcpy. Response ownership metadata stays in the same guard.
+								memcpy(S.resp +
+									       2,
+								       rec + 2,
+								       rec[1]);
+								S.resp_len = 63;
+								// The RF response remains transport-valid, but only the generation
+								// belonging to the latest response-bearing host SET may become GET-ready.
+								uint32_t responseGeneration =
+									S.pendingQueryGeneration;
+								bool generationCurrent =
+									responseGeneration !=
+										0u &&
+									responseGeneration ==
+										S.queryHostGeneration;
+								if (generationCurrent) {
+									S.queryResponseReady =
+										1;
+									S.queryResponseCmd =
+										rec[0];
+									S.queryResponseSelectorValid =
+										S.pendingQuerySelectorValid;
+									S.queryResponseSelector =
+										S.pendingQuerySelector;
+									S.queryResponseGeneration =
+										responseGeneration;
+								} else {
+									S.queryResponseReady =
+										0;
+									S.queryResponseCmd =
+										0;
+									S.queryResponseSelector =
+										0;
+									S.queryResponseSelectorValid =
+										0;
+									S.queryResponseGeneration =
+										0;
+								}
+								S.pendingQueryCmd =
+									0;
+								S.pendingQueryGeneration =
+									0;
+								S.pendingQueryFailed =
+									0;
+								S.pendingQueryDeadlineMs =
+									0;
+								S.pendingQuerySelectorValid =
+									0;
+								__set_PRIMASK(
+									pm);
+							}
 						}
 					}
 
@@ -903,6 +1117,7 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		g_stNoRx[slot]++;
 		g_qosBad++;
 	}
+	rfTimingFinish();
 	NRF_RADIO->TASKS_DISABLE = 1;
 	RWAIT_DISABLED();
 	NRF_RADIO->EVENTS_DISABLED = 0;
@@ -968,7 +1183,10 @@ static void rfConnStep()
 	// controllers per cycle. Polling one-slot-per-call instead tied the per-slot rate to the
 	// loop frequency AND split it across slots, collapsing 2 controllers to ~90 Hz.
 	uint32_t nowUs = micros();
-	if ((uint32_t)(nowUs - g_lastPollUs) < (uint32_t)g_pollUs)
+	bool pcmFastCycle = pcmAnyActive();
+	uint32_t pollCycleUs = pcmFastCycle ? (uint32_t)PCM_ACTIVE_CYCLE_US :
+					      (uint32_t)g_pollUs;
+	if ((uint32_t)(nowUs - g_lastPollUs) < pollCycleUs)
 		return;
 	{
 		// Cycle period stat: time between gate fires (= each slot's poll period, intended g_pollUs).
@@ -979,8 +1197,8 @@ static void rfConnStep()
 		}
 		lastCycleUs = nowUs;
 	}
-	g_lastPollUs += g_pollUs;
-	if ((uint32_t)(nowUs - g_lastPollUs) >= (uint32_t)g_pollUs)
+	g_lastPollUs += pollCycleUs;
+	if ((uint32_t)(nowUs - g_lastPollUs) >= pollCycleUs)
 		g_lastPollUs = nowUs; // catch-up reset when a cycle overran
 
 	unsigned long nowMs = millis();
@@ -996,30 +1214,74 @@ static void rfConnStep()
 			rfConnTx(ch, 0x01, pa, 3, 600);
 		}
 		rfConnQueueHapticRelay();
-		{
-			uint8_t rs1 =
-				(uint8_t)((((g_relayPid[k]++) & 3) << 1) | 1);
-			if (rfConnFlushRelay(ch, rs1))
-				g_stRelay[k]++;
-		}
 		// per-slot PID cycle so each bonded controller's polls stay distinct
 		uint8_t pidv = g_pollPid[k]++;
 		uint8_t s1 = (g_e3mode == 1) ?
 				     (uint8_t)(((pidv & 3) << 1) | 1) :
 			     (g_e3mode == 2) ? (uint8_t)((pidv & 3) << 1) :
 					       0x07;
-		uint8_t rx;
-		if (g_pollGet) {
-			// legacy: E3 + TLV [len=02][subtype=01 GET][id=0x45][param]
-			uint8_t p[5] = { 0xE3, 0x02, 0x01, 0x45, g_getParam };
-			rx = rfConnTx(ch, s1, p, 5);
+		uint8_t rx = 0;
+		bool forceOrdinaryFeaturePoll =
+			rfConnFeatureForceOrdinaryPoll((uint8_t)k);
+		bool featureFetchEligible =
+			rfConnFeatureFetchEligible((uint8_t)k);
+		bool featureTurnConsumed = false;
+		bool featureOrPcmNeedsStandalone =
+			pcmRelayNeedsStandalone((uint8_t)k) ||
+			featureFetchEligible;
+		bool pcmActive = pcmSessionActive((uint8_t)k);
+		bool pcmPending = pcmRelayPending((uint8_t)k);
+		// Response-bearing feature queries must run in their own RF turn.
+		// Fire-and-forget relay traffic can wait behind an active PCM stream.
+		bool deferRelayForPcm = pcmActive && pcmPending &&
+					!featureOrPcmNeedsStandalone;
+		if (!forceOrdinaryFeaturePoll && !featureOrPcmNeedsStandalone &&
+		    rfConnFlushPcm(ch, s1, &rx)) {
+			g_stRelay[k]++;
 		} else {
-			// real puck: BARE E3 (just the opcode) -- the controller streams F1 to any E3 ack
-			uint8_t p[1] = { 0xE3 };
-			rx = rfConnTx(ch, s1, p, 1);
+			if (!forceOrdinaryFeaturePoll && !deferRelayForPcm) {
+				uint8_t rs1 = (uint8_t)((((g_relayPid[k]++) & 3)
+							 << 1) |
+							1);
+				if (rfConnFlushRelay(ch, rs1))
+					g_stRelay[k]++;
+				featureTurnConsumed =
+					rfConnFeatureTurnConsumed((uint8_t)k);
+			}
+			if (!featureTurnConsumed) {
+				bool coframeWaitPollAuth =
+					rfConnFeatureCoframeWaitPollAuthBegin(
+						(uint8_t)k);
+				bool lateWaitPollAuth =
+					!coframeWaitPollAuth &&
+					rfConnFeatureLateWaitPollAuthBegin(
+						(uint8_t)k);
+
+				// Only ordinary E3 polls contribute to link-quality evidence;
+				// relay/feature transactions have different reply semantics.
+				if (g_pollGet) {
+					// legacy: E3 + TLV [len=02][subtype=01 GET][id=0x45][param]
+					uint8_t p[5] = { 0xE3, 0x02, 0x01, 0x45,
+							 g_getParam };
+					rx = rfConnTx(ch, s1, p, sizeof p);
+				} else {
+					// real puck: BARE E3 (just the opcode) -- the controller streams F1 to any E3 ack
+					uint8_t p[1] = { 0xE3 };
+					rx = rfConnTx(ch, s1, p, sizeof p);
+				}
+				if (coframeWaitPollAuth)
+					rfConnFeatureCoframeWaitPollAuthEnd(
+						(uint8_t)k);
+				else if (lateWaitPollAuth)
+					rfConnFeatureLateWaitPollAuthEnd(
+						(uint8_t)k);
+				else
+					rfConnFeaturePollCompleted((uint8_t)k);
+			}
 		}
 		if (rx)
 			g_chF1[0]++;
+
 		g_stPoll[k]++; // one true poll cycle for this slot
 		g_connPoll++;
 	};
@@ -1079,7 +1341,7 @@ void rfLinkTask()
 	// Poll before beacons: the cycle gate must fire as close to its
 	// 4 ms deadline as possible; beacon TX (up to 3.6 ms for 4 slots)
 	// runs after so it never delays the current poll.
-	if (g_connOn && millis() - g_connCooldown > 2500) {
+	if (g_connOn && connCooldownDone()) {
 		rfConnStep();
 	} // connected-mode: poll controller, read input
 
@@ -1087,7 +1349,7 @@ void rfLinkTask()
 	// real puck's per-hop-cycle announce) to stay synced and keep answering polls at full rate; suppressing it
 	// drops the reply rate from ~210/s to ~38/s. Paused only during the post-disconnect cooldown so a controller
 	// that's powering off isn't immediately re-woken/reconnected.
-	if (g_rfHost && millis() - g_connCooldown > 2500) {
+	if (g_rfHost && connCooldownDone()) {
 		bool connNow = anySlotLinkUp();
 		// session keepalive on the clean channel: every loop while connecting (fast), every 25ms once connected
 		// (every-loop beaconing also hammers the session ch and steals reply slots from the poll). The real puck
@@ -1159,7 +1421,7 @@ void rfLinkTask()
 	// connected slot being stalled, so one controller walking off (others still live) never trips it; the
 	// cooldown gate keeps it from firing while a controller is intentionally powering off; rate-limited so it
 	// cannot thrash. g_rfStallRecover is surfaced to the panel so the wedge -- and its recovery -- is observable.
-	if (g_connOn && g_curSlot >= 0 && millis() - g_connCooldown > 2500) {
+	if (g_connOn && g_curSlot >= 0 && connCooldownDone()) {
 		static unsigned long lastRecoverMs = 0;
 		static uint8_t consecStall = 0;
 		unsigned long nowMs2 = millis();

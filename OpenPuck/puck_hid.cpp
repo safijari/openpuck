@@ -14,6 +14,7 @@
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
+#include <stdio.h>
 
 uint8_t g_fwdNewOnly = 1;
 // Content dedup for the Steam input forward: only forward a 0x45/0x42 report when its body EXCLUDING the
@@ -134,7 +135,8 @@ static Adafruit_USBD_HID hid[NSLOT];
 // avoids printf here). handleSet/handleGet (usbd task) push a compact record under PRIMASK; puckCmdLogDrain()
 // prints them from loop() context. When g_cmdCapture is on, the high-rate I45 input stream is also suppressed
 // (rf_link) so the command sequence is readable. Toggle from the console with "FC".
-bool g_cmdCapture = true;
+// Serial feature-command streaming is opt-in via console "FC".
+bool g_cmdCapture = false;
 struct FCmdRec {
 	uint8_t dir; // 0 = SET (host->puck write), 1 = GET (host read)
 	uint8_t iface; // HID interface index = bond slot the command hit
@@ -163,24 +165,57 @@ static void fcPush(uint8_t dir, int iface, uint8_t rid, uint8_t cmd,
 	}
 	__set_PRIMASK(pm);
 }
+#ifndef FC_DRAIN_MAX_PER_LOOP
+#define FC_DRAIN_MAX_PER_LOOP 1u
+#endif
 void puckCmdLogDrain(void)
 {
-	// boosted: runs at Steam's feature-storm rate and CDC flush enters the same TinyUSB DMA claim window
-	// as HID sends (the issue-72 livelock; see usb_tx.cpp)
-	usbTxBoost();
-	while (g_fcHead != g_fcTail) {
-		if (Serial.availableForWrite() < 70)
-			break; // don't stall loop on CDC backpressure; resume next iteration
+	if (!g_cmdCapture || g_fcHead == g_fcTail)
+		return;
+
+	for (uint8_t drained = 0;
+	     drained < FC_DRAIN_MAX_PER_LOOP && g_fcHead != g_fcTail;
+	     drained++) {
 		FCmdRec r = g_fc[g_fcTail];
+
+		// Format only in the normal loop task (large stack), never on TinyUSB's
+		// ~800-byte usbd callback stack. One bounded line + one CDC write keeps
+		// diagnostics from monopolizing the RF/USB loop under feature storms.
+		char line[128];
+		int used = snprintf(line, sizeof line,
+				    "# FC %s if=%u rid=%u cmd=%02X len=%u:",
+				    r.dir ? "GET" : "SET", r.iface, r.rid,
+				    r.cmd, r.len);
+		if (used < 0)
+			return;
+		if (used >= (int)sizeof line)
+			used = sizeof line - 1;
+
+		for (uint8_t i = 0; i < 10 && used < (int)sizeof line - 4;
+		     i++) {
+			int n = snprintf(line + used,
+					 sizeof line - (size_t)used, " %02X",
+					 r.b[i]);
+			if (n <= 0)
+				break;
+			if (n >= (int)(sizeof line - (size_t)used)) {
+				used = sizeof line - 1;
+				break;
+			}
+			used += n;
+		}
+		if (used < (int)sizeof line - 1)
+			line[used++] = '\n';
+
+		// Preserve the record when CDC is full; retry it on the next loop.
+		if (Serial.availableForWrite() < used)
+			break;
+
 		g_fcTail = (uint8_t)((g_fcTail + 1) & 31);
-		Serial.printf("# FC %s if=%u rid=%u cmd=%02X len=%u:",
-			      r.dir ? "GET" : "SET", r.iface, r.rid, r.cmd,
-			      r.len);
-		for (uint8_t i = 0; i < 10; i++)
-			Serial.printf(" %02X", r.b[i]);
-		Serial.println();
+		usbTxBoost();
+		Serial.write((const uint8_t *)line, (size_t)used);
+		usbTxUnboost();
 	}
-	usbTxUnboost();
 }
 
 // ===================== seamless LIZARD decision =====================
@@ -242,8 +277,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	//   0x83 HAPTIC_LFO_TONE(9) 0x84 HAPTIC_LOG_SWEEP(8) 0x85 HAPTIC_SCRIPT(3)  0x86 (3, unnamed)
 	// These ids are NOT the feature-0x01 command ids (controller_constants.h) -- same numbers, different
 	// meanings -- so a rule written for one channel must never be applied to the other.
-	// The 63-byte settings/config reports 0x87/0x88/0x89 are NOT haptics and reach the controller via the
-	// feature-0x01 passthrough path instead.
+	// OUTPUT 0x87/0x88/0x89 are Triton PCM reports, a separate HID namespace
+	// from FEATURE commands with overlapping numeric IDs; full 63-byte bodies use the PCM queue.
 	if (type == HID_REPORT_TYPE_OUTPUT) {
 		if (rid >= 0x80 && rid <= 0x89) {
 			// capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
@@ -269,31 +304,35 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// (issues #163 / #166): "Soft Press" survived because it rides 0x82 ID_OUT_REPORT_HAPTIC_COMMAND,
 		// while every pulse-based click was thrown away. Pulses are self-terminating (repeat_count in the
 		// payload), so there is no latch to strand and no stop frame to lose.
-		if (g_hapticRelay && rid >= 0x80 && rid <= 0x86 && n >= 1 &&
-		    hapticRelaySlotOk(slot) && !lizardActive() && !muted) {
-			if (!haptic82Blocked(slot)) {
-				relayEnqueue(rid, b,
-					     (uint8_t)(n > RELAY_MAXP ?
-							       RELAY_MAXP :
-							       n),
-					     true, (uint8_t)slot);
+		uint8_t liveOutputTargets = 0,
+			outputRouteDecision = HROUTE_NO_LIVE;
+		int resolvedSlot = hapticResolveRelaySlot(
+			slot, &liveOutputTargets, &outputRouteDecision);
+		bool outputRelayAllowed =
+			g_hapticRelay && rid >= 0x80 && rid <= 0x89 && n >= 1 &&
+			resolvedSlot >= 0 && !lizardActive() && !muted;
+		if (outputRelayAllowed) {
+			if (!haptic82Blocked(resolvedSlot)) {
+				if (rid >= 0x87 && rid <= 0x89) {
+					if (n == 63u)
+						pcmEnqueue(
+							rid, b, n,
+							(uint8_t)resolvedSlot);
+				} else {
+					relayEnqueue(
+						rid, b,
+						(uint8_t)(n > RELAY_MAXP ?
+								  RELAY_MAXP :
+								  n),
+						true, (uint8_t)resolvedSlot);
+				}
 			}
 		}
 
-#if OPK_LOG
 		// Per-report Serial echo: gated to the diagnostic build only. handleSet runs on the TinyUSB device
-		// task, whose FreeRTOS stack is just 800 bytes; a Serial.printf there costs 200-500B and, stacked
-		// under TinyUSB's control-transfer frames + a preempting USB ISR, can blow the stack -> the exact
-		// SP-corruption-during-exception-entry that shows up as RR_LOCKUP. Production keeps this path
-		// printf-free; the same data is already in the OPK_LOG capture ring (hapLogAdd) for the WebUSB panel.
-		if (Serial.availableForWrite() > 80) {
-			Serial.printf("# OUT if%d rid=%02X n=%u:", slot, rid,
-				      n);
-			for (uint16_t i = 0; i < n && i < 14; i++)
-				Serial.printf(" %02X", b[i]);
-			Serial.println();
-		}
-#endif
+		// task, whose FreeRTOS stack is just 800 bytes; formatted Serial output there can exhaust the stack
+		// underneath TinyUSB control-transfer frames and a preempting USB ISR. Production keeps this path
+		// printf-free; the same data is captured to the OPK_LOG ring and formatted later from loop().
 		return;
 	}
 	if (type != HID_REPORT_TYPE_FEATURE || n < 1)
@@ -326,14 +365,15 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		}
 	}
 
-	// Controller power-off: Steam's "turn off controller" is feature-0x01 frame 9F 04 6F 66 66 21 ("off!"),
-	// confirmed from a real puck capture. The feature-0x01 relay below forwards it once; hapticSendShutdown
-	// bursts it for NO-ACK reliability. Slot-targeted: the command arrived on THIS controller's interface,
-	// so only this controller powers off (broadcasting killed all connected controllers at once).
-
-	// TODO: Why do we spam this? Doesn't the controller respond with a TAG4 upon command receival?
-	if (rid == 1 && cmd == IBEX_CMD_TURN_OFF_CONTROLLER)
+	// 0x9F is the feature-command namespace's TURN_OFF_CONTROLLER command.
+	// It arrived on this controller's interface, so only this slot is targeted;
+	// broadcast shutdown remains reserved for host-suspend/panel paths.
+	// hapticSendShutdown queues the single RF write and updates presentation state;
+	// return so generic feature passthrough cannot enqueue a duplicate copy.
+	if (rid == 1 && cmd == IBEX_CMD_TURN_OFF_CONTROLLER) {
 		hapticSendShutdown((uint8_t)slot);
+		return;
+	}
 
 	// report 0x01 = raw passthrough -> queue for RF relay to the controller
 	if (rid == 1 && n >= 2) {
@@ -381,6 +421,23 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 
 		// clang-format on
 
+		uint32_t queryGeneration = 0;
+		if (relayQuery && slot >= 0 && slot < NSLOT) {
+			uint32_t pm = __get_PRIMASK();
+			__disable_irq();
+			queryGeneration = S.queryHostGeneration + 1u;
+			if (queryGeneration == 0u)
+				queryGeneration = 1u;
+			S.queryHostGeneration = queryGeneration;
+			if (S.queryResponseReady) {
+				S.queryResponseReady = 0;
+				S.queryResponseCmd = 0;
+				S.queryResponseSelector = 0;
+				S.queryResponseSelectorValid = 0;
+				S.queryResponseGeneration = 0;
+			}
+			__set_PRIMASK(pm);
+		}
 		bool queryArmed = false;
 		bool relayOk = hapticRelaySlotOk(slot) && !localAnswer;
 		if (relayOk) {
@@ -388,17 +445,15 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			// multi-register 0x87 settings blocks (LED brightness) and calibration writes exceed the old
 			// 18B cap, and the chopped frames were why those settings never landed on the controller.
 			uint8_t rl = (len <= pln) ? len : (uint8_t)pln;
-#if OPK_LOG
-			if (len > RELAY_MAXP && Serial.availableForWrite() > 60)
-				Serial.printf(
-					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
-					cmd, len, (unsigned)RELAY_MAXP);
-#endif
-			relayEnqueue(cmd, pl, rl, false, (uint8_t)slot,
-				     relayQuery);
+			// Diagnostic build only -- no formatted Serial output on the 800-byte usbd-task stack in production.
+			// The GET is captured to the OPK_LOG ring above and drained from loop context.
+			bool queued = relayEnqueue(cmd, pl, rl, false,
+						   (uint8_t)slot, relayQuery);
+			// relayEnqueue snapshots the host generation into this response-bearing FIFO entry.
 
-			if (relayQuery && slot >= 0 && slot < NSLOT) {
-				g_slot[slot].pendingQueryCmd = cmd;
+			if (relayQuery && queued && slot >= 0 && slot < NSLOT) {
+				// Actual ownership is armed by rfConnFlushRelay at RF transmit time.
+				g_slot[slot].pendingQueryFailed = 0;
 				queryArmed = true;
 			}
 		}
@@ -409,24 +464,29 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// GET(rid=1), seeing pendingQueryCmd==0, would silently hand Steam stale/wrong data instead of
 		// a defined answer. Same echo shape the old always-run `default:` switch case used.
 		if (!queryArmed) {
-			S.resp[0] = cmd;
-			S.resp[1] = len;
-			if (pln)
-				memcpy(S.resp + 2, pl, pln > 60 ? 60 : pln);
-			S.resp_len = 63;
+			if (relayQuery && queryGeneration != 0u) {
+				uint32_t pm = __get_PRIMASK();
+				__disable_irq();
+				S.queryConsumedGeneration = queryGeneration;
+				__set_PRIMASK(pm);
+			}
+			// Ordinary RID1 writes may still relay, but a completed controller query
+			// owns S.resp until its first matching GET consumes it.
+			uint32_t pm = __get_PRIMASK();
+			__disable_irq();
+			if (!S.queryResponseReady) {
+				S.resp[0] = cmd;
+				S.resp[1] = len;
+				if (pln)
+					memcpy(S.resp + 2, pl,
+					       pln > 60 ? 60 : pln);
+				S.resp_len = 63;
+			}
+			__set_PRIMASK(pm);
 		}
 	}
-#if OPK_LOG
-	// Diagnostic-build only -- see the OUTPUT-path note: no Serial.printf on the 800B usbd-task stack in
-	// production (LOCKUP mitigation). The feature SET is already captured to the OPK_LOG ring above.
-	if (Serial.availableForWrite() > 80) {
-		Serial.printf("# SET if%d rid=%02X cmd=%02X len=%u:", slot, rid,
-			      cmd, len);
-		for (uint16_t i = 0; i < n && i < 14; i++)
-			Serial.printf(" %02X", b[i]);
-		Serial.println();
-	}
-#endif
+	// Diagnostic-build only -- see the OUTPUT-path note: no formatted Serial output on the 800-byte usbd-task
+	// stack in production. The feature SET is already captured to the OPK_LOG ring above and drained in loop().
 	if (rid == 2) {
 		memset(S.resp, 0, sizeof S.resp);
 		S.resp_len = 0;
@@ -452,32 +512,56 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		break;
 	case IBEX_CMD_GET_STRING_ATTRIBUTE: { // 0xAE
 		uint8_t idx = pln > 0 ? pl[0] : 1;
-		// Report-id 1 = string attributes of the bonded CONTROLLER, not the puck. Not handled here, this request
-		// will have been forwarded to the controller by earlier code.
 		S.resp[0] = IBEX_CMD_GET_STRING_ATTRIBUTE;
-		S.resp[1] = 0x14; // todo: is this correct?
+		S.resp[1] =
+
+			// 20 value bytes: selector + at most 19 text bytes
+			0x14;
 		S.resp[2] = idx;
 		memset(S.resp + 3, 0, 60);
-		// Any other idx -> "NA".
-		const char *s = (idx == 0 || idx == 4) ? g_board :
-				(idx == 1)	       ? g_unit :
-				(idx == 3)	       ? "OpenPuck " :
-							 "NA";
-		memcpy(S.resp + 3, s, strlen(s));
 		if (idx == 3) {
 			// The official puck has a 12-character GIT commit hash of the firmware in here.
-			// Since I doubt any official process is ever going to parse / use this,
-			// looks like the perfect place to put the OpenPuck version number.
-			char *off = (char *)(S.resp + 3 + strlen(s));
-			memcpy(off, OPK_BUILD_VERSION,
-			       strlen(OPK_BUILD_VERSION));
-			off += strlen(OPK_BUILD_VERSION);
-			memcpy(off, " ", 1);
-			memcpy(off + 1, OPK_GIT_HASH, strlen(OPK_GIT_HASH));
-			if (OPK_GIT_DIRTY != 0) {
-				off += 1 + strlen(OPK_GIT_HASH);
-				memcpy(off, "-dirty", 6);
+			// OpenPuck uses the same slot for its build version plus an 8-character Git hash.
+			// Reserve the complete OpenPuck hash; truncate only version text.
+			const size_t textCap = 19u;
+			const char *hash = OPK_GIT_HASH;
+			size_t hashLen = strlen(hash);
+			if (hashLen > 8u)
+				hashLen = 8u;
+			size_t used = 0u;
+			memcpy(S.resp + 3, "OPK-", 4u);
+			used = 4u;
+			if (OPK_BUILD_VERSION[0] != '\0') {
+				size_t reserve = hashLen ? 1u + hashLen : 0u;
+				size_t room = textCap - used;
+				size_t versionCap =
+					room > reserve ? room - reserve : 0u;
+				size_t versionLen = strlen(OPK_BUILD_VERSION);
+				if (versionLen > versionCap)
+					versionLen = versionCap;
+				if (versionLen) {
+					memcpy(S.resp + 3 + used,
+					       OPK_BUILD_VERSION, versionLen);
+					used += versionLen;
+				}
+				if (hashLen && used < textCap)
+					S.resp[3 + used++] = ' ';
 			}
+			if (hashLen && used < textCap) {
+				size_t n = textCap - used;
+				if (n > hashLen)
+					n = hashLen;
+				memcpy(S.resp + 3 + used, hash, n);
+			}
+		} else {
+			// Any other idx -> "NA".
+			const char *value = (idx == 0 || idx == 4) ? g_board :
+					    (idx == 1)		   ? g_unit :
+								     "NA";
+			size_t n = strlen(value);
+			if (n > 19u)
+				n = 19u;
+			memcpy(S.resp + 3, value, n);
 		}
 		S.resp_len = 63;
 		break;
@@ -502,9 +586,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	case IBEX_CMD_ENABLE_PAIRING: // 0xAD
 		// TODO: Check if this should be relayed?
 		g_pairing = (pln > 0 && pl[0] != 0);
-#if OPK_LOG
-		Serial.printf("# pairing %s\n", g_pairing ? "ON" : "off");
-#endif
+		// OPK_LOG: callback-safe binary capture only; formatted CDC output is deferred to loop().
 		S.resp[0] = IBEX_CMD_ENABLE_PAIRING;
 		S.resp[1] = 0;
 		S.resp_len = 63;
@@ -525,10 +607,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 					relayClearSlot((uint8_t)slot);
 			}
 			g_dirty = true;
-#if OPK_LOG
-			Serial.printf("# slot %d %s\n", slot,
-				      recEmpty(pl) ? "cleared" : "bonded");
-#endif
+			// OPK_LOG: callback-safe binary capture only; formatted CDC output is deferred to loop().
 		}
 		S.resp[0] = IBEX_CMD_TRITON_A2_OBSERVED_PAIRING_RECORD;
 		S.resp[1] = 0;
@@ -566,10 +645,8 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	// GET-based stamp entirely; a read alone no longer suppresses lizard.
 	Slot &S = g_slot[slot];
 
-	// A feature-01 query (0x83/0xAE/0xED, relayed for real when rid==1 -- see handleSet's `relayQuery`)
-	// is still waiting on the controller's actual reply: `resp` only holds the local placeholder for it
-	// right now (pendingQueryCmd, bonds.h; cleared by rf_link.cpp when the real answer lands).
-	// STALL this GET so the host retries shortly after (-EPIPE), like the real Puck does.
+	// A feature-01 query (0x83/0xAE/0xED, relayed for real when rid==1) can still be waiting on the
+	// controller's actual reply. STALL this GET so the host retries shortly after (-EPIPE), like the real Puck.
 	//
 	// Returning plain 0 does NOT stall here: this device's reports are all NUMBERED (report id 1/2), and
 	// TinyUSB's callback (adafruit/Adafruit_TinyUSB_Arduino, src/class/hid/hid_device.c)
@@ -579,27 +656,71 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	//   xferlen += tud_hid_get_report_cb(...);   // <- our return value lands here
 	//   TU_ASSERT(xferlen > 0);                  // stalls the control transfer iff this is false
 	// -- so xferlen is already 1 before we're even asked, and adding our 0 leaves it at 1: the assert
-	// never fires and TinyUSB happily ships that lone prepended report-id byte as a "successful" 1-byte
-	// reply.
+	// never fires and TinyUSB happily ships that lone prepended report-id byte as a "successful" 1-byte reply.
 	// This bug has been reported to upstream at https://github.com/hathach/tinyusb/issues/3814
 	//
 	// `xferlen` is uint16_t, so returning (uint16_t)-1 (0xFFFF) makes `1 + 0xFFFF` wrap to exactly 0
-	// -- landing on the SAME TU_ASSERT(xferlen > 0) failure a genuinely-empty callback would have hit,
-
-	// The additional check for rid is necessary so if the controller never replies, a new query for a
-	// puck feature can get the puck un-stuck.
-
+	// -- landing on the SAME TU_ASSERT(xferlen > 0) failure a genuinely-empty callback would have hit.
+	// The generation and pending-query guards below ensure a later independent feature query is not held
+	// behind an abandoned response.
 	// TODO: This is a very, very, very ugly solution and may break with library updates. Can we find a cleaner one?
-	if (rid == 1 && S.pendingQueryCmd != 0 && reqlen > 1) {
+	if (rid == 1 && reqlen > 1 && !S.queryResponseReady &&
+	    S.queryHostGeneration != S.queryConsumedGeneration) {
+		return 0xFFFF;
+	}
+	if (rid == 1 && reqlen > 1 && !S.queryResponseReady &&
+	    (S.pendingQueryCmd != 0 || S.pendingQueryFailed ||
+	     relayQueryPending((uint8_t)slot))) {
 		return 0xFFFF;
 	}
 
 	// rf_link.cpp will set pendingQueryCmd to 0 once the controller answered.
 
-	uint16_t n = S.resp_len ? S.resp_len : 63;
+	// Snapshot the completed response and consume ownership atomically. A
+	// ready response always wins over a later queued query; the queued query can TX
+	// only after this GET releases queryResponseReady.
+	uint16_t n;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	n = S.resp_len ? S.resp_len : 63;
 	if (n > reqlen)
 		n = reqlen;
+	bool consumeReady = false;
+	if (rid == 1 && S.queryResponseReady) {
+		bool generationOk = S.queryResponseGeneration != 0u &&
+				    S.queryResponseGeneration ==
+					    S.queryHostGeneration;
+		if (!generationOk) {
+			S.queryResponseReady = 0;
+			S.queryResponseCmd = 0;
+			S.queryResponseSelector = 0;
+			S.queryResponseSelectorValid = 0;
+			S.queryResponseGeneration = 0;
+			__set_PRIMASK(pm);
+			return 0xFFFF;
+		}
+		bool cmdOk = S.resp[0] == S.queryResponseCmd;
+		bool selectorOk =
+			!S.queryResponseSelectorValid ||
+			(S.queryResponseCmd == IBEX_CMD_GET_STRING_ATTRIBUTE &&
+			 S.resp[1] >= 1 &&
+			 S.resp[2] == S.queryResponseSelector);
+		consumeReady = cmdOk && selectorOk;
+		if (!consumeReady) {
+			__set_PRIMASK(pm);
+			return 0xFFFF;
+		}
+	}
 	memcpy(buf, S.resp, n);
+	if (consumeReady) {
+		S.queryConsumedGeneration = S.queryResponseGeneration;
+		S.queryResponseReady = 0;
+		S.queryResponseCmd = 0;
+		S.queryResponseSelector = 0;
+		S.queryResponseSelectorValid = 0;
+		S.queryResponseGeneration = 0;
+	}
+	__set_PRIMASK(pm);
 	// Flight recorder (every GET, un-deduped): a read STORM -- e.g. the "AE x39" identity hammering seen before
 	// the identity fix -- is itself a wedge signal, so we want it filling the post-mortem trail if it happens.
 	faultDiagTrace(FR_GET, (uint16_t)((rid << 8) | S.resp[0]));
@@ -625,21 +746,26 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 			// serial feature-command capture: what Steam READ on this interface + our answer
 			fcPush(1, slot, rid, S.resp[0], (uint8_t)n, S.resp + 2,
 			       10);
-#if OPK_LOG
-			// Diagnostic build only -- no Serial.printf on the 800B usbd-task stack in production (LOCKUP
-			// mitigation). The GET is captured to the OPK_LOG ring above for the WebUSB panel.
-			if (Serial.availableForWrite() > 80)
-				Serial.printf(
-					"# GET if%d rid=%02X reqlen=%u -> %02X %02X %02X (batt=%u%%)\n",
-					slot, rid, reqlen, S.resp[0], S.resp[1],
-					S.resp[2],
-					(slot >= 0 && slot < NSLOT) ?
-						g_battery[slot] :
-						0);
-#endif
+			// OPK_LOG: callback-safe binary capture only; formatted CDC output is deferred to loop().
 		}
 	}
 	return n;
+}
+
+// TinyUSB control SET_REPORT calls the callback with report ID separate from the body.
+// Interrupt OUT calls it as OUTPUT/rid=0 with the report ID in buffer[0]. Normalize
+// that transport difference while keeping handleSet() semantics unchanged.
+static void opkInterruptOutDispatchSet(int slot, uint8_t r, hid_report_type_t t,
+				       uint8_t const *b, uint16_t n)
+{
+	if (t == HID_REPORT_TYPE_OUTPUT && r == 0u) {
+		if (!b || n < 1u)
+			return;
+		handleSet(slot, b[0], HID_REPORT_TYPE_OUTPUT, b + 1,
+			  (uint16_t)(n - 1u));
+		return;
+	}
+	handleSet(slot, r, t, b, n);
 }
 
 // one callback pair per interface (the Adafruit core routes by interface to the matching object)
@@ -647,7 +773,7 @@ static uint16_t handleGet(int slot, uint8_t rid, hid_report_type_t type,
 	static void setcb##N(uint8_t r, hid_report_type_t t, uint8_t const *b, \
 			     uint16_t n)                                       \
 	{                                                                      \
-		handleSet(N, r, t, b, n);                                      \
+		opkInterruptOutDispatchSet(N, r, t, b, n);                     \
 	}                                                                      \
 	static uint16_t getcb##N(uint8_t r, hid_report_type_t t, uint8_t *bf,  \
 				 uint16_t rl)                                  \
@@ -697,7 +823,10 @@ void SteamPuckController::begin()
 	const uint16_t descLen = (g_usbMode == MODE_LIZARD) ?
 					 sizeof PUCK_LIZARD_HID_DESC :
 					 sizeof PUCK_HID_DESC;
+	// Steam slot HIDs expose interrupt OUT; Lizard remains descriptor-compatible IN-only.
+	const bool steamInterruptOut = (g_usbMode == MODE_STEAM);
 	for (int i = 0; i < NSLOT; i++) {
+		hid[i].enableOutEndpoint(steamInterruptOut);
 		hid[i].setReportDescriptor(desc, descLen);
 		hid[i].setReportCallback(GETCB[i], SETCB[i]);
 

@@ -17,11 +17,42 @@ struct Slot {
 	uint8_t resp[63];
 	uint16_t resp_len;
 
-	// 0 = none; else the feature-01 cmd byte (0x83/0xAE/0xED/...) just relayed to this slot's controller
-	// (puck_hid.cpp handleSet, usbd task) and awaiting its real reply. Cleared by rf_link.cpp (loop/RF
-	// context) when the controller has responded to this request and overwrote resp with the response.
-	// Not persisted.
-	volatile uint8_t pendingQueryCmd;
+	// Controller feature queries are serialized per slot. Failure state stays separate
+	// from resp so a reject or timeout never destroys the last valid response. These
+	// fields are runtime-only and are not persisted.
+	volatile uint8_t
+
+		// 0 = none; otherwise the query currently on-air
+		pendingQueryCmd;
+	volatile uint8_t
+
+		// host GET stalls until a new query is queued
+		pendingQueryFailed;
+	volatile uint8_t
+
+		// 0xAE selector distinguishes concurrent same-command replies
+		pendingQuerySelector;
+	volatile uint8_t pendingQuerySelectorValid;
+	volatile uint32_t pendingQueryDeadlineMs;
+	// Once Type-4 completes, keep that exact controller
+	// response immutable until the host consumes it with a matching RID1 GET.
+	volatile uint8_t queryResponseReady;
+	volatile uint8_t queryResponseCmd;
+	volatile uint8_t queryResponseSelector;
+	volatile uint8_t queryResponseSelectorValid;
+	// The newest response-bearing RID1 SET owns
+	// queryHostGeneration; queued/on-air/ready stages carry that generation end-to-end.
+	volatile uint32_t queryHostGeneration;
+	volatile uint32_t pendingQueryGeneration;
+	volatile uint32_t queryResponseGeneration;
+	// A successfully queued host generation remains unresolved
+	// until its matching ready response is consumed. This persists across the
+	// relay-FIFO dequeue -> pendingQueryCmd RF-arm transition.
+	volatile uint32_t queryConsumedGeneration;
+	volatile uint32_t
+
+		// actual 0x9F TX time; Type-2 ownership only
+		shutdownStatusOwnerMs;
 };
 extern Slot g_slot[NSLOT];
 

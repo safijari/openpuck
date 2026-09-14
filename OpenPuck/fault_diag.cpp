@@ -98,6 +98,8 @@ extern "C" void HardFault_Handler(void)
 void faultDiagArmIntentionalReset()
 {
 	NRF_POWER->GPREGRET2 = G2_INTENT;
+	if (NRF_WDT->RUNSTATUS && (NRF_WDT->RREN & WDT_RREN_RR0_Msk))
+		NRF_WDT->RR[0] = WDT_RR_RR_Reload;
 }
 
 // Live stage + loop heartbeat. The post-reset GPREGRET2 breadcrumb only works if the bootloader preserves

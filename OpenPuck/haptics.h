@@ -25,9 +25,8 @@
 #define HAPTIC_BLOCK_MS_DEFAULT 10000u
 // max relayed payload bytes per entry: RF frame = [E3][len][05][rid][payload] and MAXLEN=64 -> 60
 #define RELAY_MAXP 60u
-// Controller power-off: hapticSendShutdown() relays Steam's confirmed "turn off controller" command (feature-0x01
-// cmd 0x9F, payload "off!" -- captured from the real puck). Sent as a small burst because the RF relay is NO-ACK.
-#define HAPTIC_SHUTDOWN_SHOTS 3u
+// Controller power-off: feature command IBEX_CMD_TURN_OFF_CONTROLLER (0x9F), payload "off!".
+// One transmission receives the controller status ACK; do not duplicate this write.
 // Rumble strength: percent of the decoded host amplitude applied in every translated (non-puck) mode. 200
 // (double) is the default the panel's removed rumble-strength slider shipped with, so an untouched puck feels
 // exactly as before. Runtime-adjustable and persisted -- console "RS<pct>".
@@ -106,6 +105,13 @@ extern uint16_t
 
 // anything still queued (xinput uses it to pace rumble re-queues)
 bool relayPending();
+bool relayQueryPending(uint8_t slot);
+
+// Feature queries remain owned by the transmitted RF transaction for this bounded response window.
+#define FEATURE_QUERY_TIMEOUT_MS 80u
+// A recent shutdown command temporarily owns Type-2 status attribution for this bounded interval.
+#define SHUTDOWN_STATUS_OWNER_MS 25u
+
 extern uint8_t g_relayOp; // relay frame opcode (E3 poll)
 extern uint8_t g_relaySub; // relay sub-TLV type byte = SET
 extern volatile uint8_t g_testHaptic; // 't<n>' injects n test haptics
@@ -114,7 +120,7 @@ extern volatile uint8_t g_hapticStop;
 // Per-slot block: arm after a (re)connect, drop haptics aimed at the slot for g_hapticBlockMs (when g_hapticBlockOn).
 extern unsigned long g_hapticBlockUntil[NSLOT];
 
-// relay the controller power-off (0x9F "off!"), burst x3. Steam's per-interface 0x9F passes that slot so
+// Relay controller power-off (0x9F "off!") exactly once. Steam's per-interface command targets one slot;
 // only that controller powers off; host-suspend / the panel test button keep the broadcast default (all off).
 void hapticSendShutdown(uint8_t slot = 0xFF);
 
@@ -148,6 +154,17 @@ static inline bool hapLogPull(uint32_t *, uint8_t *, uint8_t *, uint8_t *,
 bool hapticLinkUp(int slot = -1);
 bool haptic82Blocked(int slot = -1);
 bool hapticRelaySlotOk(int slot);
+
+// Output-haptic target resolution: exact live slot wins; when the selected duplicate
+// HID interface is inactive and exactly one controller is live, redirect safely to that sole live slot.
+enum HapticRouteDecision : uint8_t {
+	HROUTE_EXACT = 0,
+	HROUTE_SINGLE_FALLBACK = 1,
+	HROUTE_NO_LIVE = 2,
+	HROUTE_AMBIGUOUS = 3
+};
+int hapticResolveRelaySlot(int requestedSlot, uint8_t *liveCount = nullptr,
+			   uint8_t *decision = nullptr);
 // queue a Steam/Triton 0x80 rumble frame. `slot` = bond slot of the originating controller (0..NSLOT-1);
 // defaults to 0 for the legacy single-controller callers. Per-slot so each connected controller can have its
 // own active rumble stream when the host presents multiple gamepads (e.g. 4 XInput devices).
@@ -166,6 +183,63 @@ void rfConnQueueHapticRelay();
 // returns true if a relay frame was actually transmitted this call (queue had an entry), so the poll loop can
 // count relay TXs separately from poll cycles.
 bool rfConnFlushRelay(uint8_t ch, uint8_t s1);
+// Defer only a different response-bearing command after a consumed query.
+#define FEATURE_CROSS_COMMAND_QUIESCE_MS 24u
+// One delayed response-retrieval probe; the original query and its 80-ms deadline are unchanged.
+#define FEATURE_DELAYED_FETCH_DELAY_MS 24u
+// QUERY zero-RX skips one scheduler opportunity, then retries with the next
+// turn's S1/PID. FETCH same-PID zero-RX retries stay immediate; the initial
+// FETCH retry starts on the second later opportunity. Retry caps are unchanged.
+#define FEATURE_FETCH_WAIT_POLL 1u
+#define FEATURE_FETCH_ELIGIBLE 2u
+#define FEATURE_FETCH_FOLLOWUP_POLL 3u
+uint8_t rfConnFeatureFetchPhase(uint8_t slot);
+bool rfConnFeatureFetchPending(uint8_t slot);
+bool rfConnFeatureFetchEligible(uint8_t slot);
+bool rfConnFeatureForceOrdinaryPoll(uint8_t slot);
+void rfConnFeaturePollCompleted(uint8_t slot);
+// Terminal retrieval is evidence-gated; cached responses are not accepted
+// directly. Late acceptance is only during an already-required WAIT_POLL and
+// adds no RF call.
+bool rfConnFeatureLateWaitPollAuthBegin(uint8_t slot);
+void rfConnFeatureLateWaitPollAuthEnd(uint8_t slot);
+bool rfConnFeatureCoframeWaitPollAuthBegin(uint8_t slot);
+void rfConnFeatureCoframeWaitPollAuthEnd(uint8_t slot);
+bool rfConnFeatureTurnConsumed(uint8_t slot);
+// Recovery replays are one-shot. Same-S1/PID retransmit is allowed only after
+// zero RX and never creates another recovery stage or extends the deadline.
+// A valid stale Type4 may spend the first exact current-query replay.
+void rfConnFeatureObserveType4(uint8_t slot, uint8_t seenCmd, uint8_t reason);
+// Delayed-probe plus grace-poll silence shares that first replay budget.
+void rfConnFeatureObserveType4DuringDelayedProbe(uint8_t slot);
+// Only a new exact stale mismatch after the first stale replay can permit one
+// repeated-stale replay.
+void rfConnFeatureObserveType4AfterStaleReplay(uint8_t slot, uint8_t seenCmd,
+					       uint8_t reason);
+// A valid reason-0x20 prior-command mismatch that spent the first stale replay
+// may track the full-cycle silence branch; repeated-stale and silence recovery
+// are mutually exclusive.
+void rfConnFeatureObserveType4DuringPostStaleSilence(uint8_t slot);
+// Full-cycle silence after a no-Type4 replay permits one final exact replay on
+// the next scheduler RF opportunity.
+void rfConnFeatureObserveType4AfterNoType4Replay(uint8_t slot, uint8_t seenCmd,
+						 uint8_t reason);
+// A later stale/current reason-0x20 mismatch can preempt that silence path and
+// permit one cached current-query replay.
+void rfConnFeatureObserveType4ForPostNoType4Stale(uint8_t slot, uint8_t seenCmd,
+						  uint8_t reason);
+
+// Triton PCM transport: 63-byte OUTPUT PCM bodies use the controller's
+// E3/type-05 framing; active sessions run at 31 stereo samples / 8 kHz = 3875 us per RF turn.
+#define PCM_ACTIVE_CYCLE_US 3875u
+bool pcmEnqueue(uint8_t rid, const uint8_t *payload, uint16_t plen,
+		uint8_t slot);
+bool rfConnFlushPcm(uint8_t ch, uint8_t s1, uint8_t *rxOut);
+bool pcmSessionActive(uint8_t slot);
+bool pcmAnyActive(void);
+bool pcmRelayPending(uint8_t slot);
+bool pcmRelayNeedsStandalone(uint8_t slot);
+
 // times a relay-ring drain hit its iteration cap (head/tail desync or corruption) -- non-zero means we caught
 // and recovered from what would otherwise be an IRQ-off watchdog hang. Surfaced on the WebUSB panel.
 extern volatile uint16_t g_ringFault;

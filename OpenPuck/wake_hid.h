@@ -33,3 +33,9 @@ bool wakeHidReady();
 // send one boot-mouse movement report (buttons=0). This is the input that actually wakes the host: it rides the
 // interface Windows armed as the wake source, unlike a gamepad-slot report. Returns false if not ready.
 bool wakeHidMove(int8_t dx, int8_t dy);
+
+// Arm and service a harmless post-resume net-zero mouse nudge.
+// If this boot intentionally omitted the wake HID (strict console / debug exception),
+// wakeHidArmNudge() is a no-op; Steam's existing puck-HID fallback remains separate.
+void wakeHidArmNudge();
+void wakeHidTask();

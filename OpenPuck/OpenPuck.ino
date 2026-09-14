@@ -45,6 +45,13 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "usb_tx.h"
 #include <stdio.h>
 
+#include <nrf_gpio.h>
+
+static inline void feedWatchdogIfRunning()
+{
+	if (NRF_WDT->RUNSTATUS && (NRF_WDT->RREN & WDT_RREN_RR0_Msk))
+		NRF_WDT->RR[0] = WDT_RR_RR_Reload;
+}
 #if CFG_TUD_HID < 4
 #error "CFG_TUD_HID must be >= 4 (up to 4 HID interfaces per mode). Build with `make build` (bakes it in), or pass -DCFG_TUD_HID=4 in build.extra_flags."
 #endif
@@ -123,6 +130,8 @@ void modeSwitchReboot(uint8_t mode)
 
 void setup()
 {
+	// Restore watchdog margin immediately if a soft reset left WDT running.
+	feedWatchdogIfRunning();
 	// full-board wipe (debug-only "erase everything"): if the panel armed one, this never returns -- it erases
 	// the app + config/bond + bootloader-settings flash from RAM and resets into the app-less UF2 bootloader.
 	// Checked before the staged-update apply (both use the meta page; only one can be armed at a time).
@@ -262,8 +271,8 @@ void setup()
 		USBDevice.attach();
 	}
 	Serial.begin(115200);
-	for (int i = 0; i < 300 && !USBDevice.mounted(); i++)
-		delay(10); // wait up to 3s for USB mount, but NEVER hang
+	// Do not block RF/controller startup waiting for USB enumeration.
+	// TinyUSB continues enumeration asynchronously after USBDevice.attach().
 	if (USBDevice.suspended()) {
 		USBDevice.remoteWakeup();
 		ledWakePulse();
@@ -396,8 +405,13 @@ void loop()
 	faultDiagSetStage(7);
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
 	faultDiagSetStage(8);
-	usbTxPump(); // drain queued device->host reports HERE, in loop -- never off-loop (jitters the RF poll)
+	// deliver any armed post-resume wake nudge on the shared boot mouse
+	wakeHidTask();
+
+	// drain queued device->host reports HERE, in loop -- never off-loop (jitters the RF poll)
+	usbTxPump();
 	puckCmdLogDrain(); // print captured USB feature commands (diagnostic; no-op unless g_cmdCapture)
+	// loop-context only; one record max, Debug CDC boot only
 	loops++;
 	if (millis() - secMs >= 1000) {
 		g_loopPeriodUs = loops ? (uint16_t)(1000000UL / loops) : 0;
@@ -439,7 +453,12 @@ void loop()
 	faultDiagSetStage(7);
 	usbMountTask(); // dynamic mount/unmount of connected controllers (no-op unless enabled)
 	faultDiagSetStage(8);
-	usbTxPump(); // drain queued device->host reports HERE, in loop -- never off-loop (jitters the RF poll)
+	// deliver any armed post-resume wake nudge on the shared boot mouse
+	wakeHidTask();
+
+	// drain queued device->host reports HERE, in loop -- never off-loop (jitters the RF poll)
+	usbTxPump();
 	puckCmdLogDrain(); // print captured USB feature commands (diagnostic; no-op unless g_cmdCapture)
+	// loop-context only; one record max, Debug CDC boot only
 #endif
 }
