@@ -426,9 +426,8 @@ void serialConsolePoll()
 				g_hopIdx = 0;
 				g_qosBad = 0;
 				g_qosCheckMs = millis();
-				Serial.printf(
-					"# QoS adaptive channel hopping %s (candidates 18,46,76,22,68)\n",
-					g_qos ? "ON" : "off");
+				Serial.printf("# adaptive RF recovery %s\n",
+					      g_qos ? "ON" : "off");
 			} else if (line[0] == 'U') {
 				// Per-slot debug dump: which controllers are connected, their RSSI, haptic-block
 				// state, and session address. Quick at-a-glance view for multi-controller testing.

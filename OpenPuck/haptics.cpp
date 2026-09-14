@@ -690,6 +690,30 @@ void hapticOnReconnect(int slot)
 // hapticSteamRumble() path (so g_rumbleStyle / g_rumbleScale / the per-type rumble toggle all apply), and
 // schedule the stop. Deadline 0 = idle; millis()+MS can be 0 only once every 49 days, so bias it off zero.
 static unsigned long g_rumbleTestStop = 0;
+static unsigned long g_rfJournalBuilderTickStop = 0;
+static uint8_t g_rfJournalBuilderTickMask = 0;
+
+static const uint8_t RF_JOURNAL_BUILDER_TICK_ON[3] = { 0x01, 0x01, 0xF7 };
+static const uint8_t RF_JOURNAL_BUILDER_TICK_OFF[3] = { 0x01, 0x01, 0x00 };
+
+void hapticRfJournalBuilderTick(uint8_t participantMask)
+{
+	g_rfJournalBuilderTickMask = 0;
+	for (uint8_t s = 0; s < NSLOT; s++) {
+		const uint8_t bit = (uint8_t)(1u << s);
+		if ((participantMask & bit) && hapticLinkUp((int)s) &&
+		    relayEnqueue(0x82, RF_JOURNAL_BUILDER_TICK_ON,
+				 sizeof RF_JOURNAL_BUILDER_TICK_ON, true, s))
+			g_rfJournalBuilderTickMask |= bit;
+	}
+	if (!g_rfJournalBuilderTickMask) {
+		g_rfJournalBuilderTickStop = 0;
+		return;
+	}
+	g_rfJournalBuilderTickStop = millis() + RF_JOURNAL_BUILDER_TICK_MS;
+	if (!g_rfJournalBuilderTickStop)
+		g_rfJournalBuilderTickStop = 1;
+}
 
 void hapticTestRumble()
 {
@@ -709,6 +733,21 @@ void hapticTask()
 		for (uint8_t s = 0; s < NSLOT; s++)
 			hapticSteamRumble(0, 0, s);
 	}
+
+	// The journal-builder tick is outside the measured window. Queue explicit
+	// stops before the builder's inter-channel quiet guard expires.
+	if (g_rfJournalBuilderTickStop &&
+	    (long)(millis() - g_rfJournalBuilderTickStop) >= 0) {
+		g_rfJournalBuilderTickStop = 0;
+		const uint8_t mask = g_rfJournalBuilderTickMask;
+		g_rfJournalBuilderTickMask = 0;
+		for (uint8_t s = 0; s < NSLOT; s++)
+			if (mask & (uint8_t)(1u << s))
+				relayEnqueue(0x82, RF_JOURNAL_BUILDER_TICK_OFF,
+					     sizeof RF_JOURNAL_BUILDER_TICK_OFF,
+					     true, s);
+	}
+
 	// id9 steering (SET_SETTINGS index 9 = digital-mappings / the controller's AUTONOMOUS mapping+haptic
 	// engine, which is what generates the trackpad tick haptics). We decide per mode whether that autonomous
 	// engine should be ON, then either land id9=1 ONCE per connect episode (engine on) or hold id9=0 every

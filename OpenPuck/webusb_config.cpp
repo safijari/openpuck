@@ -3,6 +3,7 @@
 #include "config.h"
 #include "bonds.h"
 #include "rf_link.h"
+#include "radio.h"
 #include "haptics.h"
 #include "puck_hid.h"
 #include "triton.h" // g_in raw IMU (diagnostic readout)
@@ -94,13 +95,14 @@ static bool boardCommand(uint8_t op)
 //                [v12: relayps(lo,hi)][clkLfSrc][clkHfSrc][usPerMs(lo,hi)][hangStage][curStage][stallMs/40][ringFault(lo,hi)][hangPC u32][hangLR u32][usbdStackFree(lo,hi)][loopStackFree(lo,hi)]
 //                [v13: per-slot link stats, 4x9B from p[145]: {pollsps u16, f1ps u16, newps u16, crc/s u8,
 //                 noRx/s u8, relay/s u8} -- each controller's own rates (the v4 aggregates are their sums)]
-//                [v14/v17: p[181] landAll87 (verbatim-0x87-relay experiment toggle)]
+//                [v14/v17: p[181] legacy relay field, now Steam Machine emulation toggle (0xEE=on)]
 //                [v18: p[182..185] chordDpad left/up/right/down (back4+D-pad mode assignments)]
 //                [v19: p[186] swGyroLegacy (Switch Pro gyro mapping: 0 = corrected, 1 = legacy/pre-#189)]
 //                [v20: p[187..194] per-type trackpad->stick map, 4x2B {left pad, right pad} (PS_OFF/LEFT/RIGHT)]
 //                [v21: p[53] rumble strength as PERCENT/2 (field 22, revived); p[195] rumble style
 //                 (field 39, RUMBLE_STYLE_* in haptics.h)]
-#define WB_PAYLEN 194
+//                [v22: p[196] RF recovery status/journal transport capability marker (0x52)]
+#define WB_PAYLEN 195
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -129,6 +131,7 @@ static void webusbSendBlob()
 	// protocol version
 	// (21 = +rumble style (field 39, blob p[195]) and the REVIVED rumble-strength field 22 at blob p[53], 
 	// now carrying percent/2; 
+	// 22 = +RF recovery capability marker at blob p[196];
 	// 20 = +per-type trackpad->stick mapping (fields 80..87, blob p[187..194]); 
 	// 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the Switch report-rate and
 	// gyro-scale settings (fields 23/24, blob p[54..55]) are GONE -- those bytes read 0; 
@@ -148,7 +151,7 @@ static void webusbSendBlob()
 	// 7 = +raw accel; 
 	// 6 = +swPro120/gyroScale)
 	// clang-format on
-	p[2] = 21;
+	p[2] = 22;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -314,7 +317,8 @@ static void webusbSendBlob()
 		q[7] = g_slotNoRxps[s];
 		q[8] = g_slotRelayps[s];
 	}
-	// v14/v17: verbatim-0x87-relay (g_landAll87), later repurposed for Machine toggle
+	// v14/v17: verbatim-0x87-relay field, later repurposed for the Steam Machine toggle.
+	// Keep the current upstream meaning here; RF capability is append-only at p[196].
 	p[181] = (uint8_t)(g_isMachineInternal ? 0xEE : 0);
 	// v18: back4+D-pad mode assignments (panel renders these as selects next to the B/X/Y ones)
 	p[182] = g_chordDpad[CHD_LEFT];
@@ -330,6 +334,9 @@ static void webusbSendBlob()
 	}
 	// v21: host-rumble style (RUMBLE_STYLE_* -- see haptics.h)
 	p[195] = g_rumbleStyle;
+	// v22: append-only RF recovery transport capability. p[181] remains the
+	// upstream Steam Machine toggle; older RF builds used that byte for 0x52.
+	p[196] = 0x52;
 	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
 	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
 	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
@@ -484,6 +491,82 @@ static void webusbDrainFlight(bool restart)
 
 // Runs on the usbd task (registered via usbTxRegisterDrain -> tud_sof_cb). Sends the blob if loop() asked for
 // one. Keeps every usb_web write/flush off the loop task so it can't block on the device event queue.
+static volatile bool g_rfStatusRequest = false;
+
+static bool webusbSendRfStatus()
+{
+	if (!usb_web.connected())
+		return false;
+	static RfRecoveryStatus status;
+	rfRecoveryStatusSnapshot(&status);
+	// Append-only trailers after the counted channel rows preserve the v1
+	// header/row offsets: 4 bytes legacy handoff telemetry + 7 bytes journal-
+	// builder status + 1 byte ambient-survey progress + 5 bytes automatic-
+	// handoff admission/retry diagnostics + 3 bytes ambient-survey retry/failure
+	// diagnostics + 8 bytes full-width handoff elapsed time.
+	static uint8_t f[2 + 13 + RF_RECOVERY_STATUS_CHANNELS * 9 + 4 + 7 + 1 +
+			 5 + 3 + 8];
+	uint8_t *q = f + 2;
+	f[0] = 0xAD;
+	f[1] = (uint8_t)(sizeof f - 2u);
+	*q++ = status.version;
+	*q++ = status.flags;
+	*q++ = status.currentChannel;
+	*q++ = status.targetChannel;
+	*q++ = status.startupChannel;
+	*q++ = status.channelCount;
+	*q++ = status.journalWrites;
+	*q++ = (uint8_t)status.ambientGeneration;
+	*q++ = (uint8_t)(status.ambientGeneration >> 8);
+	*q++ = (uint8_t)status.journalSequence;
+	*q++ = (uint8_t)(status.journalSequence >> 8);
+	*q++ = (uint8_t)(status.journalSequence >> 16);
+	*q++ = (uint8_t)(status.journalSequence >> 24);
+	for (uint8_t i = 0; i < status.channelCount; i++) {
+		const RfChannelStatusEntry &entry = status.channel[i];
+		*q++ = entry.channel;
+		*q++ = entry.ambientRssi;
+		*q++ = entry.designation;
+		*q++ = entry.worstPct;
+		*q++ = entry.meanPct;
+		*q++ = entry.confidence;
+		*q++ = entry.trials;
+		*q++ = entry.penalty;
+		*q++ = entry.recentOrder;
+	}
+	*q++ = status.handoffPhase;
+	const uint16_t legacyHandoffElapsedMs =
+		status.handoffElapsedMs > 0xFFFFu ?
+			0xFFFFu :
+			(uint16_t)status.handoffElapsedMs;
+	*q++ = (uint8_t)legacyHandoffElapsedMs;
+	*q++ = (uint8_t)(legacyHandoffElapsedMs >> 8);
+	*q++ = status.handoffOldChannel;
+	*q++ = status.journalBuilderPhase;
+	*q++ = status.journalBuilderIndex;
+	*q++ = status.journalBuilderChannel;
+	*q++ = status.journalBuilderProgress;
+	*q++ = status.journalBuilderParticipantMask;
+	*q++ = status.journalBuilderBestChannel;
+	*q++ = status.journalBuilderFailure;
+	*q++ = status.ambientSurveyChannel;
+	*q++ = status.handoffWaitReason;
+	*q++ = (uint8_t)status.handoffNeutralMs;
+	*q++ = (uint8_t)(status.handoffNeutralMs >> 8);
+	*q++ = status.recoveryCooldownSeconds;
+	*q++ = status.recoveryFailedTarget;
+	*q++ = status.ambientSurveyRetry;
+	*q++ = status.ambientSurveyFailure;
+	*q++ = status.ambientSurveyFailureChannel;
+	for (uint8_t shift = 0; shift < 64u; shift += 8u)
+		*q++ = (uint8_t)(status.handoffElapsedMs >> shift);
+	if (tud_vendor_write_available() < sizeof f)
+		return false;
+	usb_web.write(f, sizeof f);
+	usb_web.flush();
+	return true;
+}
+
 static void webusbSofDrain(void)
 {
 	// If loop() has stopped beating, it's wedged -- keep pushing the blob (which carries the live stuck stage)
@@ -513,6 +596,8 @@ static void webusbSofDrain(void)
 		g_bondExportRequest = false;
 		webusbSendBondExport();
 	}
+	if (g_rfStatusRequest && webusbSendRfStatus())
+		g_rfStatusRequest = false;
 }
 // ---- live wedge reporter (0xA9) --------------------------------------------------------------------------
 // THE one channel that survives a loop() wedge on boards that wipe .noinit/GPREGRET across the watchdog reset
@@ -916,6 +1001,10 @@ void webusbPoll()
 
 				// every settable field persists (poll rate is no longer settable)
 				bool persist = true;
+				// RF controls (97..101) use the dedicated 0xAD reply only. Scheduling
+				// the generic 0xA5 blob as well lets the SOF drain expose either frame
+				// first and phase-shifts the browser's shared bulk-IN stream.
+				const bool rfStatusOnly = f >= 97u && f <= 101u;
 				// per-type cfg writes (protocol v10/v17): field = 40 + et*9 + k, k: 0..3 back, 4 qam, 5 abSwap,
 				// 6 padHaptics, 7 ledBright, 8 rumble. Edits g_type[et]; refresh the live mirrors if it's the active type.
 				if (f >= 40 && f < 40 + ET_COUNT * 9) {
@@ -1099,6 +1188,47 @@ void webusbPoll()
 					// (field 25, poll RX window, removed -- g_rxWin is now FIXED/not configurable)
 					// (fields 27/28, post-connect haptic block, removed -- permanently disabled)
 
+				// RF recovery controls reuse the field setter without its generic
+				// persistence path. Field 100 persists only the selected startup channel.
+				case 97:
+					g_rfStatusRequest = true;
+					persist = false;
+					break;
+				case 98:
+					(void)rfRecoveryRequestAmbientSurvey();
+					g_rfStatusRequest = true;
+					persist = false;
+					break;
+				case 99:
+					(void)rfRecoveryRequestHop(v);
+					g_rfStatusRequest = true;
+					persist = false;
+					break;
+				case 101:
+					if (v)
+						(void)rfRecoveryRequestJournalBuilder();
+					else
+						rfRecoveryCancelJournalBuilder();
+					g_rfStatusRequest = true;
+					persist = false;
+					break;
+				case 100: {
+					static RfRecoveryStatus status;
+					rfRecoveryStatusSnapshot(&status);
+					for (uint8_t i = 0;
+					     i < status.channelCount; i++) {
+						if (status.channel[i].channel !=
+						    v)
+							continue;
+						(void)saveRfStartupLastGoodChannel(
+							v);
+						break;
+					}
+					g_rfStatusRequest = true;
+					persist = false;
+					break;
+				}
+
 				// Used to be g_landAll87, now g_isMachineInternal. Persisted to blob p[181].
 				case 29:
 					g_isMachineInternal = v ? 0xEE : 0;
@@ -1106,7 +1236,8 @@ void webusbPoll()
 				}
 				if (persist)
 					saveCfg();
-				g_blobRequest = true;
+				if (!rfStatusOnly)
+					g_blobRequest = true;
 			} else if (op == 0x03) {
 				uint8_t m = buf[1];
 				if (modeValid(m) && !USBDevice.suspended()) {

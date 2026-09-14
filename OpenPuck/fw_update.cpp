@@ -2,6 +2,7 @@
 // meta-page commit arms it; the next boot applies it from RAM. See fw_update.h for the protocol and the
 // corruption-safety invariant every step here preserves.
 #include "fw_update.h"
+#include "rf_journal_layout.h"
 #include "fault_diag.h"
 #include <Arduino.h>
 #include <string.h>
@@ -19,9 +20,16 @@
 #define FWUP_FS_END 0xF4000UL
 #define FWUP_BL_SETTINGS 0xFF000UL
 #define FWUP_PAGE 4096UL
-// Image cap. Also what makes the apply copy safe from self-overlap: dst ends at most at 0x26000+0x60000 =
-// 0x86000, while the staged source starts at (0xEC000-size)&~0xFFF >= 0x8C000 -- disjoint by >=24 KiB.
-#define FWUP_MAX_IMG 0x60000UL
+// The normal application ends immediately before the fixed RF-journal window.
+// The largest staged image starts at 0x8C000, leaving 16 KiB between the
+// journal end (0x88000) and staging. This keeps both update source and target
+// disjoint from learned RF history.
+#define FWUP_MAX_IMG (RF_CHANNEL_JOURNAL_BASE - FWUP_APP_BASE)
+static_assert(FWUP_MAX_IMG == 0x60000UL,
+	      "RF journal layout changed the WebUSB application cap");
+static_assert(RF_CHANNEL_JOURNAL_END <=
+		      ((FWUP_META - FWUP_MAX_IMG) & ~(FWUP_PAGE - 1UL)),
+	      "RF journal overlaps staged WebUSB firmware storage");
 
 // Capability tag, searched for BY THE PANEL inside any .uf2 it is about to flash: an image without this
 // exact string predates panel updates, so flashing it silently locks future updates back to UF2-DFU
@@ -138,6 +146,8 @@ uint8_t fwupBegin(uint32_t size, uint32_t crc32)
 	if (size == 0 || size > FWUP_MAX_IMG || (size & 3))
 		return FWUP_ERR_BOUNDS;
 	uint32_t base = (FWUP_META - size) & ~(FWUP_PAGE - 1);
+	if (base < RF_CHANNEL_JOURNAL_END)
+		return FWUP_ERR_BOUNDS;
 	// keep a page of slack above the running image so staging can NEVER touch live code/rodata/.data-init
 	if (base < flashUsedEnd() + FWUP_PAGE)
 		return FWUP_ERR_BOUNDS;

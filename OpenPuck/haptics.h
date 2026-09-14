@@ -57,6 +57,12 @@ extern uint8_t g_rumbleStyle; // RUMBLE_STYLE_*
 #define RUMBLE_TEST_MS 500u
 void hapticTestRumble();
 
+// Journal-builder progress tick. It is deliberately short and is emitted only
+// between measured channels, never inside a quality window. Hardware testing
+// showed that this 0x82 haptic does not reset the controller inactivity timer.
+#define RF_JOURNAL_BUILDER_TICK_MS 150u
+void hapticRfJournalBuilderTick(uint8_t participantMask);
+
 // ---- relay queue (written by puck_hid.cpp, mode_*.cpp, serial_console.cpp; drained by rf_link.cpp) ----
 // Enqueue one host->controller report. `slot` = bond slot (0..NSLOT-1) or 0xFF to broadcast to every
 // connected controller (used by hapticSendShutdown / hapticReinit / test haptics). ISR-safe (PRIMASK).

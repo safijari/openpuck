@@ -494,7 +494,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// probe answered "still connected" and contradicted the disconnect we just pushed).
 		S.resp[2] = (slot >= 0 && slot < NSLOT && !g_xbox &&
 			     g_slot[slot].used && !slotPoweringOff(slot) &&
-			     (millis() - g_connReplyMs[slot] < 500)) ?
+			     ((millis() - g_connReplyMs[slot] < 500) ||
+			      rfChannelHandoffHostGrace(slot))) ?
 				    0x02 :
 				    0x01;
 		S.resp_len = 63;
@@ -983,7 +984,8 @@ void SteamPuckController::task()
 		// otherwise a stray dying reply bounces conn true -> a phantom 0x79=02 that Steam reads as a reconnect
 		// and answers by re-running its connect config (the "reappears for a split second").
 		bool conn = !slotPoweringOff(s) &&
-			    (millis() - g_connReplyMs[s] < 300);
+			    ((millis() - g_connReplyMs[s] < 300) ||
+			     rfChannelHandoffHostGrace(s));
 		// 0x79 connection state: on edge, then repeated every 750ms ONLY until Steam reacts (its first OUTPUT/
 		// settings write after the edge -- g_steamAliveMs). The real puck sends 0x79 ONCE, edge-triggered; an
 		// unconditional forever-resend re-triggers Steam's connect handling (connect chime) every 750ms before

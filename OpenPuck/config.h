@@ -224,6 +224,10 @@ extern uint16_t g_loopPeriodUs;
 extern uint8_t g_loopWorst;
 extern uint16_t g_loopWorstUs;
 
+#define CFG_EXT_STORAGE_BYTES 10u
+uint8_t cfgExtRead(uint8_t index);
+void cfgExtWrite(uint8_t index, uint8_t value);
+
 void loadCfg();
 void saveCfg();
 // FULL factory wipe: reformat the internal LittleFS, erasing cfg.bin (modes/tunables/chords) AND bonds.bin

@@ -180,6 +180,9 @@ Two files in the nRF52 internal LittleFS:
 - `cfg.bin` (`config.cpp`) — USB mode, tunables, chord assignments, persistence policy. A magic byte versions
   the layout; a mismatch falls back to clean defaults.
 - `bonds.bin` (`bonds.cpp`) — the four bond records.
+- The RF channel-history journal uses two CRC/commit-protected flash pages at `0x86000–0x87FFF`. Official
+  application builds are link-guarded below that window and WebUSB update staging starts above it, so ordinary
+  firmware updates preserve learned RF history. A full-board wipe intentionally clears the journal too.
 
 Mode switches (chord, WebUSB, or CDC) call `saveMode()` then reboot so the next boot enumerates the right
 interface set. By default every cold boot returns to Steam mode unless "persist last mode" is enabled.
