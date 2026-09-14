@@ -118,7 +118,19 @@ void modeSwitchReboot(uint8_t mode)
 		USBDevice.detach();
 	delay(60); // let the host see the disconnect before the pullup returns on reset
 	faultDiagArmIntentionalReset();
+#if defined(OPK_BOARD_MDK_USB_DONGLE)
+	// MDK physically connects P0.16 to the P0.18 nRESET line.
+	// A hardware reset is required because the nRF52840 WDT survives
+	// NVIC_SystemReset(). The openpuck bootloader configures P0.18 as nRESET.
+	const uint32_t selfResetPin = NRF_GPIO_PIN_MAP(0, 16);
+	nrf_gpio_pin_clear(selfResetPin);
+	nrf_gpio_cfg_output(selfResetPin);
+	while (true) {
+		// P0.16 drives P0.18 low; reset should occur immediately.
+	}
+#else
 	NVIC_SystemReset();
+#endif
 }
 
 void setup()
@@ -235,12 +247,23 @@ void setup()
 
 		// SDL3's Proteus/Triton HIDAPI driver only binds slot HIDs on USB interfaces 2..5. Register WebUSB (IF 0)
 		// and the wake mouse (IF 1) before the four puck slots so hid[0..3] land on IF 2..5 like the real puck.
+#if defined(OPK_BOARD_MDK_USB_DONGLE)
+		if (puckMode && !keepCdc)
+			usb_web.begin();
+#else
 		if (puckMode)
 			usb_web.begin();
+#endif
 		if (puckMode && !keepCdc)
 			wakeHidBegin();
 
 		g_active->begin();
+#if defined(OPK_BOARD_MDK_USB_DONGLE)
+		// The MDK debug boot keeps CDC on IF0/IF1, then places WebUSB after
+		// the puck slot HIDs so the slot interface numbers remain stable.
+		if (puckMode && keepCdc)
+			usb_web.begin();
+#endif
 
 		// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
 		// no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS

@@ -61,7 +61,8 @@ UF2_OUTPUT_DIR ?= build/openpuck
 # (No auto-detect -- uploading to a guessed serial port risks writing to the wrong device. List with
 # `arduino-cli board list`.) FLASH_PORT = whatever goal isn't one of our real targets; the catch-all rule at
 # the bottom swallows it so make doesn't try to build the port path as a target.
-FLASH_PORT := $(filter-out format format-check check build build-raytac \
+FLASH_PORT := $(filter-out format format-check check build build-mdk \
+	build-mdk-bootloader package-mdk-first-install package-mdk-release build-raytac \
 	package-raytac flash-raytac deploy-raytac provision-raytac-softdevice \
 	build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy,$(MAKECMDGOALS))
 UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
@@ -72,7 +73,8 @@ UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 RP_USB_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
 RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 
-.PHONY: format format-check check build build-raytac uf2 package-raytac \
+.PHONY: format format-check check build build-mdk build-mdk-bootloader \
+	package-mdk-first-install package-mdk-release build-raytac uf2 package-raytac \
 	flash-raytac deploy-raytac provision-raytac-softdevice build-recovery \
 	reversepuck reversepuck-flash reversepuck-deploy flash deploy
 
@@ -186,3 +188,38 @@ format-check:
 
 ## Everything CI gates on.
 check: format-check
+
+# Makerdiary/GeeekPi nRF52840 MDK USB Dongle. This define is explicit by
+# design; normal builds must never acquire MDK GPIO/reset behavior.
+MDK_BOARD_FLAGS ?= -DOPK_BOARD_MDK_USB_DONGLE=1
+MDK_BUILD_PATH ?= build/cache/mdk
+MDK_OUTPUT_DIR ?= build/mdk
+MDK_BOOTLOADER_WORKDIR ?= build/mdk-bootloader
+
+build-mdk:
+	mkdir -p $(MDK_BUILD_PATH) $(MDK_OUTPUT_DIR)
+	arduino-cli compile --clean -b adafruit:nrf52:feather52840 \
+		--build-path $(MDK_BUILD_PATH) --output-dir $(MDK_OUTPUT_DIR) \
+		--build-property "build.extra_flags=$(USB_EXTRA_FLAGS) $(MDK_BOARD_FLAGS)" \
+		--build-property "compiler.c.elf.extra_flags=$(OPENPUCK_LINK_FLAGS)" OpenPuck
+
+build-mdk-bootloader:
+	./bootloader/makerdiary/build_mdk_bootloader.sh \
+		--work-dir "$(MDK_BOOTLOADER_WORKDIR)"
+
+package-mdk-first-install:
+	@test -f "$(SOFTDEVICE_HEX)" || { \
+		echo "set SOFTDEVICE_HEX to a pure Nordic S140 6.1.1 HEX"; exit 1; }
+	@test -f $(MDK_OUTPUT_DIR)/OpenPuck.ino.hex || { \
+		echo "run 'make build-mdk' first"; exit 1; }
+	python3 tools/make_mdk_first_install.py \
+		--softdevice "$(SOFTDEVICE_HEX)" \
+		--application $(MDK_OUTPUT_DIR)/OpenPuck.ino.hex \
+		--output $(MDK_OUTPUT_DIR)/OpenPuck-MDK-first-install-S140.uf2
+
+package-mdk-release:
+	$(MAKE) build-mdk
+	./gen_uf2.sh $(MDK_OUTPUT_DIR)/OpenPuck.ino.hex \
+		$(MDK_OUTPUT_DIR)/OpenPuck-MDK-application.uf2
+	$(MAKE) package-mdk-first-install SOFTDEVICE_HEX="$(SOFTDEVICE_HEX)"
+	$(MAKE) build-mdk-bootloader
