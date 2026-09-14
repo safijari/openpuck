@@ -67,6 +67,7 @@ extern int g_curSlot;
 // True if ANY bonded slot is currently link-up (heard an F-reply within 300 ms). Used by the haptic
 // re-init gating (we only re-init on a real link) and the beacon pacing.
 bool anySlotLinkUp();
+bool anySlotConnecting();
 
 // QoS adaptive channel hopping
 extern uint8_t g_qos; // 0=off (static g_sessCh), 1=auto-hop on degradation

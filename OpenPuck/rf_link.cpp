@@ -144,6 +144,7 @@ static uint32_t g_chF1[3] = { 0, 0, 0 };
 static uint32_t g_lastPollUs = 0;
 static uint32_t g_connRx = 0;
 static unsigned long g_lastSessBeacon = 0, g_lastDisc = 0;
+static unsigned long g_lastDiscoveryRxMs = 0;
 static unsigned long g_lastStream = 0;
 
 // HOST FRAME the bonded controller waits for (IBEX FUN_00019000 verify: b[0]=0x12, b[5]=0xE1, b[6..10]=
@@ -161,6 +162,27 @@ bool anySlotLinkUp()
 	for (int s = 0; s < NSLOT; s++)
 		if (g_slot[s].used && millis() - g_connReplyMs[s] < 300)
 			return true;
+	return false;
+}
+
+// True if a controller recently responded or handshook but hasn't reached
+// the steady-state link-up threshold. Post-disconnect cooldown is excluded
+// so a powering-off controller doesn't trigger connecting blinks.
+bool anySlotConnecting()
+{
+	if (anySlotLinkUp())
+		return false;
+	if (millis() - g_connCooldown <= 2500u)
+		return false;
+	unsigned long now = millis();
+	if (g_lastDiscoveryRxMs != 0 &&
+	    (uint32_t)(now - g_lastDiscoveryRxMs) < 2500u)
+		return true;
+	for (int s = 0; s < NSLOT; s++) {
+		if (g_slot[s].used && g_connReplyMs[s] != 0 &&
+		    (uint32_t)(now - g_connReplyMs[s]) < 2500u)
+			return true;
+	}
 	return false;
 }
 
@@ -222,6 +244,7 @@ static void rfHostFrameOnce(int slot, bool discovery)
 	if (NRF_RADIO->EVENTS_END) {
 		// any reception = controller answered our frame
 		NRF_RADIO->EVENTS_END = 0;
+		g_lastDiscoveryRxMs = millis();
 		g_rfRxCount++;
 		bool crcok = NRF_RADIO->CRCSTATUS & 1;
 		uint8_t len = rfrx[0];

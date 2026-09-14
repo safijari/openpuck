@@ -300,6 +300,62 @@
       <p id="rumbleOld" class="note hide">This puck's firmware predates the rumble-shaping settings — update it to configure them.</p>
     </div>
 
+    <div class="card" id="ledCard">
+      <h2>Status LED</h2>
+      <div id="ledBlock">
+        <div class="row" id="ledPresetRow"><label>Pin preset</label><select id="ledPreset">
+          <option value="supermini">SuperMini / Nice!Nano (Pin 24 / P0.15)</option>
+          <option value="nordic_dongle">Nordic Dongle PCA10059 (Pin 11 / P0.06)</option>
+          <option value="feather">Feather (Pin 3 / P1.15)</option>
+          <option value="feather_conn">Feather (Pin 4 / P1.10)</option>
+          <option value="custom">Custom GPIO pins…</option>
+        </select></div>
+        <div class="row" id="ledModeRow"><label>Behavior</label><select id="ledMode">
+          <option value="0">Connection status (solid link, blink search)</option>
+          <option value="1">Heartbeat (pulsing heartbeat rhythm)</option>
+          <option value="2">Wake only (dark steady, flash on host wake)</option>
+          <option value="3">Always off (disabled / stealth)</option>
+          <option value="4">Always on</option>
+        </select></div>
+        <div id="ledCustomPins" class="hide">
+          <div class="row" style="margin-top:10px;padding-top:10px;border-top:1px solid #232a3a">
+            <label style="font-weight:600">Primary LED (Pin A)</label>
+          </div>
+          <div class="row"><label>GPIO Pin</label><input type="number" id="ledPinA" min="0" max="255" step="1" style="width:70px"><span class="note" style="margin-left:8px">SuperMini / Nice!Nano: 24, Nordic PCA10059: 11, Feather: 3 or 4 (255 = None)</span></div>
+          <div class="row"><label>Behavior</label><select id="ledModeA">
+            <option value="0">Connection status (solid link, blink search)</option>
+            <option value="1">Heartbeat (pulsing heartbeat rhythm)</option>
+            <option value="2">Wake only (dark steady, flash on host wake)</option>
+            <option value="3">Always off (disabled / stealth)</option>
+            <option value="4">Always on</option>
+          </select></div>
+          <div class="row"><label>Polarity</label><select id="ledPolarityA">
+            <option value="1">Active High (HIGH = lit)</option>
+            <option value="0">Active Low (LOW = lit)</option>
+          </select></div>
+          <div class="row" style="margin-top:10px;padding-top:10px;border-top:1px solid #232a3a">
+            <label style="font-weight:600">Secondary LED (Pin B)</label>
+          </div>
+          <div class="row"><label>GPIO Pin</label><input type="number" id="ledPinB" min="0" max="255" step="1" style="width:70px"><span class="note" style="margin-left:8px">Optional second LED pin (255 = None)</span></div>
+          <div class="row"><label>Behavior</label><select id="ledModeB">
+            <option value="0">Connection status (solid link, blink search)</option>
+            <option value="1">Heartbeat (pulsing heartbeat rhythm)</option>
+            <option value="2">Wake only (dark steady, flash on host wake)</option>
+            <option value="3">Always off (disabled / stealth)</option>
+            <option value="4">Always on</option>
+          </select></div>
+          <div class="row"><label>Polarity</label><select id="ledPolarityB">
+            <option value="1">Active High (HIGH = lit)</option>
+            <option value="0">Active Low (LOW = lit)</option>
+          </select></div>
+        </div>
+        <div class="row" style="margin:10px 0 0"><button id="ledTest">Test LED (2s flash)</button>
+          <span class="note" style="flex:1">Flashes the configured pin(s) for 2 seconds to visually identify connected LEDs.</span></div>
+        <p class="note">If testing your pin does not light up an LED, note that some boards have an onboard battery charger IC (TP4054) that pulses when no battery is attached and cannot be controlled via GPIO.</p>
+      </div>
+      <p id="ledOld" class="note hide">This puck's firmware predates the status LED settings — update it to configure them.</p>
+    </div>
+
     <div class="card wide">
       <h2>Button mapping</h2>
       <p class="note" style="margin-top:0">Separate mappings per emulated controller type — each only offers targets that exist on that controller. The type matching the current mode is highlighted. Steam &amp; Lizard are native puck modes (Steam does its own remapping) and aren't configured here.</p>
@@ -1163,6 +1219,39 @@ function applyBlob(p){
       // a strength set from the console can land between the presets -- show the nearest one
       if(document.activeElement!==scl) scl.value=RUMBLE_SCALES.reduce((a,b)=>Math.abs(b-rumbleScale)<Math.abs(a-rumbleScale)?b:a);
     } }
+  { const ledCap = (p.length >= 198);
+    $("#ledBlock").classList.toggle("hide", !ledCap);
+    $("#ledOld").classList.toggle("hide", ledCap);
+    if(ledCap){
+      const ledMode = p[194], ledPinA = p[195], ledPinB = p[196], ledPolarity = p[197];
+      const ledModeB = p.length >= 199 ? p[198] : 3;
+      const ledPolarityB = p.length >= 200 ? p[199] : 1;
+      const modeSel = $("#ledMode"), modeASel = $("#ledModeA"), modeBSel = $("#ledModeB");
+      const polASel = $("#ledPolarityA"), polBSel = $("#ledPolarityB");
+      const preSel = $("#ledPreset");
+      const pinAIn = $("#ledPinA"), pinBIn = $("#ledPinB");
+      if(document.activeElement !== modeSel) modeSel.value = ledMode;
+      if(modeASel && document.activeElement !== modeASel) modeASel.value = ledMode;
+      if(modeBSel && document.activeElement !== modeBSel) modeBSel.value = ledModeB;
+      if(polASel && document.activeElement !== polASel) polASel.value = ledPolarity;
+      if(polBSel && document.activeElement !== polBSel) polBSel.value = ledPolarityB;
+      if(document.activeElement !== pinAIn) pinAIn.value = ledPinA;
+      if(document.activeElement !== pinBIn) pinBIn.value = ledPinB;
+      const customFocused = $("#ledCustomPins").contains(document.activeElement);
+      if(document.activeElement !== preSel && !customFocused){
+        let preset = "custom";
+        if(ledPinA === 24 && ledPinB === 255 && ledPolarity === 1) preset = "supermini";
+        else if(ledPinA === 11 && ledPinB === 255 && ledPolarity === 0) preset = "nordic_dongle";
+        else if(ledPinA === 3 && ledPinB === 255 && ledPolarity === 1) preset = "feather";
+        else if(ledPinA === 4 && ledPinB === 255 && ledPolarity === 1) preset = "feather_conn";
+        if(preSel.value !== "custom" || preset === "custom"){
+          preSel.value = preset;
+          const isCustom = (preset === "custom");
+          $("#ledCustomPins").classList.toggle("hide", !isCustom);
+          if($("#ledModeRow")) $("#ledModeRow").classList.toggle("hide", isCustom);
+        }
+      }
+    } }
   for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
   $("#dpadChords").classList.toggle("hide", !dpadCap);
   $("#dpadOld").classList.toggle("hide", dpadCap);
@@ -1270,6 +1359,11 @@ function buildBackup(p, bp){
   if(p[0]>=18 && p.length>183) cfg.chordD=[p[180],p[181],p[182],p[183]];
   if(p[0]>=19 && p.length>184) cfg.swGyroLegacy=p[184];
   if(p[0]>=21 && p.length>179) cfg.emulateSteamMachine=p[179];
+  if(p.length>=198){
+    cfg.ledMode=p[194]; cfg.ledPinA=p[195]; cfg.ledPinB=p[196]; cfg.ledPolarity=p[197];
+    if(p.length>=199) cfg.ledModeB=p[198];
+    if(p.length>=200) cfg.ledPolarityB=p[199];
+  }
   // version 2: include the lizard map so it survives a backup/restore cycle.
   // Guard on !lizardBusy to avoid a race with the one-shot lazy load (lizardExchange sets
   // lizardBusy while the initial 0x11 fetch is in flight); if the load is still pending the
@@ -1321,7 +1415,8 @@ async function importBackup(file){
   // slots, and the final commit.
   const typeN=Array.isArray(c.types)?Math.min(c.types.length,4):0;
   const lizardN=(Array.isArray(c.lizardMap) && lizardCapable())?Math.min(c.lizardMap.length,LZ_MAX):0;
-  const baseN=6 + (Array.isArray(c.chordD)?4:0) + (c.swGyroLegacy!==undefined?1:0);
+  const ledN=(c.ledMode!==undefined?1:0)+(c.ledPinA!==undefined?1:0)+(c.ledPinB!==undefined?1:0)+(c.ledPolarity!==undefined?1:0);
+  const baseN=6 + (Array.isArray(c.chordD)?4:0) + (c.swGyroLegacy!==undefined?1:0) + (c.emulateSteamMachine!==undefined?1:0) + ledN;
   const padStickN=Array.isArray(c.types)?c.types.slice(0,typeN).filter(t=>Array.isArray(t.padStick)).length*2:0;
   const total=baseN + typeN*9 + padStickN + lizardN + 4 + 1;
   let step=0, stage="";
@@ -1353,7 +1448,12 @@ async function importBackup(file){
     // removed settings; those fields no longer exist on the puck, so they are not replayed.
     if(c.swGyroLegacy!==undefined) await sf(38, c.swGyroLegacy?1:0);
     if(c.emulateSteamMachine!==undefined) await sf(29, c.emulateSteamMachine==0xEE?1:0);
-    
+    if(c.ledMode!==undefined) await sf(32, c.ledMode);
+    if(c.ledPinA!==undefined) await sf(33, c.ledPinA);
+    if(c.ledPinB!==undefined) await sf(90, c.ledPinB);
+    if(c.ledPolarity!==undefined) await sf(91, c.ledPolarity);
+    if(c.ledModeB!==undefined) await sf(93, c.ledModeB);
+    if(c.ledPolarityB!==undefined) await sf(94, c.ledPolarityB);
     // c.types is absent in some very old backups created before per-type paddle/haptic config
     // was added to the panel export; guard so a missing field never crashes the import mid-flight.
     if(typeN){
@@ -2316,6 +2416,57 @@ $("#rumbleTest").onclick=async()=>{ if(dev){ await send([0x16]); log("test rumbl
 $("#rumbleStyle").addEventListener("change", ()=>setField(39, +$("#rumbleStyle").value));
 $("#rumbleScale").addEventListener("change", ()=>setField(22, (+$("#rumbleScale").value)/2));
 $("#swGyroMap").addEventListener("change", ()=>setField(38, +$("#swGyroMap").value));
+$("#ledMode").addEventListener("change", ()=>{
+  const v = +$("#ledMode").value;
+  setField(32, v);
+  const ma = $("#ledModeA"); if(ma) ma.value = v;
+});
+const ma = $("#ledModeA");
+if(ma) ma.addEventListener("change", ()=>{
+  const v = +ma.value;
+  setField(32, v);
+  $("#ledMode").value = v;
+});
+const mb = $("#ledModeB");
+if(mb) mb.addEventListener("change", ()=>setField(93, +mb.value));
+const pa = $("#ledPolarityA");
+if(pa) pa.addEventListener("change", ()=>setField(91, +pa.value));
+const pb = $("#ledPolarityB");
+if(pb) pb.addEventListener("change", ()=>setField(94, +pb.value));
+$("#ledPreset").addEventListener("change", ()=>{
+  const v = $("#ledPreset").value;
+  const isCustom = (v === "custom");
+  $("#ledCustomPins").classList.toggle("hide", !isCustom);
+  if($("#ledModeRow")) $("#ledModeRow").classList.toggle("hide", isCustom);
+  if(v === "supermini"){
+    setField(33, 24);
+    setField(90, 255);
+    setField(91, 1);
+    const pa = $("#ledPolarityA"); if(pa) pa.value = 1;
+  } else if(v === "nordic_dongle"){
+    setField(33, 11);
+    setField(90, 255);
+    setField(91, 0);
+    const pa = $("#ledPolarityA"); if(pa) pa.value = 0;
+  } else if(v === "feather"){
+    setField(33, 3);
+    setField(90, 255);
+    setField(91, 1);
+    const pa = $("#ledPolarityA"); if(pa) pa.value = 1;
+  } else if(v === "feather_conn"){
+    setField(33, 4);
+    setField(90, 255);
+    setField(91, 1);
+    const pa = $("#ledPolarityA"); if(pa) pa.value = 1;
+  }
+});
+$("#ledPinA").addEventListener("change", ()=>setField(33, +$("#ledPinA").value));
+$("#ledPinB").addEventListener("change", ()=>setField(90, +$("#ledPinB").value));
+for(const id of ["ledPinA", "ledPinB"]){
+  const el = $("#"+id);
+  if(el) el.addEventListener("keydown", e => { if(e.key === "Enter") el.blur(); });
+}
+$("#ledTest").onclick=async()=>{ if(dev){ await setField(92, 1); log("LED test flash triggered (2s)"); } };
 for(const sel of document.querySelectorAll("select.chord")){
   sel.addEventListener("change", ()=>setField(CHORD_FIELD[+sel.dataset.i], +sel.value));
 }

@@ -88,7 +88,7 @@ just points at the `OpenPuck` directory). Modules are layered low → high:
 | `webusb_config.{h,cpp}` | The WebUSB binary config channel for the browser panel. |
 | `serial_console.{h,cpp}` | The CDC single-letter debug command line. |
 | `wake_hid.{h,cpp}` | A boot-mouse HID interface added to the clean controller modes so the host honors USB remote-wakeup (see "Wake from sleep"). |
-| `status_led.{h,cpp}` | Wake-sent LED indicator: dark in all steady states; flashes 500 ms at each `remoteWakeup()`. Drives both the Feather user LED (P1.15) and the SuperMini clone's blue LED (P0.15); pins/polarity overridable. |
+| `status_led.{h,cpp}` | Status and wake LED indicator: solid ON when connected, fast blink (5 Hz) when scanning/connecting, slow blink (1 Hz) when idle, dark when host suspended with 500 ms wake flash. Drives Feather (P1.15), SuperMini (P0.15), and Raytac CX-40 (P0.08). |
 | `pwr_switch.{h,cpp}` | Optional (`-DOPK_PWR_SWITCH=1`): pulses a GPIO wired to the HOST motherboard's power-switch header on a Steam-button short press while the host is off. See "Host power-switch trigger" below. |
 
 ## The controller abstraction
@@ -231,10 +231,14 @@ gesture — would otherwise be forwarded as a real click/keypress into the just-
 activated the highlighted Start tile (Edge) on every wake. The jiggle is exempt (it's sent directly, not via
 the forwarding path).
 
-The board LED is a wake debugger (`status_led.cpp`): dark in all steady states (including while armed), and a
-500 ms flash at the moment a `remoteWakeup()` is actually sent. Flash + host stays asleep = the resume was sent
+The board LED doubles as a status indicator and wake debugger (`status_led.cpp`). While the host is awake,
+it reflects connection state (solid ON when connected, fast blink when scanning/connecting, slow blink when
+idle). When the host is suspended, it is dark in all steady states (including while armed), and flashes for
+500 ms at the moment a `remoteWakeup()` is actually sent. Flash + host stays asleep = the resume was sent
 and the host ignored it (fix host-side, e.g. `powercfg /deviceenablewake`); no flash = the firmware never fired
-(it didn't see the gesture, or didn't consider the bus suspended). USB remote wakeup is a **device-level**
+(it didn't see the gesture, or didn't consider the bus suspended). LED behavior modes, pin presets, and
+polarity are configurable via the WebUSB configurator panel and persisted in flash `struct Cfg`.
+USB remote wakeup is a **device-level**
 signal — one wake line per device, armed by a single `SET_FEATURE(DEVICE_REMOTE_WAKEUP)`; there is no
 per-interface arming on the wire. Which Windows device *node* gets credited is host-internal policy.
 

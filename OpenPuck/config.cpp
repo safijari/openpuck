@@ -1,6 +1,7 @@
 #include "config.h"
 #include "rf_link.h" // g_rxWin (poll RX window persisted here)
 #include "haptics.h" // g_hapticBlockOn, g_hapticBlockMs
+#include "status_led.h"
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 #include <string.h>
@@ -111,6 +112,12 @@ struct Cfg {
 	// autonomous controller power-off on host sleep (see haptics.h g_suspendOff). 0/1; 0xFF (short
 	// pre-tail file) -> compiled default (on)
 	uint8_t suspendOff;
+	uint8_t ledMode;
+	uint8_t ledPinA;
+	uint8_t ledPinB;
+	uint8_t ledActiveLevel;
+	uint8_t ledModeB;
+	uint8_t ledActiveLevelB;
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 // Shortest cfg.bin we still accept: the layout as of CFG_MAGIC 0xCF, i.e. everything before the appended tail.
@@ -138,7 +145,13 @@ void saveCfg()
 		    g_chordDpad[3] },
 		  {},
 		  g_rumbleStyle,
-		  g_suspendOff };
+		  g_suspendOff,
+		  g_ledMode,
+		  g_ledPinA,
+		  g_ledPinB,
+		  g_ledActiveLevel,
+		  g_ledModeB,
+		  g_ledActiveLevelB };
 	for (int i = 0; i < ET_COUNT; i++) {
 		c.type[i] = g_type[i];
 		c.padStick[i][0] = g_padStickCfg[i][0];
@@ -239,6 +252,25 @@ void loadCfg()
 			// suspend power-off enable (0xFF = a cfg.bin predating this tail field -> keep the on default)
 			if (c.suspendOff <= 1)
 				g_suspendOff = c.suspendOff;
+			if (c.ledMode <= LED_MODE_MAX)
+				g_ledMode = c.ledMode;
+			if (c.ledModeB <= LED_MODE_MAX)
+				g_ledModeB = c.ledModeB;
+			if (c.ledPinA != 0xFF || c.ledPinB != 0xFF ||
+			    c.ledActiveLevel != 0xFF ||
+			    c.ledActiveLevelB != 0xFF) {
+				uint8_t pa = (c.ledPinA != 0xFF) ? c.ledPinA :
+								   g_ledPinA;
+				uint8_t pb = (c.ledPinB != 0xFF) ? c.ledPinB :
+								   g_ledPinB;
+				uint8_t al = (c.ledActiveLevel <= 1) ?
+						     c.ledActiveLevel :
+						     g_ledActiveLevel;
+				uint8_t alb = (c.ledActiveLevelB <= 1) ?
+						      c.ledActiveLevelB :
+						      g_ledActiveLevelB;
+				ledApplyPins(pa, pb, al, alb);
+			}
 			// The poll RX window is now FIXED (g_rxWin is const) -- any persisted rxWin10 is ignored.
 		}
 		f.close();
