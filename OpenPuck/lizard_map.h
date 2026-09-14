@@ -39,26 +39,27 @@
 #define LZ_GYRO_BTN 3u
 
 // ---- virtual stick-deflection trigger bits (usable in trigMask / holdMask) ----
-// These reuse bits 28..31 of the button word, which the SC2 *does* use in its 0x45 report (bit 28 =
-// right grip touch, bit 29 = left grip touch; PROTOCOL.md §8). To avoid grip-touch firing these,
-// lizardButtons() masks the controller's top 4 bits off before OR-ing in the deflection flags below,
-// so in MODE_LIZARD these bits mean ONLY stick deflection (grips are not a bindable lizard input).
-#define LZ_BTN_LSTICK_RT 0x10000000u // lx >  12000
-#define LZ_BTN_LSTICK_LF 0x20000000u // lx < -12000
-#define LZ_BTN_LSTICK_DN 0x40000000u // ly < -12000
-#define LZ_BTN_LSTICK_UP 0x80000000u // ly >  12000
-
-// ---- binding (16 bytes, naturally 4-byte aligned) ----
-// trigMask: (buttons & trigMask) != 0 activates the binding.
-// holdMask: ALL bits must also be set at the same time (AND-guard).
+// Low 32 bits preserve the complete native Triton button word. Virtual
+// analog-direction triggers live above it and cannot alias physical buttons.
+#define LZ_BTN_LSTICK_RT (1ULL << 32) // lx >  12000
+#define LZ_BTN_LSTICK_LF (1ULL << 33) // lx < -12000
+#define LZ_BTN_LSTICK_DN (1ULL << 34) // ly < -12000
+#define LZ_BTN_LSTICK_UP (1ULL << 35) // ly >  12000
+#define LZ_BTN_RSTICK_RT (1ULL << 36) // rx >  12000
+#define LZ_BTN_RSTICK_LF (1ULL << 37) // rx < -12000
+#define LZ_BTN_RSTICK_DN (1ULL << 38) // ry < -12000
+#define LZ_BTN_RSTICK_UP (1ULL << 39) // ry >  12000
+// ---- binding v2 (24 bytes) ----
+// trigMask: any matching bit activates the binding.
+// holdMask: all matching bits must also be held.
 // MOUSE_AXIS and SCROLL bindings ignore trigMask/holdMask; the analog source drives them.
 struct LizardBinding {
 	uint8_t outType; // LZ_OUT_*
 	uint8_t outData[7]; // type-specific payload (see constants above)
-	uint32_t trigMask; // physical/virtual button bits: any-of (OR)
-	uint32_t holdMask; // physical/virtual button bits: all-of (AND guard)
+	uint64_t trigMask; // physical/virtual button bits: any-of (OR)
+	uint64_t holdMask; // physical/virtual button bits: all-of (AND guard)
 };
-
+static_assert(sizeof(LizardBinding) == 24, "LizardBinding v2 layout changed");
 #define LZ_MAX_BINDINGS 32u
 
 struct LizardMap {

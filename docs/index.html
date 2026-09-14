@@ -602,7 +602,8 @@ const LZ_BTNS = [
   [0x2000,"D-pad Up"],[0x400,"D-pad Down"],[0x1000,"D-pad Left"],[0x800,"D-pad Right"],
   [0x400000,"Right pad click"],[0x4000000,"Left pad click"],
   [0x200000,"Right pad touch"],[0x2000000,"Left pad touch"],
-  [0x10000000,"L-stick → right"],[0x20000000,"L-stick → left"],[0x40000000,"L-stick → down"],[0x80000000,"L-stick → up"],
+  [Math.pow(2,32),"L-stick → right"],[Math.pow(2,33),"L-stick → left"],[Math.pow(2,34),"L-stick → down"],[Math.pow(2,35),"L-stick → up"],
+[Math.pow(2,36),"R-stick → right"],[Math.pow(2,37),"R-stick → left"],[Math.pow(2,38),"R-stick → down"],[Math.pow(2,39),"R-stick → up"],
 ];
 // Keyboard modifier bits (od[0] for KBD output).
 const LZ_MODS = [[0x01,"Ctrl"],[0x02,"Shift"],[0x04,"Alt"],[0x08,"Win/⌘"]];
@@ -620,7 +621,7 @@ const LZ_AXIS_SRC = [[0,"Right trackpad"],[1,"Left stick"],[2,"Gyro"]];
 const LZ_GYRO_ACT = [[0,"Always"],[1,"While right pad touched"],[2,"While left stick deflected"],[3,"While hold-button held"]];
 const LZ_CONSUMER = [[1,"Volume +"],[2,"Volume −"]];
 
-function lzBtnLabel(mask){ const m=LZ_BTNS.find(b=>b[0]===(mask>>>0)); return m?m[1]:(mask?("0x"+(mask>>>0).toString(16)):""); }
+function lzBtnLabel(mask){ const v=Number(mask)||0; const m=LZ_BTNS.find(b=>Number(b[0])===v); return m?m[1]:(v?("0x"+v.toString(16)):""); }
 let lizardBindings = [];   // [{outType, od:[7], trig, hold}]
 let lizardBusy = false;
 let lizardLoaded = false;  // one-shot: the lizard map is fetched lazily, only once the connected puck proves it speaks v16+
@@ -908,7 +909,7 @@ function applyBlob(p){
   // Lazy, capability-gated lizard-map load: only after a blob proves the puck speaks v16+ (the op-0x11 dump).
   // On older firmware 0x11 is dropped silently and readLizard() would block the endpoint forever, so we must
   // NEVER send it blind at connect. One-shot per connection (reset in openDevice).
-  if(!lizardLoaded && p[0]>=16){ lizardLoaded=true; loadLizard(); }
+  if(!lizardLoaded && p[0]>=16){ lizardLoaded=true; lzV2Load(); }
   const mode=p[1], mDiv=p[2], mFric=p[3]; // p[4..11] mirror the active type (per-type block below is authoritative)
   const slot=p[10], up=p[11], f1=(p[12]|(p[13]<<8));
   const newps=(p.length>16?(p[15]|(p[16]<<8)):0), persistMode=(p.length>22?p[22]:0);
@@ -2332,6 +2333,212 @@ updateUf2UI();
 updateFwGate(); // start gated: stays inert until the first status blob proves the firmware speaks v15+
 if(!("usb" in navigator)) $("#connectBtn").outerHTML='<b style="color:var(--bad)">WebUSB not supported — use Chrome or Edge.</b>';
 else autoConnect(); // reopen an already-authorized puck on load, no picker (first-ever connect still needs the button)
+
+// OPENPUCK_LIZARD_MAP_V2_R_STICK
+// Binding-v2 format appeared at protocol 20. Protocol 21 (upstream #224)
+// claimed 0x16 for rumble-test, so the v2 map transport shifts one slot.
+const LZ_MAP_V2_PROTOCOL = 20;
+const LZ_MAP_V2_SHIFTED_OPS_PROTOCOL = 21;
+const LZ_V1_LOW_MASK = 0x0fffffff;
+const lzPow2 = bit => Math.pow(2, bit);
+
+function lzReadLE(d,o,n){
+	let v=0;
+	for(let i=n-1;i>=0;i--) v=v*256+d[o+i];
+	return v;
+}
+function lzWriteLE(out,v,n){
+	v=Number(v)||0;
+	for(let i=0;i<n;i++) out.push(Math.floor(v/Math.pow(2,8*i))&0xff);
+}
+function lzLegacyMaskToV2(v){
+	v=Number(v)>>>0;
+	let out=v&LZ_V1_LOW_MASK;
+	if(v&0x10000000) out+=lzPow2(32);
+	if(v&0x20000000) out+=lzPow2(33);
+	if(v&0x40000000) out+=lzPow2(34);
+	if(v&0x80000000) out+=lzPow2(35);
+	return out;
+}
+function lzV2MaskToLegacy(v){
+	v=Number(v)||0;
+	let out=(v%lzPow2(28))>>>0;
+	if(Math.floor(v/lzPow2(32))&1) out|=0x10000000;
+	if(Math.floor(v/lzPow2(33))&1) out|=0x20000000;
+	if(Math.floor(v/lzPow2(34))&1) out|=0x40000000;
+	if(Math.floor(v/lzPow2(35))&1) out|=0x80000000;
+	return out>>>0;
+}
+function lzPanelV2(){ return !!(lastP&&lastP[0]>=LZ_MAP_V2_PROTOCOL); }
+function lzV2Ops(){
+	const shifted=!!(lastP&&lastP[0]>=LZ_MAP_V2_SHIFTED_OPS_PROTOCOL);
+	return shifted
+		? {dump:0x17,set:0x18,save:0x19,reset:0x1A}
+		: {dump:0x16,set:0x17,save:0x18,reset:0x19};
+}
+function lzHasRStickVirtual(v){ return Number(v||0)>=lzPow2(36); }
+
+function lzV2Select(options,value,onchange,noneLabel){
+	const s=document.createElement("select");
+	if(noneLabel!==undefined){
+		const o=document.createElement("option"); o.value="0"; o.textContent=noneLabel; s.appendChild(o);
+	}
+	for(const [v,label] of options){
+		const o=document.createElement("option"); o.value=String(v); o.textContent=label; s.appendChild(o);
+	}
+	s.value=String(Number(value)||0);
+	s.onchange=()=>onchange(Number(s.value));
+	return s;
+}
+function lzV2Render(){
+	const host=document.getElementById("lizardList");
+	if(!host) return;
+	host.innerHTML="";
+	lizardBindings.forEach((b,idx)=>{
+		if(!b.od) b.od=[0,0,0,0,0,0,0];
+		while(b.od.length<7) b.od.push(0);
+		const box=document.createElement("div");
+		box.style.cssText="border:1px solid #232a3a;border-radius:8px;padding:9px;margin:7px 0;background:#0e1017";
+		const top=document.createElement("div");
+		top.className="row"; top.style.flexWrap="wrap";
+
+		const trig=lzV2Select(LZ_BTNS,b.trig,v=>b.trig=v,"— trigger —");
+		const hold=lzV2Select(LZ_BTNS,b.hold,v=>b.hold=v,"— no hold —");
+		const types=Object.keys(LZ_OUT_LABELS).map(Number).map(v=>[v,LZ_OUT_LABELS[v]]);
+		const typ=lzV2Select(types,b.outType,v=>{b.outType=v;lzV2Render();});
+		top.append("Input ",trig," Hold ",hold," → ",typ);
+
+		const del=document.createElement("button"); del.textContent="Remove";
+		del.style.marginLeft="auto";
+		del.onclick=()=>{lizardBindings.splice(idx,1);lzV2Render();};
+		top.appendChild(del); box.appendChild(top);
+
+		const detail=document.createElement("div");
+		detail.className="row"; detail.style.cssText="margin-top:7px;flex-wrap:wrap";
+		if(b.outType===LZO.KBD){
+			detail.append("Modifiers ");
+			for(const [bit,label] of LZ_MODS){
+				const c=document.createElement("input"); c.type="checkbox"; c.checked=!!(b.od[0]&bit);
+				c.onchange=()=>{ if(c.checked)b.od[0]|=bit;else b.od[0]&=~bit; };
+				const l=document.createElement("label"); l.style.marginRight="7px"; l.append(c," "+label); detail.appendChild(l);
+			}
+			for(let k=1;k<7;k++){
+				detail.append(" Key "+k+" ");
+				detail.appendChild(lzV2Select(LZ_KEYS,b.od[k],v=>b.od[k]=v));
+			}
+		}else if(b.outType===LZO.MBTN){
+			detail.append("Mouse ");
+			detail.appendChild(lzV2Select(LZ_MBTNS,b.od[0],v=>b.od[0]=v));
+		}else if(b.outType===LZO.AXIS){
+			detail.append("Source ");
+			detail.appendChild(lzV2Select(LZ_AXIS_SRC,b.od[0],v=>{b.od[0]=v;lzV2Render();}));
+			if(b.od[0]===2){
+				detail.append(" Gyro activation ");
+				detail.appendChild(lzV2Select(LZ_GYRO_ACT,b.od[1],v=>b.od[1]=v));
+			}
+			trig.disabled=true; hold.disabled=true;
+		}else if(b.outType===LZO.SCROLL){
+			detail.append("Source: Left trackpad");
+			b.od[0]=0; trig.disabled=true; hold.disabled=true;
+		}else if(b.outType===LZO.CONSUMER){
+			detail.append("Media ");
+			detail.appendChild(lzV2Select(LZ_CONSUMER,b.od[0],v=>b.od[0]=v));
+		}
+		box.appendChild(detail); host.appendChild(box);
+	});
+}
+
+async function lzV2ReadMap(op){
+	await send([op]);
+	const recSize=lzPanelV2()?24:16;
+	let buf=[];
+	let expected=0;
+	for(;;){
+		const r=await dev.transferIn(epIn,256);
+		if(r.status!=="ok") throw new Error("lizard-map read failed");
+		const d=new Uint8Array(r.data.buffer);
+		for(const x of d) buf.push(x);
+		if(!expected){
+			let start=-1;
+			for(let i=0;i+1<buf.length;i++){
+				if(buf[i]===0xAA && buf[i+1]<=LZ_MAX){ start=i; break; }
+			}
+			if(start<0){ if(buf.length>1024)buf=[]; continue; }
+			if(start) buf=buf.slice(start);
+			expected=2+buf[1]*recSize;
+		}
+		if(buf.length>=expected) break;
+	}
+	const count=buf[1], out=[];
+	for(let i=0;i<count;i++){
+		const q=2+i*recSize, od=[];
+		for(let k=0;k<7;k++) od.push(buf[q+1+k]||0);
+		const trig=recSize===24?lzReadLE(buf,q+8,8):lzLegacyMaskToV2(lzReadLE(buf,q+8,4));
+		const hold=recSize===24?lzReadLE(buf,q+16,8):lzLegacyMaskToV2(lzReadLE(buf,q+12,4));
+		out.push({outType:buf[q]||0,od,trig,hold});
+	}
+	return out;
+}
+async function lzV2Load(){
+	if(lizardBusy||!dev)return;
+	lizardBusy=true;
+	try{
+		const ops=lzV2Ops();
+		lizardBindings=await lzV2ReadMap(lzPanelV2()?ops.dump:0x11);
+		lzV2Render();
+		const st=document.getElementById("lzStatus");
+		if(st)st.textContent="loaded "+lizardBindings.length+" binding(s)"+(lzPanelV2()?" · map v2":" · legacy map");
+	}catch(e){ log("lizard load failed: "+e.message); }
+	finally{lizardBusy=false;}
+}
+async function lzV2Save(){
+	if(lizardBusy||!dev)return;
+	lizardBusy=true;
+	try{
+		const v2=lzPanelV2(), ops=lzV2Ops();
+		if(!v2&&lizardBindings.some(b=>lzHasRStickVirtual(b.trig)||lzHasRStickVirtual(b.hold)))
+			throw new Error("R-stick directions require firmware protocol v20+");
+		const count=Math.min(LZ_MAX,lizardBindings.length);
+		await send([0x13,count]);
+		for(let i=0;i<count;i++){
+			const b=lizardBindings[i], cmd=[v2?ops.set:0x12,i,b.outType||0];
+			for(let k=0;k<7;k++)cmd.push((b.od&&b.od[k])||0);
+			if(v2){lzWriteLE(cmd,b.trig,8);lzWriteLE(cmd,b.hold,8);}
+			else{lzWriteLE(cmd,lzV2MaskToLegacy(b.trig),4);lzWriteLE(cmd,lzV2MaskToLegacy(b.hold),4);}
+			await send(cmd);
+		}
+		lizardBindings=await lzV2ReadMap(v2?ops.save:0x14);
+		lzV2Render();
+		const st=document.getElementById("lzStatus"); if(st)st.textContent="saved "+count+" binding(s)";
+	}catch(e){const st=document.getElementById("lzStatus");if(st)st.textContent="save failed: "+e.message;log("lizard save failed: "+e.message);}
+	finally{lizardBusy=false;}
+}
+async function lzV2Reset(){
+	if(lizardBusy||!dev)return;
+	lizardBusy=true;
+	try{
+		const ops=lzV2Ops();
+		lizardBindings=await lzV2ReadMap(lzPanelV2()?ops.reset:0x15);
+		lzV2Render();
+		const st=document.getElementById("lzStatus");if(st)st.textContent="reset to defaults";
+	}catch(e){log("lizard reset failed: "+e.message);}
+	finally{lizardBusy=false;}
+}
+function lzV2InstallHandlers(){
+	for(const id of ["lzAdd","lzSave","lzReload","lzReset"]){
+		const old=document.getElementById(id); if(!old)continue;
+		const fresh=old.cloneNode(true); old.replaceWith(fresh);
+	}
+	const add=document.getElementById("lzAdd");
+	const save=document.getElementById("lzSave");
+	const reload=document.getElementById("lzReload");
+	const reset=document.getElementById("lzReset");
+	if(add)add.onclick=()=>{if(lizardBindings.length<LZ_MAX){lizardBindings.push({outType:1,od:[0,0,0,0,0,0,0],trig:0,hold:0});lzV2Render();}};
+	if(save)save.onclick=lzV2Save;
+	if(reload)reload.onclick=lzV2Load;
+	if(reset)reset.onclick=lzV2Reset;
+}
+lzV2InstallHandlers();
 </script>
 </body>
 </html>

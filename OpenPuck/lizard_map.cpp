@@ -9,7 +9,32 @@ LizardMap g_lizardMap;
 
 #define LZ_FILE "/lizard_map.bin"
 #define LZ_MAGIC 0xB1u
-#define LZ_VERSION 1u
+#define LZ_VERSION 2u
+
+// Version-1 records use 32-bit masks and borrow bits 28..31 for virtual
+// left-stick directions. The current format stores those directions above the physical word.
+struct LizardBindingV1 {
+	uint8_t outType;
+	uint8_t outData[7];
+	uint32_t trigMask;
+	uint32_t holdMask;
+};
+static_assert(sizeof(LizardBindingV1) == 16,
+	      "version-1 lizard binding layout changed");
+
+static uint64_t lizardMaskFromV1(uint32_t m)
+{
+	uint64_t out = (uint64_t)(m & 0x0FFFFFFFu);
+	if (m & 0x10000000u)
+		out |= LZ_BTN_LSTICK_RT;
+	if (m & 0x20000000u)
+		out |= LZ_BTN_LSTICK_LF;
+	if (m & 0x40000000u)
+		out |= LZ_BTN_LSTICK_DN;
+	if (m & 0x80000000u)
+		out |= LZ_BTN_LSTICK_UP;
+	return out;
+}
 
 // KB modifier bits (from TinyUSB hid.h)
 #define KM_LCTRL 0x01u
@@ -18,8 +43,8 @@ LizardMap g_lizardMap;
 #define KM_LGUI 0x08u
 
 // Helper: append a binding to g_lizardMap
-static void addBind(uint8_t type, const uint8_t *od7, uint32_t trig,
-		    uint32_t hold)
+static void addBind(uint8_t type, const uint8_t *od7, uint64_t trig,
+		    uint64_t hold)
 {
 	if (g_lizardMap.count >= LZ_MAX_BINDINGS)
 		return;
@@ -41,23 +66,23 @@ static inline void addScroll(uint8_t src)
 	uint8_t d[7] = { src, 0, 0, 0, 0, 0, 0 };
 	addBind(LZ_OUT_SCROLL, d, 0, 0);
 }
-static inline void addMouseBtn(uint8_t btn, uint32_t trig, uint32_t hold)
+static inline void addMouseBtn(uint8_t btn, uint64_t trig, uint64_t hold)
 {
 	uint8_t d[7] = { btn, 0, 0, 0, 0, 0, 0 };
 	addBind(LZ_OUT_MOUSE_BTN, d, trig, hold);
 }
-static inline void addKey(uint8_t mod, uint8_t k0, uint32_t trig, uint32_t hold)
+static inline void addKey(uint8_t mod, uint8_t k0, uint64_t trig, uint64_t hold)
 {
 	uint8_t d[7] = { mod, k0, 0, 0, 0, 0, 0 };
 	addBind(LZ_OUT_KBD_CHORD, d, trig, hold);
 }
 static inline void addKey3(uint8_t mod, uint8_t k0, uint8_t k1, uint8_t k2,
-			   uint32_t trig, uint32_t hold)
+			   uint64_t trig, uint64_t hold)
 {
 	uint8_t d[7] = { mod, k0, k1, k2, 0, 0, 0 };
 	addBind(LZ_OUT_KBD_CHORD, d, trig, hold);
 }
-static inline void addConsumer(uint8_t bits, uint32_t trig, uint32_t hold)
+static inline void addConsumer(uint8_t bits, uint64_t trig, uint64_t hold)
 {
 	uint8_t d[7] = { bits, 0, 0, 0, 0, 0, 0 };
 	addBind(LZ_OUT_CONSUMER, d, trig, hold);
@@ -133,23 +158,50 @@ void saveLizardMap()
 
 void loadLizardMap()
 {
+	bool migrated = false;
 	File f(InternalFS);
 	if (f.open(LZ_FILE, FILE_O_READ)) {
 		uint8_t hdr[3] = { 0, 0, 0 };
 		if (f.read(hdr, 3) == 3 && hdr[0] == LZ_MAGIC &&
-		    hdr[1] == LZ_VERSION && hdr[2] <= LZ_MAX_BINDINGS) {
+		    hdr[2] <= LZ_MAX_BINDINGS) {
 			uint8_t cnt = hdr[2];
 			g_lizardMap.count = 0;
-			int got = f.read((uint8_t *)g_lizardMap.bindings,
-					 cnt * sizeof(LizardBinding));
-			if (got == (int)(cnt * sizeof(LizardBinding)))
-				g_lizardMap.count = cnt;
+			if (hdr[1] == LZ_VERSION) {
+				int got =
+					f.read((uint8_t *)g_lizardMap.bindings,
+					       cnt * sizeof(LizardBinding));
+				if (got == (int)(cnt * sizeof(LizardBinding)))
+					g_lizardMap.count = cnt;
+			} else if (hdr[1] == 1u) {
+				static LizardBindingV1 old[LZ_MAX_BINDINGS];
+				int got = f.read((uint8_t *)old,
+						 cnt * sizeof(LizardBindingV1));
+				if (got ==
+				    (int)(cnt * sizeof(LizardBindingV1))) {
+					for (uint8_t i = 0; i < cnt; i++) {
+						LizardBinding &b =
+							g_lizardMap.bindings[i];
+						b.outType = old[i].outType;
+						memcpy(b.outData,
+						       old[i].outData,
+						       sizeof b.outData);
+						b.trigMask = lizardMaskFromV1(
+							old[i].trigMask);
+						b.holdMask = lizardMaskFromV1(
+							old[i].holdMask);
+					}
+					g_lizardMap.count = cnt;
+					migrated = true;
+				}
+			}
 		}
 		f.close();
 	}
 	// If nothing loaded, install + persist defaults
 	if (g_lizardMap.count == 0) {
 		defaultLizardMap();
+		saveLizardMap();
+	} else if (migrated) {
 		saveLizardMap();
 	}
 }

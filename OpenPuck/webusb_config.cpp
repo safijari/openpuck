@@ -563,6 +563,34 @@ void webusbInit(void)
 //   [0xAA][count][ per binding (16B): outType, outData[0..6], trigMask LE(4), holdMask LE(4) ]
 // Total = 2 + count*16 (max 2 + 32*16 = 514). The panel reads byte[1]=count and accumulates
 // transferIn packets until it has the full frame.
+static uint64_t webusbLizardMaskFromLegacy(uint32_t m)
+{
+	uint64_t out = (uint64_t)(m & 0x0FFFFFFFu);
+	if (m & 0x10000000u)
+		out |= LZ_BTN_LSTICK_RT;
+	if (m & 0x20000000u)
+		out |= LZ_BTN_LSTICK_LF;
+	if (m & 0x40000000u)
+		out |= LZ_BTN_LSTICK_DN;
+	if (m & 0x80000000u)
+		out |= LZ_BTN_LSTICK_UP;
+	return out;
+}
+
+static uint32_t webusbLizardMaskToLegacy(uint64_t m)
+{
+	uint32_t out = (uint32_t)(m & 0x0FFFFFFFu);
+	if (m & LZ_BTN_LSTICK_RT)
+		out |= 0x10000000u;
+	if (m & LZ_BTN_LSTICK_LF)
+		out |= 0x20000000u;
+	if (m & LZ_BTN_LSTICK_DN)
+		out |= 0x40000000u;
+	if (m & LZ_BTN_LSTICK_UP)
+		out |= 0x80000000u;
+	return out;
+}
+
 static void webusbSendLizard()
 {
 	if (!usb_web.connected())
@@ -582,16 +610,43 @@ static void webusbSendLizard()
 		q[0] = b.outType;
 		for (int k = 0; k < 7; k++)
 			q[1 + k] = b.outData[k];
-		q[8] = (uint8_t)b.trigMask;
-		q[9] = (uint8_t)(b.trigMask >> 8);
-		q[10] = (uint8_t)(b.trigMask >> 16);
-		q[11] = (uint8_t)(b.trigMask >> 24);
-		q[12] = (uint8_t)b.holdMask;
-		q[13] = (uint8_t)(b.holdMask >> 8);
-		q[14] = (uint8_t)(b.holdMask >> 16);
-		q[15] = (uint8_t)(b.holdMask >> 24);
+		uint32_t trig = webusbLizardMaskToLegacy(b.trigMask);
+		uint32_t hold = webusbLizardMaskToLegacy(b.holdMask);
+		q[8] = (uint8_t)trig;
+		q[9] = (uint8_t)(trig >> 8);
+		q[10] = (uint8_t)(trig >> 16);
+		q[11] = (uint8_t)(trig >> 24);
+		q[12] = (uint8_t)hold;
+		q[13] = (uint8_t)(hold >> 8);
+		q[14] = (uint8_t)(hold >> 16);
+		q[15] = (uint8_t)(hold >> 24);
 	}
 	usb_web.write(f, (uint16_t)(2 + count * 16));
+	usb_web.flush();
+}
+
+static void webusbSendLizardV2()
+{
+	if (!usb_web.connected())
+		return;
+	uint8_t count = g_lizardMap.count;
+	if (count > LZ_MAX_BINDINGS)
+		count = LZ_MAX_BINDINGS;
+	static uint8_t f[2 + LZ_MAX_BINDINGS * 24];
+	f[0] = 0xAA;
+	f[1] = count;
+	for (uint8_t i = 0; i < count; i++) {
+		const LizardBinding &b = g_lizardMap.bindings[i];
+		uint8_t *q = &f[2 + i * 24];
+		q[0] = b.outType;
+		for (int k = 0; k < 7; k++)
+			q[1 + k] = b.outData[k];
+		for (int k = 0; k < 8; k++) {
+			q[8 + k] = (uint8_t)(b.trigMask >> (k * 8));
+			q[16 + k] = (uint8_t)(b.holdMask >> (k * 8));
+		}
+	}
+	usb_web.write(f, (uint16_t)(2 + count * 24));
 	usb_web.flush();
 }
 #if OPK_LOG
@@ -667,7 +722,7 @@ void webusbPoll()
 			uint8_t op = buf[0];
 			// 0x16 = test rumble (v21); extend this range whenever a new opcode is added, or the
 			// parser drops it as garbage and the handler below never runs.
-			if ((op < 0x01 || op > 0x16) &&
+			if ((op < 0x01 || op > 0x1A) &&
 			    (op < 0x20 || op > 0x25)) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
@@ -688,6 +743,7 @@ void webusbPoll()
 			uint8_t need =
 				(op == 0x0D) ? 27 :
 				(op == 0x12) ? 18 :
+				(op == 0x18) ? 26 :
 				(op == 0x02) ? 3 :
 				(op == 0x03 || op == 0x05 || op == 0x0E ||
 				 op == 0x0F || op == 0x10 || op == 0x13) ?
@@ -837,8 +893,8 @@ void webusbPoll()
 				// which the pre-merge branch had collided with. The panel JS uses the same 0x11..0x15.
 				// 0x11: dump the current map as a 0xAA frame.
 			} else if (op == 0x11) {
+				// Compatibility dump for panels using the compact map encoding.
 				webusbSendLizard();
-
 				// 0x13 [count]: BEGIN a map edit -- set the binding count (clamped). The
 				// panel then sends one 0x12 per binding (0..count-1) and a 0x14 to persist.
 			} else if (op == 0x13) {
@@ -846,9 +902,9 @@ void webusbPoll()
 					(buf[1] <= LZ_MAX_BINDINGS) ?
 						buf[1] :
 						LZ_MAX_BINDINGS;
-
 				// 0x12 [idx][outType][od0..6][trig LE4][hold LE4]: set one binding.
 			} else if (op == 0x12) {
+				// Compatibility 16-byte binding. Translate virtual L-stick bits.
 				uint8_t idx = buf[1];
 				if (idx < LZ_MAX_BINDINGS) {
 					LizardBinding &b =
@@ -856,26 +912,60 @@ void webusbPoll()
 					b.outType = buf[2];
 					for (int k = 0; k < 7; k++)
 						b.outData[k] = buf[3 + k];
-					b.trigMask = (uint32_t)buf[10] |
-						     ((uint32_t)buf[11] << 8) |
-						     ((uint32_t)buf[12] << 16) |
-						     ((uint32_t)buf[13] << 24);
-					b.holdMask = (uint32_t)buf[14] |
-						     ((uint32_t)buf[15] << 8) |
-						     ((uint32_t)buf[16] << 16) |
-						     ((uint32_t)buf[17] << 24);
+					uint32_t trig =
+						(uint32_t)buf[10] |
+						((uint32_t)buf[11] << 8) |
+						((uint32_t)buf[12] << 16) |
+						((uint32_t)buf[13] << 24);
+					uint32_t hold =
+						(uint32_t)buf[14] |
+						((uint32_t)buf[15] << 8) |
+						((uint32_t)buf[16] << 16) |
+						((uint32_t)buf[17] << 24);
+					b.trigMask = webusbLizardMaskFromLegacy(
+						trig);
+					b.holdMask = webusbLizardMaskFromLegacy(
+						hold);
 				}
-
 				// 0x14: COMMIT the edited map to flash and echo it back.
 			} else if (op == 0x14) {
 				saveLizardMap();
 				webusbSendLizard();
-
 				// 0x15: reset the map to the built-in defaults, persist, echo back.
 			} else if (op == 0x15) {
 				defaultLizardMap();
 				saveLizardMap();
 				webusbSendLizard();
+			} else if (op == 0x17) {
+				// Native lizard-map dump: 24-byte records with uint64 masks.
+				webusbSendLizardV2();
+			} else if (op == 0x18) {
+				// [idx][outType][od0..6][trig LE8][hold LE8]
+				uint8_t idx = buf[1];
+				if (idx < LZ_MAX_BINDINGS) {
+					LizardBinding &b =
+						g_lizardMap.bindings[idx];
+					b.outType = buf[2];
+					for (int k = 0; k < 7; k++)
+						b.outData[k] = buf[3 + k];
+					b.trigMask = 0;
+					b.holdMask = 0;
+					for (int k = 0; k < 8; k++) {
+						b.trigMask |=
+							(uint64_t)buf[10 + k]
+							<< (k * 8);
+						b.holdMask |=
+							(uint64_t)buf[18 + k]
+							<< (k * 8);
+					}
+				}
+			} else if (op == 0x19) {
+				saveLizardMap();
+				webusbSendLizardV2();
+			} else if (op == 0x1A) {
+				defaultLizardMap();
+				saveLizardMap();
+				webusbSendLizardV2();
 
 				// 0x20..0x24: staged firmware update (see fw_update.h). Each op is acked with an 0xAB
 				// frame from the usbd task; the panel ping-pongs on those acks, so at most one command
