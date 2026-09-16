@@ -48,6 +48,19 @@ static Adafruit_USBD_HID g_ps5[NSLOT];
 static const uint8_t PS5_MAC_BASE[5] = { 0x00, 0x1B, 0xDC, 0x4F, 0x55 };
 static uint8_t g_ps5Mac[NSLOT][6];
 static bool g_ps5MacInit = false;
+
+// USB firmware-information payload from a DualSense, excluding report ID 0x20.
+// This emulated identity is independent of OpenPuck's own build version.
+static const uint8_t PS5_FIRMWARE_INFO[] = {
+	0x4A, 0x75, 0x6C, 0x20, 0x20, 0x34, 0x20, 0x32, 0x30, 0x32, 0x35,
+	0x31, 0x30, 0x3A, 0x31, 0x30, 0x3A, 0x33, 0x32, 0x02, 0x00, 0x04,
+	0x00, 0x13, 0x04, 0x00, 0x00, 0x2A, 0x00, 0x10, 0x01, 0x50, 0x38,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30,
+	0x06, 0x00, 0x00, 0x2A, 0x00, 0x01, 0x00, 0x0A, 0x00, 0x02, 0x00,
+	0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+static_assert(sizeof PS5_FIRMWARE_INFO == 63, "PS5 firmware report size");
+
 static void initPs5Macs()
 {
 	if (g_ps5MacInit)
@@ -93,11 +106,10 @@ static uint16_t ps5GetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 		memcpy(buf, g_ps5Mac[slot], 6);
 		return 19;
 	case 0x20: // firmware info (64 incl id)
-		if (reqlen < 63)
+		if (reqlen < sizeof PS5_FIRMWARE_INFO)
 			return 0;
-		buf[23] = 0x01; // hw_version (le32 @ kernel buf[24]) non-zero
-		buf[27] = 0x01; // fw_version (le32 @ kernel buf[28]) non-zero
-		return 63;
+		memcpy(buf, PS5_FIRMWARE_INFO, sizeof PS5_FIRMWARE_INFO);
+		return sizeof PS5_FIRMWARE_INFO;
 	default:
 		return 0;
 	}
@@ -105,7 +117,7 @@ static uint16_t ps5GetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 static void ps5SetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 			 uint8_t const *b, uint16_t n)
 {
-	if (type != HID_REPORT_TYPE_OUTPUT || n < 1)
+	if (type != HID_REPORT_TYPE_OUTPUT || !b || n < 1)
 		return;
 	uint8_t id;
 	const uint8_t *p;
@@ -114,12 +126,9 @@ static void ps5SetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 		id = b[0];
 		p = b + 1;
 		pn = (uint16_t)(n - 1);
-	} else if (rid == 0x02 && b[0] == 0x02 && n >= 5) {
-		id = rid;
-		p = b + 1;
-		pn = (uint16_t)(n - 1);
-	} // some paths leave report id in b
-	else {
+	} else {
+		// TinyUSB already strips the ID from control SET_REPORT data.
+		// A leading 0x02 here is the haptics flag, not another ID.
 		id = rid;
 		p = b;
 		pn = n;
