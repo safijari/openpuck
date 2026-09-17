@@ -14,7 +14,7 @@ CLANG_FORMAT ?= $(shell command -v clang-format-18 \
 # gitignored and excluded here so formatting never touches them.
 FORMAT_FILES := $(shell find OpenPuck ReversePuckFirmware puck_sniffer pairtui \
 	\( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' -o -name '*.ino' \) \
-	-not -name 'git_version.h')
+	-not -name 'git_version.h' -not -path 'OpenPuck/src/libxsm3/*')
 
 # --- firmware build ---------------------------------------------------------
 # The OpenPuck firmware needs two TinyUSB config values that differ from the Adafruit nRF52 core defaults:
@@ -45,7 +45,7 @@ EXTRA_FLAGS ?=
 # already defines to serve WebUSB. Original Xbox mode needs the XID requests that arrive on it.
 # Overriding the weak symbol would claim the whole hook and force a copy of Adafruit's WebUSB body,
 # so we wrap: webusb_config.cpp takes XID and passes everything else to __real_.
-OPENPUCK_LINK_FLAGS ?= -Wl,--wrap=tud_vendor_control_xfer_cb
+OPENPUCK_LINK_FLAGS ?= -Wl,--wrap=tud_vendor_control_xfer_cb -Wl,--wrap=tud_descriptor_string_cb -Wl,--wrap=usbd_control_xfer_cb
 # {build.flags.usb} is expanded by arduino-cli (VID/PID/strings); pass it through verbatim.
 USB_EXTRA_FLAGS = -DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=$(CFG_TUD_HID) -DCFG_TUD_TASK_QUEUE_SZ=$(CFG_TUD_TASK_QUEUE_SZ) -DCFG_TUD_VENDOR_TX_BUFSIZE=$(CFG_TUD_VENDOR_TX_BUFSIZE) $(EXTRA_FLAGS)
 # When BUILD_PATH is set, --clean + path flags are injected; omitted for fast incremental dev builds.

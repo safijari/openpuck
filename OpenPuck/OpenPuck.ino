@@ -184,6 +184,7 @@ void setup()
 	// clean-PS modes skip BOTH the wake mouse and WebUSB -- no config panel / host-wake; chord back to Steam
 	// (back-paddle 4 + A) to reach the panel. Normal MODE_PS5 / MODE_HIDGYRO keep wake + panel.
 	const bool psClean = modeIsCleanPS(g_usbMode);
+	const bool xboxClean = g_usbMode == MODE_XBOX;
 	const bool dynamic = g_active->dynamicMount();
 
 	if (dynamic) {
@@ -245,12 +246,12 @@ void setup()
 		// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
 		// no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS
 		// modes so the device stays a single clean HID gamepad (see psClean above).
-		if (!puckMode && !keepCdc && !psClean)
+		if (!puckMode && !keepCdc && !psClean && !xboxClean)
 			wakeHidBegin();
 
 		// WebUSB config panel -- every mode EXCEPT the PlayStation modes. Puck: registered above (IF 0) before wake +
 		// slots; other clean modes after controller. PS modes omit it to present a genuine single-HID PS controller.
-		if (!puckMode && !psClean)
+		if (!puckMode && !psClean && !xboxClean)
 			usb_web.begin();
 		// bmAttributes: required(0x80) | remote_wakeup(0x20). Remote Wakeup lets us signal wake-from-sleep.
 		// The PS3/Sixaxis (the only clean-PS mode on this static path) advertises 0x80 only -- match it so a
