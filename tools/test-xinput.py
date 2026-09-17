@@ -63,7 +63,10 @@ def main():
         sources = [ROOT / "OpenPuck" / "src" / "libxsm3" / name for name in
                    ("excrypt_des.c", "excrypt_sha.c", "excrypt_parve.c",
                     "usbdsec.c", "xsm3.c")]
-        sources += [ROOT / "OpenPuck" / "xinput_auth.cpp", TESTS / "test.cpp"]
+        sources += [ROOT / "OpenPuck" / name for name in
+                ("xinput_auth.cpp", "xinput_usb.cpp", "xinput_strings.cpp",
+                 "mode_xinput.cpp")]
+        sources += [TESTS / "test.cpp", TESTS / "mode_test.cpp"]
         objects = []
         for source in sources:
             obj = build / (source.name + ".o")

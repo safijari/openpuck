@@ -66,12 +66,48 @@ make build EXTRA_FLAGS="-DOPK_LOG=1"                  # add your own defines
 make build FQBN=adafruit:nrf52:somethingelse          # a different nRF52840 board
 ```
 
-**Calling `arduino-cli` directly** instead of `make`? Then you must supply the flags yourself — the build
-`#error`s without them (so a forgotten flag fails loudly instead of shipping a broken/deadlock-prone image):
+**Calling `arduino-cli` directly** instead of `make`? Supply both the USB defines and
+all three linker wrappers. Compile-time checks guard the USB defines; they do not
+replace the required linker flags:
 
 ```bash
-arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=tud_vendor_control_xfer_cb" OpenPuck
+arduino-cli compile -b adafruit:nrf52:feather52840 --build-property "build.extra_flags=-DNRF52840_XXAA {build.flags.usb} -DCFG_TUD_HID=6 -DCFG_TUD_TASK_QUEUE_SZ=512 -DCFG_TUD_VENDOR_TX_BUFSIZE=256" --build-property "compiler.c.elf.extra_flags=-Wl,--wrap=tud_vendor_control_xfer_cb -Wl,--wrap=tud_descriptor_string_cb -Wl,--wrap=usbd_control_xfer_cb" OpenPuck
 ```
+
+The wrappers route vendor control requests, preserve the full 178-byte Xbox
+security string, and validate actual EP0 OUT transfer lengths respectively.
+`make build` includes all three through `OPENPUCK_LINK_FLAGS`; do not drop any
+when overriding that variable.
+
+### Xbox 360 build and validation status
+
+The default `adafruit:nrf52:feather52840` build passed with **Adafruit nRF52 core
+1.7.0**. The Xbox 360 firmware has **not been flashed or tested on a console**;
+stock-console support remains experimental and awaiting validation. It runs
+retail authentication in software on the existing nRF52840 OpenPuck, with no
+donor controller or added hardware.
+
+From the repository root, the non-hardware checks are:
+
+```bash
+python3 tools/test-xinput.py --check-fixtures
+make check
+make build
+```
+
+Native tests require Python 3, C11/C++17 compilers, and OpenSSL for independent
+fixture regeneration. These are **synthetic fixtures, not console captures**;
+passing tests and a firmware build do not prove physical USB operation or stock
+console compatibility. See [../tests/xinput/README.md](../tests/xinput/README.md)
+for harness limits and [XBOX360.md](XBOX360.md) for the physical test checklist.
+
+Before distributing firmware, retain the libxsm3 **LGPL-2.1-or-later**, ExCrypt
+**BSD-3-Clause**, and descriptor **MIT** notices and license texts. Static
+firmware redistribution must also satisfy applicable LGPL source/relinking
+requirements, not just include a license notice. See
+[../OpenPuck/src/libxsm3/NOTICE.md](../OpenPuck/src/libxsm3/NOTICE.md),
+[../OpenPuck/src/libxsm3/LICENSE.txt](../OpenPuck/src/libxsm3/LICENSE.txt), and
+[XBOX360.md](XBOX360.md#licensing-and-redistribution).
 
 ### 4a. Raytac MDBT50Q-CX-40
 
@@ -165,6 +201,12 @@ Use the port for your OS: macOS `/dev/cu.usbmodem*`, Linux `/dev/ttyACM0`, Windo
 
 > **DFU note:** in puck (Steam/Lizard) mode the firmware drops the CDC serial port to free a USB endpoint, so `arduino-cli` can't auto-reset the board into its bootloader. If the upload can't connect, put the board in DFU mode first by **double-tapping RST**, then `make flash <bootloader-port>` (re-check `arduino-cli board list` — the port can change in DFU mode). The drag-and-drop UF2 path in §5b also works.
 
+Xbox 360 mode also has no CDC serial port, and deliberately omits WebUSB and wake
+HID. For configuration or WebUSB updates, connect to a PC and hold all four back
+buttons (**L4 + R4 + L5 + R5**) plus **A** to return to Steam mode. Afterward,
+**back-4 + X** returns to Xbox by default (X can be reassigned; A is fixed).
+Physical DFU remains the recovery path if no paired controller is available.
+
 ### Manual upload (without `make`)
 
 Find the board port with `arduino-cli board list`, then:
@@ -230,6 +272,9 @@ Replace the port (`/dev/ttyACM0` / `COM5`) with the actual board port.
 
 ### Flashing from the WebUSB panel (no tools, no drag-and-drop)
 
+In Xbox 360 mode, first return to Steam mode with **back-4 + A** on a PC; the
+Xbox USB layout has no configuration/update interface.
+
 A board already running OpenPuck (status protocol v15+) can be updated entirely from the
 [WebUSB configurator](https://safijari.github.io/openpuck/)'s **Firmware update** tab: drag-and-drop a
 `.uf2` (or click to browse), or pick a version from the built-in **releases list** — each release offers the
@@ -274,12 +319,12 @@ Re-flashing firmware does **not** erase the board's internal LittleFS. The paire
   (`make build-recovery` is just `make build` plus `-DOPK_FACTORY_RESET=1`; the usual USB flags are still baked in.)
 
   It is **not** a wipe-every-boot image: after the one-time reset it stamps a tag file with the build's git hash, so subsequent boots skip the wipe and persist normally. Flashing this same image again won't re-wipe (the tag matches); flashing a **different** build (different git hash) re-triggers the one-time reset. For an on-demand wipe at any time, use the WebUSB button or serial `ERASE-ALL` below. Re-pair the controller after a reset.
-- **WebUSB panel (any mode):** open the panel (§8), and in the maintenance card click **⚠ Factory erase**. Confirm the two warning dialogs and type `ERASE` when prompted. The board reformats its filesystem and reboots to factory defaults. This works in every USB mode.
+- **WebUSB panel (a mode exposing WebUSB):** open the panel (§8), and in the maintenance card click **⚠ Factory erase**. Confirm the two warning dialogs and type `ERASE` when prompted. The board reformats its filesystem and reboots to factory defaults. From Xbox 360 mode, first return to Steam with **back-4 + A**.
 - **Serial console (CDC):** connect to the board's serial port at 115200 baud and send the line `ERASE-ALL` (exact, all caps). Same effect: reformat + reboot.
 
 Both reformat the entire internal filesystem (`cfg.bin` + `bonds.bin` and anything else), so the action is irreversible and the controller must be **re-paired afterwards** (see §7).
 
-Note on the serial method: puck (Steam/Lizard) mode drops the CDC console by default to free a USB endpoint for the wake-mouse interface, so the serial port may not be present in that mode. Either arm the one-shot debug CDC first (panel debug-CDC toggle / `D` console command, which keeps the console for the next boot), or just use the WebUSB **Factory erase** button, which is available in all modes.
+Note on the serial method: puck (Steam/Lizard) mode drops the CDC console by default to free a USB endpoint for the wake-mouse interface, so the serial port may not be present in that mode. Either arm the one-shot debug CDC first (panel debug-CDC toggle / `D` console command, which keeps the console for the next boot), or use the WebUSB **Factory erase** button in Steam mode. Xbox 360 mode exposes neither CDC nor WebUSB.
 
 ## 7. Pair and verify
 

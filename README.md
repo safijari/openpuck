@@ -26,7 +26,9 @@ There are two fundamental problems with the controller:
 
 OpenPuck uses a [Pro Micro NRF52840](https://www.amazon.com/dp/B0GSZ7FD6T) ($8 on Amazon, possibly cheaper elsewhere) which uses a radio similar to the one being used by the controller and the puck. Once the arduino sketch is uploaded it emulates the puck over USB to Steam by default and allows pairing the controller normally (almost, the lizard mode for when Steam is off might not be 1:1). Latency [has been measured to be within 1ms of the official puck](https://www.reddit.com/r/SteamController/comments/1u754ze/complete_latency_testing_of_openpuck_project/).
 
-At any point you can hold all 4 back buttons and press X to switch over to ***Xbox mode** which maps all canonical inputs to their expected counterparts (plus L4 -> LB, L5 -> L3, etc which are configurable). In this mode the right trackpad acts as a mouse but at present this only works in Android and SteamOS.
+At any point you can hold all 4 back buttons and press X (the default assignment) to switch over to **Xbox mode**, which maps canonical inputs to their expected counterparts (plus configurable back-button mappings). It presents **one static wired Xbox 360 controller**, with input and rumble, but no right-trackpad mouse, WebUSB, or wake HID. Retail authentication runs in software on the existing nRF52840 OpenPuck; no donor controller or extra hardware is required.
+
+**Stock Xbox 360 console support is experimental and awaiting physical validation.** The default firmware build passed with Adafruit nRF52 core 1.7.0, but this firmware has **not been flashed or tested on a console**. Native tests use independent synthetic fixtures, not console captures or proof of compatibility. Headsets/chatpads are not emulated, and physical player-ring behavior is not equivalent to a genuine pad. See [docs/XBOX360.md](docs/XBOX360.md) for constraints and the hardware test checklist.
 
 Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to a **Switch mode**. This emulates a pro controller full with gyro and haptics. There's other modes as well:
 
@@ -34,7 +36,7 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 |---|---|---|
 | back-4 + A | Steam | Steam Controller Mode |
 | back-4 + B | Lizard | Lizard mode, even if Steam is open |
-| back-4 + X | Xbox | Xbox 360 Controller |
+| back-4 + X | Xbox | One wired Xbox 360 pad; stock-console support experimental, untested |
 | back-4 + Y | Switch Pro | Switch Controller + Gyro + Haptics |
 | WebUSB panel → mode 4 | Hori Pad | Switch mode with no gyro or haptics |
 | WebUSB panel → mode 5 | DualSense + Gyro + Trackpad | PC only |
@@ -99,6 +101,8 @@ Switching slots requires turning the controller off (Steam + Y if steam is runni
 # Configuration
 A webusb based configuration UI is available [here](https://safijari.github.io/openpuck/). It allows Switching the mode manually and changing the back button mapping for other modes among other things. This will likely only work in Chrome and Edge and needs the pro micro to be connected via USB to the same computer for it to function. Note that it might not work in all modes on all machines but should always work in the Steam Controller mode (which you can revert to with back-4 + A). Note that in some modes the webusb connection might not work. If you're encountering that try going back to the Steam Controller mode and unplugging and replugging the dongle.
 
+Xbox mode deliberately has no WebUSB interface, including for firmware updates. Hold **L4 + R4 + L5 + R5 + A** to return to Steam mode on a PC, configure or update there, then use **back-4 + X** to return to Xbox (unless X has been reassigned). The A recovery chord is fixed; the B/X/Y assignments are configurable. Pair controllers in Steam mode first. Xbox selects the first fresh RF input source and keeps it until disconnect; four stored bonds do not become four Xbox gamepads.
+
 If you're running Linux and your browser still shows "disconnected" after selecting the OpenPuck in the device selector, it's probably a permissions issue. Check [this document](./docs/WEBUSB_LINUX.md) for more details.
 
 You can copy configurations between OpenPucks using the export/import card in this webusb UI as well. This allows for some interesting [hotswapping capability](https://www.youtube.com/watch?v=6RnsXVlHAoM) where controllers can switch between pucks without needing to swap slots.
@@ -123,7 +127,7 @@ This needs a little extra wiring (one resistor, one transistor, two wires to the
 Bill of materials, schematic, and step-by-step wiring instructions: [How to wire up an NRF52 board for cold boot](https://github.com/safijari/openpuck/wiki/How-to-wire-up-an-NRF52-board-for-cold-boot).
 
 # Future work
-- Find a way to make Xinput mode and mouse work together on all platforms
+- Validate experimental wired Xbox 360 mode on stock consoles (the clean USB layout intentionally omits a mouse)
 - Design the charging portion (and make it short proof)
 - Make ReversePuck into a system that you can plug into most controllers and allow them to talk to OpenPuck
 - A BLE version of OpenPuck that can allow Steam Controllers and other BLE controllers to coexist
@@ -141,6 +145,8 @@ I have tested this software fairly extensively but I have limited resources. Ple
 - Massive thanks to [u/Careful_Tune4744](https://www.reddit.com/user/Careful_Tune4744/) for latency testing as well as testing and giving feedback on the Switch Pro mode
 - Thanks to Lawstorant from a mutual discord server for constructive criticism of the repo's state
 - Everyone that participated in [issue #17](https://github.com/safijari/openpuck/issues/72) or reported/tested stability issues on various boards
+
+Xbox authentication includes InvoxiPlayGames' **libxsm3 (LGPL-2.1-or-later)** and **ExCrypt (BSD-3-Clause)**; its USB descriptor layout is adapted from **GP2040-CE (MIT)**. Retain the notices and license texts when redistributing, and satisfy the LGPL source/relinking obligations for statically linked firmware. See [OpenPuck/src/libxsm3/NOTICE.md](OpenPuck/src/libxsm3/NOTICE.md), [OpenPuck/src/libxsm3/LICENSE.txt](OpenPuck/src/libxsm3/LICENSE.txt), the MIT notice in [OpenPuck/xinput_descriptors.h](OpenPuck/xinput_descriptors.h), and [docs/XBOX360.md](docs/XBOX360.md#licensing-and-redistribution).
 
 # * On LLM Use 
 Everything from discovery of the protocol to writing the arduino sketch and running various automated benchmarks invovled Claude and Codex. This readme is the only organic, single origin, ethically sourced and humanely slaughtered assemblage of words in this project. I have done my level best to review the code and I invite anyone concerned about the stability or security of this project to do the same. I test thoroughly and obsessively as the primary purpose of this project is to bring some much needed QOL to my own use of the Steam Controller.

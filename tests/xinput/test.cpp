@@ -1,5 +1,7 @@
 #include "xinput_auth.h"
 #include "xinput_descriptors.h"
+#include "config.h"
+#include "usb_app_drivers.h"
 #include "src/libxsm3/excrypt.h"
 #include "src/libxsm3/usbdsec.h"
 #include "src/libxsm3/xsm3.h"
@@ -71,6 +73,63 @@ static bool resetInRng, replaceInRng;
 static uint8_t *ep0;
 static uint16_t offered, transferred;
 static unsigned transfers;
+static const tusb_control_request_t *callbackRequest;
+static const Bytes *callbackPayload;
+static uint8_t callbackEndpoint;
+static xfer_result_t callbackResult;
+static uint32_t callbackLength;
+static unsigned callbacks;
+
+extern "C" bool __wrap_usbd_control_xfer_cb(uint8_t rhport, uint8_t ep,
+					    xfer_result_t result,
+					    uint32_t length);
+
+extern "C" bool __real_usbd_control_xfer_cb(uint8_t rhport, uint8_t ep,
+					    xfer_result_t result,
+					    uint32_t length)
+{
+	CHECK(rhport == 0 && ep == callbackEndpoint);
+	CHECK(result == callbackResult && length == callbackLength);
+	CHECK(xinputAuthReceived(callbackRequest->wLength) ==
+	      (ep == 0 && result == XFER_RESULT_SUCCESS &&
+	       length == callbackRequest->wLength));
+	callbacks++;
+	// Model TinyUSB copying only received bytes, never the SETUP wLength.
+	if (ep == 0 && !callbackPayload->empty()) {
+		CHECK(ep0 != nullptr);
+		size_t copied = std::min<size_t>(length, offered);
+		copied = std::min(copied, callbackPayload->size());
+		memcpy(ep0, callbackPayload->data(), copied);
+	}
+	return xinputClassDriver()->control_xfer_cb(0, CONTROL_STAGE_DATA,
+						    callbackRequest);
+}
+
+static bool data(const tusb_control_request_t &req, const Bytes &payload,
+		 uint32_t actual, uint8_t ep = 0,
+		 xfer_result_t result = XFER_RESULT_SUCCESS)
+{
+	CHECK(!xinputAuthReceived(req.wLength));
+	callbackRequest = &req;
+	callbackPayload = &payload;
+	callbackEndpoint = ep;
+	callbackResult = result;
+	callbackLength = actual;
+	unsigned before = callbacks;
+	bool ok = __wrap_usbd_control_xfer_cb(0, ep, result, actual);
+	CHECK(callbacks == before + 1);
+	CHECK(!xinputAuthReceived(req.wLength));
+	callbackRequest = nullptr;
+	callbackPayload = nullptr;
+	return ok;
+}
+
+static bool data(const tusb_control_request_t &req, const Bytes &payload = {})
+{
+	bool input = req.bmRequestType & 0x80;
+	return data(req, payload, input ? transferred : req.wLength,
+		    input ? 0x80 : 0);
+}
 
 static tusb_control_request_t request(uint8_t command, uint16_t length,
 				      uint8_t type = 0xC1,
@@ -139,9 +198,8 @@ static void out(uint8_t command, const Bytes &packet, uint16_t index = 0x0103,
 	unsigned before = notifications;
 	CHECK(setup(req));
 	CHECK(offered == packet.size() && transferred == packet.size());
-	memcpy(ep0, packet.data(), packet.size());
 	CHECK(notifications == before);
-	CHECK(xinputAuthControl(0, CONTROL_STAGE_DATA, &req));
+	CHECK(data(req, packet));
 	CHECK(notifications == before + 1);
 	CHECK(xinputAuthControl(0, CONTROL_STAGE_ACK, &req));
 	CHECK(notifications == before + 1);
@@ -172,7 +230,7 @@ static Bytes in(uint8_t command, uint16_t length = 65535,
 	CHECK(setup(req));
 	Bytes result(ep0, ep0 + transferred);
 	unsigned before = transfers;
-	CHECK(xinputAuthControl(0, CONTROL_STAGE_DATA, &req));
+	CHECK(data(req));
 	CHECK(xinputAuthControl(0, CONTROL_STAGE_ACK, &req));
 	CHECK(transfers == before);
 	return result;
@@ -528,6 +586,17 @@ static void sessions()
 			if (round)
 				xinputAuthReset();
 			begin(console, round ? 3 : 0x0103);
+			auto keepalive =
+				request(0x84, 0, 0x41, round ? 3 : 0x0103);
+			keepalive.wValue = 3;
+			unsigned notified = notifications;
+			CHECK(setup(keepalive));
+			CHECK(offered == 0);
+			CHECK(xinputAuthControl(0, CONTROL_STAGE_ACK,
+						&keepalive));
+			CHECK(notifications == notified);
+			state(2);
+			CHECK(in(0x83) == hex(fixture.init_response));
 			exchange(console);
 			for (uint16_t length : lengths) {
 				auto expected = hex(fixture.verify_response[2]);
@@ -545,24 +614,23 @@ static void sessions()
 	state(1);
 	noReply();
 	CHECK(strcmp(xinputAuthSerial(), "012345ABCDEF") == 0);
-	puts("PASS two consoles, reinit/reset, repeated verification, IN truncation");
+	puts("PASS two consoles, OUT keepalive, reinit/reset, repeated verification, IN truncation");
 }
 
 static void stagesAndReset()
 {
 	xinputAuthReset();
 	auto req = request(0x82, 34, 0x41);
-	CHECK(!xinputAuthControl(0, CONTROL_STAGE_DATA, &req));
+	CHECK(!data(req));
 	CHECK(setup(req));
 	unsigned before = notifications, randomBefore = rngCalls;
 	CHECK(xinputAuthControl(0, CONTROL_STAGE_ACK, &req));
 	xinputAuthProcess();
 	CHECK(notifications == before && rngCalls == randomBefore);
 	auto init = hex(fixtures[0].init);
-	memcpy(ep0, init.data(), init.size());
-	CHECK(xinputAuthControl(0, CONTROL_STAGE_DATA, &req));
+	CHECK(data(req, init));
 	CHECK(notifications == before + 1);
-	CHECK(!xinputAuthControl(0, CONTROL_STAGE_DATA, &req));
+	CHECK(!data(req, init));
 	xinputAuthReset();
 	xinputAuthProcess();
 	CHECK(rngCalls == randomBefore);
@@ -570,7 +638,7 @@ static void stagesAndReset()
 	noReply();
 	CHECK(setup(req));
 	xinputAuthReset();
-	CHECK(!xinputAuthControl(0, CONTROL_STAGE_DATA, &req));
+	CHECK(!data(req, init));
 
 	Console console(fixtures[0]);
 	begin(console);
@@ -580,7 +648,7 @@ static void stagesAndReset()
 	Bytes snapshot(owned, owned + offered);
 	xinputAuthReset();
 	CHECK(Bytes(owned, owned + snapshot.size()) == snapshot);
-	CHECK(xinputAuthControl(0, CONTROL_STAGE_DATA, &replyReq));
+	CHECK(data(replyReq));
 	CHECK(xinputAuthControl(0, CONTROL_STAGE_ACK, &replyReq));
 	noReply();
 
@@ -674,6 +742,136 @@ static void invalidChallenges()
 	puts("PASS malformed packets, checksum/MAC failures, RNG/worker failures");
 }
 
+static void receivedLengths()
+{
+	unsigned rejected = 0;
+	for (bool verify : { false, true }) {
+		uint16_t expected = verify ? 22 : 34;
+		auto reject = [&](uint32_t actual, uint8_t endpoint,
+				  xfer_result_t result) {
+			Console console(fixtures[0]);
+			begin(console);
+			Bytes packet = verify ? console.verify(0) :
+						console.init();
+			auto req =
+				request(verify ? 0x87 : 0x82, expected, 0x41);
+			CHECK(setup(req));
+			uint8_t *buffer = ep0;
+			unsigned before = notifications,
+				 randomBefore = rngCalls;
+			CHECK(!data(req, packet, actual, endpoint, result));
+			if (endpoint == 0) {
+				size_t copied =
+					std::min<uint32_t>(actual, expected);
+				CHECK(std::equal(packet.begin(),
+						 packet.begin() + copied,
+						 buffer));
+				CHECK(std::all_of(
+					buffer + copied, buffer + expected,
+					[](uint8_t b) { return b == 0; }));
+			}
+			CHECK(notifications == before && !xinputAuthBusy());
+			CHECK(xinputAuthControl(0, CONTROL_STAGE_ACK, &req));
+			CHECK(notifications == before);
+			failed();
+			CHECK(rngCalls == randomBefore);
+			// A later full-length callback cannot revive the rejected job.
+			CHECK(!data(req));
+			CHECK(notifications == before);
+			Console recovery(fixtures[1]);
+			begin(recovery);
+			exchange(recovery);
+			rejected++;
+		};
+		for (uint32_t actual = 0; actual < expected; actual++)
+			reject(actual, 0, XFER_RESULT_SUCCESS);
+		for (uint32_t actual : { uint32_t(expected + 1), 46u, 64u, 255u,
+					 256u, 65535u, 65536u, UINT32_MAX })
+			reject(actual, 0, XFER_RESULT_SUCCESS);
+		for (auto result : { XFER_RESULT_FAILED, XFER_RESULT_STALLED,
+				     XFER_RESULT_TIMEOUT, XFER_RESULT_INVALID })
+			reject(expected, 0, result);
+		for (uint8_t endpoint : { 1, 2, 0x80, 0x81, 0xFF })
+			reject(expected, endpoint, XFER_RESULT_SUCCESS);
+	}
+	CHECK(rejected == 90);
+	puts("PASS 90 EP0 rejects: every short init/verify, oversized counts, "
+	     "failed results, wrong endpoints, recovery");
+}
+
+extern "C" const uint16_t *__wrap_tud_descriptor_string_cb(uint8_t index,
+							   uint16_t langid);
+
+static unsigned stringDelegations;
+static uint8_t delegatedIndex;
+static uint16_t delegatedLanguage;
+static const uint16_t fallbackString[] = { 0x0304, 'Z' };
+
+extern "C" const uint16_t *__real_tud_descriptor_string_cb(uint8_t index,
+							   uint16_t langid)
+{
+	stringDelegations++;
+	delegatedIndex = index;
+	delegatedLanguage = langid;
+	return index == 0xFF ? nullptr : fallbackString;
+}
+
+static void stringDescriptors()
+{
+	static const char expected[] =
+		"Xbox Security Method 3, Version 1.00, \xA9 2005 Microsoft "
+		"Corporation. All rights reserved.";
+	static_assert(sizeof expected == 89, "88 security code units plus NUL");
+	for (uint8_t mode = 0; mode <= MODE_MAX; mode++) {
+		g_usbMode = mode;
+		for (unsigned index = 0; index <= 255; index++) {
+			for (uint16_t language :
+			     { 0, 0x0409, 0x0411, 0xFFFF }) {
+				unsigned before = stringDelegations;
+				const uint16_t *descriptor =
+					__wrap_tud_descriptor_string_cb(
+						index, language);
+				if (mode == MODE_XBOX && index == 4) {
+					CHECK(stringDelegations == before);
+					CHECK(descriptor != nullptr);
+					CHECK(descriptor[0] == 0x03B2);
+					for (size_t i = 0; i < 88; i++) {
+						uint16_t code =
+							uint8_t(expected[i]);
+						CHECK(descriptor[i + 1] ==
+						      code);
+					}
+					// Include the tail beyond two EP0 packets; USB
+					// strings have no terminating UTF-16 NUL.
+					Bytes bytes;
+					for (size_t i = 0; i < 89; i++) {
+						bytes.push_back(descriptor[i] &
+								0xFF);
+						bytes.push_back(descriptor[i] >>
+								8);
+					}
+					CHECK(bytes.size() == 178 &&
+					      bytes[0] == 178);
+					CHECK(bytes[176] == '.' &&
+					      bytes[177] == 0);
+				} else {
+					CHECK(stringDelegations == before + 1);
+					CHECK(delegatedIndex == index);
+					CHECK(delegatedLanguage == language);
+					CHECK(descriptor ==
+					      (index == 255 ? nullptr :
+							      fallbackString));
+				}
+			}
+		}
+	}
+	g_usbMode = MODE_XBOX;
+	puts("PASS actual string wrapper: full 178 bytes, all indices/modes, "
+	     "language and null delegation");
+}
+
+void modeTests();
+
 int main()
 {
 	cryptoKnownAnswers();
@@ -682,6 +880,9 @@ int main()
 	sessions();
 	stagesAndReset();
 	invalidChallenges();
+	receivedLengths();
+	stringDescriptors();
+	modeTests();
 	CHECK(lockDepth == 0);
 	puts("PASS all native XInput regression tests");
 	return 0;

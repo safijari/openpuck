@@ -22,7 +22,7 @@ offset  size  meaning
 0x08    16    controller serial, ASCII, not null-terminated if fully filled
 ```
 
-The puck stores four independent bond slots. Slot `N` is exposed as USB HID interface `N`.
+The puck stores four independent bond slots. In Steam mode each slot has its own USB HID interface; Xbox mode selects only one RF controller for one static USB gamepad (§9.2).
 
 An empty slot is all zeroes.
 
@@ -303,12 +303,12 @@ offset  size  meaning
 
 The RF side stays the same across modes. Only USB enumeration changes.
 
-There are three switchable modes (`0=Steam 1=Xbox 2=Switch`). Steam mode is a CDC + WebUSB composite;
-Xbox and Switch are **clean controller-only** devices — the auto-added CDC/WebUSB
-interfaces are torn down (`clearConfiguration`) and `bcdUSB` stays `0x0200` (no USB-2.1 BOS). This is
-required because Windows' `xusb` driver expects the Xbox 360 controller on the primary device/interface,
-and a real Switch console rejects composite devices. Every boot/mode-switch
-does a `detach -> rebuild -> attach` so the host re-reads the descriptor cleanly.
+USB personalities include Steam (`0`), Xbox 360 (`1`), Hori (`2`), Switch Pro (`4`),
+and the other modes listed in [../README.md](../README.md). Xbox 360 uses a static
+wired-controller layout: `clearConfiguration` removes the auto-added interfaces,
+and `bcdUSB` remains `0x0200` (no USB-2.1 BOS). It has no CDC, WebUSB, mouse, or wake
+HID. Mode switches detach and reboot to rebuild the USB descriptors; Xbox RF
+joins/departures do not change its USB layout or trigger re-enumeration.
 
 ### 9.1 Steam mode
 
@@ -359,9 +359,45 @@ from the feature-`0x01` **command** space even though the numbers overlap. Groun
 
 ### 9.2 Xbox mode
 
-- VID:PID `045E:028E`, clean device (no CDC/WebUSB)
-- Custom XInput-compatible vendor interface on `MI_00` + HID boot mouse on `MI_01` (right-pad emulation)
-- `0x45` is converted into a 20-byte XInput report
+- `MODE_XBOX` (`1`): one static wired Xbox 360 pad, Microsoft VID:PID `045E:028E`,
+  `bcdDevice=0x0114`, device class/subclass/protocol `FF/FF/FF`.
+- Four vendor interfaces: control (`0`, `FF/5D/01`), audio (`1`, `FF/5D/03`,
+  no accessory), plugin (`2`, `FF/5D/02`, no accessory), security (`3`,
+  `FF/FD/13`). Only gamepad endpoints `0x81` IN and `0x02` OUT are opened;
+  the advertised accessory endpoints are not serviced. Configuration length
+  is 153 bytes (9-byte header + 144-byte body).
+- The first fresh report from a live RF bond selects the controller. Selection
+  stays fixed through brief gaps, until more than 1200 ms without an RF reply
+  (or bond removal). RF injects synthetic neutral input after 300 ms of silence;
+  that releases held inputs but cannot acquire an unselected bond. A replacement
+  controller does not require USB re-enumeration.
+- `0x45` is converted into a 20-byte input report, including Guide. Valid rumble
+  OUT packets are relayed only to the selected RF controller. Headset/chatpad
+  functions are **not emulated**. LED commands are parsed, but the physical
+  player ring is not equivalent to a genuine Xbox 360 pad.
+- Retail XSM3 authentication runs in software using libxsm3 on the nRF52840:
+  no donor controller, USB host adapter, or additional hardware. This is wired
+  USB authentication, not Xbox wireless RF pairing.
+- Vendor requests `0x81` (identification), `0x82` (init), `0x86` (status),
+  `0x83` (response), and `0x87` (verify) are handled through EP0. Init/verify
+  require exactly 34/22 received bytes; invalid lengths, checksums, or MACs fail
+  closed without a ready/stale response. USB RESET invalidates pending work so
+  a worker finishing afterward cannot publish its old result. USB and XSM3
+  identification use a stable, hardware-derived 12-character serial.
+- A dedicated idle-priority crypto task has a 2048-word (8 KiB) stack, separate
+  from the small USB-task stack. The main loop lends it 1 ms between RF polls
+  only while authentication work is pending/running, never inside an RX window.
+- The string callback wrapper supplies the full **178-byte** security string
+  descriptor at index 4 (88 UTF-16 code units plus header), avoiding the core's
+  truncation. Vendor-routing and EP0 received-length wrappers are also required;
+  see [BUILD_AND_DEPLOY.md](BUILD_AND_DEPLOY.md).
+
+Configure in Steam mode using fixed **back-4 + A**, then return with **back-4 + X**
+(default, configurable). Xbox has no mouse, WebUSB, CDC, or wake HID. See
+[XBOX360.md](XBOX360.md) for licensing and physical tests. **Stock-console support
+is experimental, not verified compatibility:** the default Adafruit nRF52 1.7.0
+build passed, but the firmware has not been flashed or console-tested. Independent
+synthetic native fixtures are not evidence of acceptance by a real console.
 
 ### 9.3 Switch mode
 
@@ -383,8 +419,9 @@ from the feature-`0x01` **command** space even though the numbers overlap. Groun
 
 ## 10. WebUSB control channel
 
-The WebUSB vendor interface is present only in Steam mode (Xbox/Switch are clean controllers with no
-config interface — configure them from Steam mode or switch via the back-paddle chord).
+The WebUSB vendor interface is absent in Xbox 360 and clean PlayStation modes.
+For Xbox configuration or updates, return to Steam mode with **back-4 + A**, use
+the panel on a PC, then **back-4 + X** (default assignment) to return to Xbox.
 
 Messages:
 
@@ -443,8 +480,8 @@ Status blob payload:
 ```text
 [0]  version
 [1]  usb mode
-[2]  xbox mouse sensitivity divisor
-[3]  xbox mouse friction
+[2]  legacy xbox mouse sensitivity divisor (no mouse in MODE_XBOX)
+[3]  legacy xbox mouse friction (no mouse in MODE_XBOX)
 [4]  steam pad smoothing
 [5]  A/B + X/Y swap
 [6]  back mapping 0
@@ -527,6 +564,6 @@ To build a compatible puck from scratch:
 6. Poll with `E7` then `E3 GET 0x45`.
 7. Parse `F1` and unpack report `0x45`.
 8. Relay host feature writes to the controller as `E3` SET sub-TLVs.
-9. Re-enumerate USB cleanly when switching Steam/Xbox/Switch modes (Xbox/Switch as clean non-composite devices).
+9. Re-enumerate USB cleanly when switching modes; Xbox uses the fixed four-vendor-interface layout in §9.2, not a gamepad/mouse composite or a dynamic multi-pad layout.
 
 If those pieces match, the controller-to-puck protocol is fully reimplemented.
