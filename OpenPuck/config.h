@@ -171,7 +171,9 @@ extern TypeCfg g_type[ET_COUNT];
 #define PS_OFF 0
 #define PS_LEFT 1
 #define PS_RIGHT 2
-#define PS_MAX 2
+#define PS_DPAD_TOUCH 3
+#define PS_DPAD_CLICK 4
+#define PS_MAX 4
 extern uint8_t g_padStickCfg[ET_COUNT][2];
 extern uint8_t
 	g_etype; // etypeForMode(g_usbMode), resolved at boot (ET_NONE for puck modes)
@@ -180,7 +182,28 @@ extern uint8_t
 // applyActiveType() at boot and after any edit to the active type.
 extern uint8_t g_abSwap; // 1 = swap A/B and X/Y (Nintendo face-button layout)
 extern uint8_t g_back[4];
+#define SW_PROFILE_COUNT 7
+struct SwProfiles {
+	uint8_t enabled, active;
+	uint8_t back[4][4];
+	uint8_t chord[7];
+	uint8_t extraBack[3][4];
+};
+static_assert(sizeof(SwProfiles) == 37, "WebUSB profile layout");
+extern SwProfiles g_swProfiles;
+extern uint8_t g_swDpadHaptics;
+uint8_t *swProfileBack(uint8_t profile);
+bool swProfileChord(uint8_t slot, uint32_t buttons);
+bool rumbleChord(uint8_t slot, uint32_t buttons);
+
 extern uint8_t g_qamMap;
+extern uint8_t g_swQamSelect;
+extern uint8_t g_shortcutFlags, g_rumblePresets[3], g_rumbleSlot;
+extern uint16_t g_strengthSteps[2][3];
+extern uint8_t g_strengthSlots[2];
+void shortcutModeRequest(uint8_t mode, uint8_t slot);
+void shortcutModeTask();
+void captureFeedbackChord(uint8_t slot, uint32_t buttons);
 extern uint8_t
 	g_padHaptics; // 1 = trackpad haptics on (default), 0 = disabled for the active type
 // 1 = host rumble relay on (default), 0 = silenced for the active emulated type

@@ -1,4 +1,6 @@
 #include "bonds.h"
+#include "storage.h"
+#include <string.h>
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 using namespace Adafruit_LittleFS_Namespace;
@@ -20,20 +22,18 @@ bool recEmpty(const uint8_t *r)
 
 void saveBonds()
 {
-	InternalFS.remove(BOND_FILE);
-	File f(InternalFS);
-	if (f.open(BOND_FILE, FILE_O_WRITE)) {
-		for (int i = 0; i < NSLOT; i++) {
-			uint8_t u = g_slot[i].used ? 1 : 0;
-			f.write(&u, 1);
-			f.write(g_slot[i].rec, 24);
-		}
-		f.close();
+	uint8_t data[NSLOT * 25];
+	for (int i = 0; i < NSLOT; i++) {
+		data[i * 25] = g_slot[i].used ? 1 : 0;
+		memcpy(data + i * 25 + 1, g_slot[i].rec, 24);
 	}
+	storageWriteFile(BOND_FILE, "/bonds.tmp", data, sizeof data);
 }
 
 void loadBonds()
 {
+	if (g_storageState == 0)
+		return;
 	File f(InternalFS);
 	if (f.open(BOND_FILE, FILE_O_READ))
 		for (int i = 0; i < NSLOT; i++) {

@@ -259,6 +259,33 @@ void rfHopTo(uint8_t newCh)
 	g_rfCh = savedRfCh; // poll + session beacon now run on g_sessCh=newCh
 }
 
+static uint8_t g_shortcutMode = 0xFF;
+static unsigned long g_shortcutModeAt;
+static uint16_t g_shortcutModeDelay;
+
+void shortcutModeRequest(uint8_t mode, uint8_t slot)
+{
+	if (!modeValid(mode) || USBDevice.suspended())
+		return;
+	hapticShortcutFeedback(slot, 1);
+	g_shortcutMode = mode != g_usbMode ? mode : 0xFF;
+	g_shortcutModeAt = millis();
+	g_shortcutModeDelay = (g_shortcutFlags & SHORTCUT_FEEDBACK) ? 350 : 0;
+}
+
+void shortcutModeTask()
+{
+	if (!(g_shortcutFlags & SHORTCUT_ENABLED))
+		g_shortcutMode = 0xFF;
+	if (g_shortcutMode == 0xFF ||
+	    millis() - g_shortcutModeAt < g_shortcutModeDelay)
+		return;
+	uint8_t mode = g_shortcutMode;
+	g_shortcutMode = 0xFF;
+	if (!USBDevice.suspended())
+		modeSwitchReboot(mode);
+}
+
 // TX one connected packet [LEN][S1][payload] on channel ch, then RX the reply into rfrx; decodes 0xF1.
 // rxWinUs overrides the reply-wait window (0 = use g_rxWin). Pass a tiny value for NO-ACK relays that expect
 // no reply, so they don't burn a full ~1.2ms window of dead air per haptic. Per-slot: the connected poll runs
@@ -680,22 +707,14 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 								&g_in[g_curSlot]
 									 .gz);
 						}
-						// Mode-switch chord (all 4 back + face/dpad): don't leak the press to the host. g_in[g_curSlot].buttons stays
-						// intact so the chord detector still fires; per-mode builders mask the same bits while back-4 held.
-						if ((bb & CHORD_BACK4) ==
-						    CHORD_BACK4) {
-							((uint8_t *)rep)[2] &= ~(
-								uint8_t)(TB_A |
-									 TB_B |
-									 TB_X |
-									 TB_Y);
-							((uint8_t *)rep)[3] &= ~(
-								uint8_t)((TB_DDN |
-									  TB_DRT |
-									  TB_DLF |
-									  TB_DUP) >>
-									 8);
-						}
+						// Keep raw input for shortcut detection while masking host input.
+						uint32_t hostButtons =
+							shortcutHostButtons(bb);
+						for (uint8_t j = 0; j < 4; j++)
+							((uint8_t *)rep)[2 + j] =
+								(uint8_t)(hostButtons >>
+									  (8 *
+									   j));
 						// Hand the report to the active controller. STREAM modes ignore it (they emit from task() reading
 						// g_in); PUSH modes (Xbox, puck/lizard) build + send their host report here.
 						if (g_active)
@@ -807,8 +826,8 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 
 					idx += tlen + 2;
 				}
-				// mode-switch chord (back4 + face/dpad): A=always Steam; B/X/Y=configurable (g_chordBtn[]);
-				// dpad left/up/right/down=configurable (g_chordDpad[], defaults PS3/DS4/PS5/Switch). Debounced.
+				// Back4+Left/Up/Down cycle waveform and strengths. A selects Steam; the remaining
+				// face/D-pad shortcuts select configured profiles or USB modes.
 				{
 					// Per-slot debounce: the chord input is per-slot (g_in[g_curSlot]), so the debounce counter
 					// must be too. The shared-static form worked with 1 controller because slot 0 polled
@@ -821,8 +840,23 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					static uint8_t chCnt[NSLOT] = { 0, 0, 0,
 									0 };
 					uint8_t want = 0xFF;
-					if ((g_in[g_curSlot].buttons &
-					     CHORD_BACK4) == CHORD_BACK4) {
+					captureFeedbackChord(
+						g_curSlot,
+						g_in[g_curSlot].buttons);
+					bool rumbleHandled = rumbleChord(
+						g_curSlot,
+						g_in[g_curSlot].buttons);
+					bool profileHandled = swProfileChord(
+						g_curSlot,
+						g_in[g_curSlot].buttons);
+					if (!profileHandled && !rumbleHandled &&
+					    (!(g_shortcutFlags &
+					       SHORTCUT_PROFILES) ||
+					     (g_in[g_curSlot].buttons & TB_A)) &&
+					    shortcutHeld(
+						    g_in[g_curSlot].buttons) &&
+					    !(g_in[g_curSlot].buttons &
+					      TB_MENU)) {
 						if (g_in[g_curSlot].buttons &
 						    TB_A)
 							want = MODE_STEAM;
@@ -835,33 +869,39 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 						else if (g_in[g_curSlot].buttons &
 							 TB_Y)
 							want = g_chordBtn[2];
-						else if (g_in[g_curSlot].buttons &
-							 TB_DLF)
+						else if (!(g_shortcutFlags &
+							   SHORTCUT_HAPTICS) &&
+							 (g_in[g_curSlot]
+								  .buttons &
+							  TB_DLF))
 							want = g_chordDpad
 								[CHD_LEFT];
-						else if (g_in[g_curSlot].buttons &
-							 TB_DUP)
+						else if (!(g_shortcutFlags &
+							   SHORTCUT_HAPTICS) &&
+							 (g_in[g_curSlot]
+								  .buttons &
+							  TB_DUP))
 							want = g_chordDpad
 								[CHD_UP];
+						else if (!(g_shortcutFlags &
+							   SHORTCUT_HAPTICS) &&
+							 (g_in[g_curSlot]
+								  .buttons &
+							  TB_DDN))
+							want = g_chordDpad
+								[CHD_DOWN];
 						else if (g_in[g_curSlot].buttons &
 							 TB_DRT)
 							want = g_chordDpad
 								[CHD_RIGHT];
-						else if (g_in[g_curSlot].buttons &
-							 TB_DDN)
-							want = g_chordDpad
-								[CHD_DOWN];
 					}
 					if (want != 0xFF &&
 					    want == chWant[g_curSlot]) {
-						if (++chCnt[g_curSlot] >= 12 &&
-						    want != g_usbMode &&
-						    modeValid(want) &&
-						    !USBDevice.suspended()) {
-							// clean detach + reboot into the new mode (releases any held
-							// input on the outgoing device -- see modeSwitchReboot)
-							modeSwitchReboot(want);
-						}
+						if (chCnt[g_curSlot] < 12 &&
+						    ++chCnt[g_curSlot] == 12)
+							shortcutModeRequest(
+								want,
+								g_curSlot);
 					} else {
 						chWant[g_curSlot] = want;
 						chCnt[g_curSlot] =

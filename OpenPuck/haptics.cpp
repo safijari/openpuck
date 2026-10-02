@@ -1,4 +1,5 @@
 #include "haptics.h"
+#include "triton.h"
 #include "bonds.h"
 #include "config.h"
 #include "rf_link.h"
@@ -33,6 +34,7 @@ uint8_t g_suspendOff = 1;
 // Host-rumble shaping (persisted in cfg.bin; console "RS<pct>" / "RY<n>").
 uint16_t g_rumbleScale = RUMBLE_SCALE_PCT;
 uint8_t g_rumbleStyle = RUMBLE_STYLE_NORMAL;
+uint16_t g_hdPadScale = 100;
 // Master enable for the puck->controller haptic RELAY (Steam OUTPUT reports 0x80-0x86, incl. the trackpad
 // texture-feedback stream Steam pushes WHILE you drag). Each relayed frame is an extra TX that precedes the
 // E3 poll and steals its reply window, and the controller must stop to process it -- both can depress the
@@ -294,6 +296,11 @@ static void hapticCancelPendingOn(int slot)
 				if (on)
 					m.rid = 0;
 			}
+			if (m.isHaptic && m.rid == 0x83)
+				m.rid = 0;
+			if (m.isHaptic && m.rid == 0x81 && m.len >= 7 &&
+			    (m.data[5] || m.data[6]))
+				m.rid = 0;
 			if (m.rid == 0x80) {
 				bool on = false;
 				for (uint8_t j = 0; j < m.len; j++)
@@ -327,7 +334,7 @@ static uint32_t isqrt32(uint32_t v)
 	return r;
 }
 
-bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
+static bool hapticRumbleGrip(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 {
 	if (slot >= NSLOT)
 		return false;
@@ -349,6 +356,12 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 			t = l;
 			l = h;
 			h = t;
+			break;
+		case RUMBLE_STYLE_HD:
+			if (g_usbMode == MODE_SW_PRO) {
+				l = l * l / 0xFFFF;
+				h = h * h / 0xFFFF;
+			}
 			break;
 		case RUMBLE_STYLE_PUNCHY:
 			// x^2/FS: 0xFFFF*0xFFFF fits uint32 exactly, so no intermediate overflow
@@ -416,6 +429,266 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 	g_rumble80On[slot] = on;
 	return true;
 }
+// The USB callback only publishes the latest bands. Rendering in loop avoids
+// queueing every host packet and keeps waveform generation off the input ISR.
+struct HdRumbleState {
+	uint16_t bands[4];
+	uint16_t frequencies[4];
+	unsigned long received, sent;
+	bool active, padActive[2];
+};
+static HdRumbleState g_hdRumble[NSLOT] = {};
+
+void hapticSwitchHd(uint8_t slot, uint16_t leftLow, uint16_t leftHigh,
+		    uint16_t rightLow, uint16_t rightHigh)
+{
+	if (slot >= NSLOT)
+		return;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	HdRumbleState &s = g_hdRumble[slot];
+	s.bands[0] = leftLow;
+	s.bands[1] = leftHigh;
+	s.bands[2] = rightLow;
+	s.bands[3] = rightHigh;
+	s.frequencies[0] = s.frequencies[2] = 160;
+	s.frequencies[1] = s.frequencies[3] = 320;
+	s.received = millis();
+	__set_PRIMASK(pm);
+}
+
+void hapticSwitchPitch(uint8_t slot, uint16_t ll, uint16_t lh, uint16_t rl,
+		       uint16_t rh, uint16_t lf, uint16_t hf, uint16_t rf,
+		       uint16_t rhf)
+{
+	if (slot >= NSLOT)
+		return;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	hapticSwitchHd(slot, ll, lh, rl, rh);
+	uint16_t *f = g_hdRumble[slot].frequencies;
+	f[0] = lf;
+	f[1] = hf;
+	f[2] = rf;
+	f[3] = rhf;
+	__set_PRIMASK(pm);
+}
+
+static void hdStop(uint8_t slot);
+
+bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
+{
+	if (slot >= NSLOT)
+		return false;
+	if ((g_rumbleStyle == RUMBLE_STYLE_HD) && g_usbMode == MODE_SW_PRO) {
+		hapticSwitchHd(slot, lowFreq, lowFreq, highFreq, highFreq);
+		return true;
+	}
+	if (g_hdRumble[slot].active)
+		hdStop(slot);
+	return hapticRumbleGrip(lowFreq, highFreq, slot);
+}
+
+static uint16_t hdScale(uint16_t amplitude)
+{
+	uint32_t v = (uint32_t)amplitude * g_hdPadScale / 100;
+	return v > 65535u ? 65535u : (uint16_t)v;
+}
+
+static void hdPadOff(uint8_t slot, uint8_t side)
+{
+	uint8_t p[3] = { side, 0, 0 };
+	relayEnqueue(0x82, p, sizeof p, true, slot);
+}
+
+static int8_t hdToneGain(uint16_t amplitude)
+{
+	int gain = -9;
+	while (amplitude < 32768 && amplitude) {
+		amplitude <<= 1;
+		gain -= 6;
+	}
+	const uint16_t threshold[5] = { 36766, 41252, 46286, 51933, 58274 };
+	for (uint8_t i = 0; i < 5; i++)
+		if (amplitude < threshold[i])
+			gain--;
+	return gain < -60 ? -60 : gain;
+}
+
+static int hdQuietCeiling(uint16_t frequency)
+{
+	if (frequency <= 230 || frequency >= 320)
+		return -3;
+	if (frequency < 250)
+		return -3 - (frequency - 230) * 12 / 20;
+	if (frequency <= 300)
+		return -15;
+	return -15 + (frequency - 300) * 12 / 20;
+}
+
+static bool hdPadTone(uint8_t slot, uint8_t side, uint16_t low, uint16_t high,
+		      uint16_t lowHz = 160, uint16_t highHz = 320)
+{
+	uint16_t amplitude = hdScale(high > low / 2 ? high : low / 2);
+	if (!amplitude)
+		return false;
+	uint16_t frequency = high > low / 2 ? highHz : lowHz;
+	frequency = frequency < 40 ? 40 : (frequency > 1280 ? 1280 : frequency);
+	int gain = hdToneGain(amplitude) + 6;
+	int ceiling = hdQuietCeiling(frequency);
+	if (gain > ceiling)
+		gain = ceiling;
+	// Finite tones stop even when an RF stop command is lost.
+	uint8_t p[9] = { side,
+			 (uint8_t)gain,
+			 (uint8_t)frequency,
+			 (uint8_t)(frequency >> 8),
+			 20,
+			 0,
+			 0,
+			 0,
+			 0 };
+	relayEnqueue(0x83, p, sizeof p, true, slot);
+	return true;
+}
+
+struct ShortcutFeedback {
+	unsigned long started;
+	uint8_t count, pulse;
+	bool stopped;
+};
+static ShortcutFeedback g_shortcutFeedback[NSLOT] = {};
+
+bool hapticShortcutFeedbackActive(uint8_t slot)
+{
+	return slot < NSLOT && g_shortcutFeedback[slot].count;
+}
+
+void hapticShortcutFeedback(uint8_t slot, uint8_t pulses)
+{
+	if (!(g_shortcutFlags & SHORTCUT_FEEDBACK) || slot >= NSLOT ||
+	    !pulses || pulses > 3 || !hapticLinkUp(slot) ||
+	    haptic82Blocked(slot) || !g_hapticRelay || USBDevice.suspended())
+		return;
+	hapticCancelPendingOn(slot);
+	hdPadOff(slot, 3);
+	g_hdRumble[slot].padActive[0] = g_hdRumble[slot].padActive[1] = false;
+	g_shortcutFeedback[slot] = { millis(), pulses, 0xFF, false };
+}
+
+static void hapticShortcutFeedbackTask()
+{
+	for (uint8_t slot = 0; slot < NSLOT; slot++) {
+		ShortcutFeedback &f = g_shortcutFeedback[slot];
+		if (!f.count)
+			continue;
+		unsigned long elapsed = millis() - f.started;
+		if (!hapticLinkUp(slot) || haptic82Blocked(slot) ||
+		    !g_hapticRelay || USBDevice.suspended() ||
+		    elapsed >= (unsigned long)f.count * 400u - 150u) {
+			hdPadOff(slot, 3);
+			f.count = 0;
+			g_hdRumble[slot].sent = 0;
+			continue;
+		}
+		uint8_t pulse = elapsed / 400u;
+		if (elapsed % 400u >= 250u) {
+			if (!f.stopped)
+				hdPadOff(slot, 3);
+			f.stopped = true;
+		} else if (pulse != f.pulse) {
+			f.pulse = pulse;
+			f.stopped = false;
+			for (uint8_t pad = 1; pad <= 2; pad++) {
+				uint8_t tone[9] = {
+					pad, (uint8_t)-18, 160, 0, 250, 0, 0, 0,
+					0
+				};
+				relayEnqueue(0x83, tone, sizeof tone, true,
+					     slot);
+			}
+		}
+	}
+}
+
+static void hdStop(uint8_t slot)
+{
+	if (!hapticShortcutFeedbackActive(slot))
+		hapticCancelPendingOn(slot);
+	// Two OFF copies reduce the chance that RF loss stretches the tail.
+	for (uint8_t n = 0; n < 2 && !hapticShortcutFeedbackActive(slot); n++) {
+		hdPadOff(slot, 3);
+	}
+	// Keep zero reports queued across RF loss; reconnect only scrubs ON frames.
+	uint8_t zero[9] = {};
+	for (uint8_t n = 0; n < RUMBLE_STOP_REPS; n++)
+		relayEnqueue(0x80, zero, sizeof zero, true, slot);
+	g_rumble80On[slot] = false;
+	g_rumble80Ms[slot] = millis();
+	g_hdRumble[slot].active = false;
+	g_hdRumble[slot].padActive[0] = g_hdRumble[slot].padActive[1] = false;
+}
+
+static void hapticHdTask()
+{
+	unsigned long now = millis();
+	for (uint8_t slot = 0; slot < NSLOT; slot++) {
+		uint32_t pm = __get_PRIMASK();
+		__disable_irq();
+		HdRumbleState snapshot = g_hdRumble[slot];
+		__set_PRIMASK(pm);
+		bool enabled = (g_rumbleStyle == RUMBLE_STYLE_HD) &&
+			       g_usbMode == MODE_SW_PRO && g_rumble &&
+			       g_hapticRelay && !USBDevice.suspended();
+		bool on = snapshot.bands[0] || snapshot.bands[1] ||
+			  snapshot.bands[2] || snapshot.bands[3];
+		if (!enabled || !on || now - snapshot.received > 600u ||
+		    haptic82Blocked(slot)) {
+			if (snapshot.active)
+				hdStop(slot);
+			continue;
+		}
+		// A silent side stops immediately, even while the other side is active.
+		for (uint8_t pad = 0; pad < 2; pad++) {
+			if (!hapticShortcutFeedbackActive(slot) &&
+			    snapshot.padActive[pad] &&
+			    (!g_hdPadScale || (!snapshot.bands[pad * 2] &&
+					       !snapshot.bands[pad * 2 + 1]))) {
+				hdPadOff(slot, pad + 1);
+				g_hdRumble[slot].padActive[pad] = false;
+				snapshot.padActive[pad] = false;
+			}
+		}
+		// Three relays per refresh leave poll cycles for input and pad clicks.
+		if (snapshot.active && now - snapshot.sent < 16u)
+			continue;
+		pm = __get_PRIMASK();
+		__disable_irq();
+		g_hdRumble[slot].sent = now;
+		g_hdRumble[slot].active = true;
+		__set_PRIMASK(pm);
+		uint16_t left = snapshot.bands[0] > snapshot.bands[1] ?
+					snapshot.bands[0] :
+					snapshot.bands[1];
+		uint16_t right = snapshot.bands[2] > snapshot.bands[3] ?
+					 snapshot.bands[2] :
+					 snapshot.bands[3];
+		hapticRumbleGrip(left, right, slot);
+		if (hapticShortcutFeedbackActive(slot))
+			continue;
+		for (uint8_t pad = 0; pad < 2; pad++) {
+			bool padOn = hdPadTone(
+				slot, pad + 1, snapshot.bands[pad * 2],
+				snapshot.bands[pad * 2 + 1],
+				snapshot.frequencies[pad * 2],
+				snapshot.frequencies[pad * 2 + 1]);
+			if (!padOn && snapshot.padActive[pad])
+				hdPadOff(slot, pad + 1);
+			g_hdRumble[slot].padActive[pad] = padOn;
+		}
+	}
+}
+
 // Queue a pending test-haptic / stop relay (runs inside the poll cadence -- never at raw loop rate). Test
 // haptics broadcast to all connected slots (slot 0xFF); the stop frame is broadcast too (a stuck latch can
 // affect any controller, and the haptic-engine clear-re-init is settings-only so it's harmless on healthy
@@ -647,6 +920,7 @@ void hapticInit()
 		g_rqHead[s] = g_rqTail[s] = 0;
 		g_rumble80On[s] = false;
 		g_rumble80Ms[s] = 0;
+		g_hdRumble[s] = {};
 		// post-connect haptic block is permanently disabled (not armed, not configurable)
 		g_hapticBlockUntil[s] = 0;
 	}
@@ -659,9 +933,11 @@ void hapticOnReconnect(int slot)
 	if (slot < 0 || slot >= NSLOT)
 		return;
 	// post-connect haptic block is permanently disabled -- relay haptics immediately on (re)connect
+	g_shortcutFeedback[slot].count = 0;
 	g_hapticBlockUntil[slot] = 0;
 	g_rumble80On[slot] = false;
 	g_rumble80Ms[slot] = 0;
+	g_hdRumble[slot] = {};
 	// Scrub haptics queued before the link came up (stale across the reconnect) -- this slot only.
 	hapticCancelPendingOn(slot);
 	if (g_usbMode == MODE_SW_PRO) {
@@ -703,6 +979,8 @@ void hapticTestRumble()
 
 void hapticTask()
 {
+	hapticHdTask();
+	hapticShortcutFeedbackTask();
 	// stop the test buzz -- signed compare so the millis() rollover cannot strand a latched actuator
 	if (g_rumbleTestStop && (long)(millis() - g_rumbleTestStop) >= 0) {
 		g_rumbleTestStop = 0;

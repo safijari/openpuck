@@ -328,7 +328,7 @@ static uint16_t codeToXB(uint8_t c)
 }
 static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 {
-	uint32_t b = btnsOf(r);
+	uint32_t b = shortcutHostButtons(btnsOf(r));
 	if (g_qamMap && (b & TB_QAM)) {
 		b &= ~(uint32_t)TB_QAM;
 		b |= tritonFromCode(g_qamMap);
@@ -410,7 +410,7 @@ static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 // one mouse. Slot 0's right-pad drives it; other slots' right-pad input is intentionally ignored here.
 static void rfXboxMouse(const uint8_t *r)
 {
-	uint32_t b = btnsOf(r);
+	uint32_t b = shortcutHostButtons(btnsOf(r));
 	static int prx = 0, pry = 0;
 	static bool prt = false;
 	static float vx = 0, vy = 0, rmx = 0, rmy = 0;

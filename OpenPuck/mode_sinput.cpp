@@ -187,7 +187,7 @@ static void sinBuildFeatures(uint8_t slot, uint8_t out[SIN_REPLEN])
 static void sinBuild(uint8_t bond, uint8_t out[SIN_REPLEN])
 {
 	const PuckInput &in = g_in[bond];
-	uint32_t b = in.buttons;
+	uint32_t b = shortcutHostButtons(in.buttons);
 	memset(out, 0, SIN_REPLEN);
 	// EChargeState (0x43 body[0]): 2 = charging, 4 = charge complete; anything else reads as discharging.
 	uint8_t st = g_batteryState[bond];

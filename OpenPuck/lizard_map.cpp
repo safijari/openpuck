@@ -1,4 +1,5 @@
 #include "lizard_map.h"
+#include "storage.h"
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 #include <string.h>
@@ -120,19 +121,21 @@ void defaultLizardMap()
 
 void saveLizardMap()
 {
-	InternalFS.remove(LZ_FILE);
-	File f(InternalFS);
-	if (!f.open(LZ_FILE, FILE_O_WRITE))
-		return;
-	uint8_t hdr[3] = { LZ_MAGIC, LZ_VERSION, g_lizardMap.count };
-	f.write(hdr, 3);
-	f.write((uint8_t *)g_lizardMap.bindings,
-		g_lizardMap.count * sizeof(LizardBinding));
-	f.close();
+	uint8_t data[3 + LZ_MAX_BINDINGS * sizeof(LizardBinding)];
+	data[0] = LZ_MAGIC;
+	data[1] = LZ_VERSION;
+	data[2] = g_lizardMap.count;
+	size_t length = g_lizardMap.count * sizeof(LizardBinding);
+	memcpy(data + 3, g_lizardMap.bindings, length);
+	storageWriteFile(LZ_FILE, "/lizard.tmp", data, 3 + length);
 }
 
 void loadLizardMap()
 {
+	if (g_storageState == 0) {
+		defaultLizardMap();
+		return;
+	}
 	File f(InternalFS);
 	if (f.open(LZ_FILE, FILE_O_READ)) {
 		uint8_t hdr[3] = { 0, 0, 0 };

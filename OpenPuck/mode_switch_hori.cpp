@@ -87,15 +87,9 @@ static inline void backCodeToHatDirs(uint8_t c, bool &u, bool &d, bool &l,
 // Per-slot: each controller's decoded input is in g_in[slot].
 static void switchBuildHoripad(uint8_t slot, uint8_t out[8])
 {
-	uint32_t b = g_in[slot].buttons;
+	uint32_t b = shortcutHostButtons(g_in[slot].buttons);
 	uint16_t btn = 0;
-	// QAM (3 dots) remap: the configured code is applied to the Switch output just like a back paddle below
-	// (so Capture(18) and every Switch target work). 0 = unmapped -> QAM does nothing on Switch.
 	bool qam = g_qamMap && (b & TB_QAM);
-	// Mode-switch chord (all 4 back + face/dpad): don't pass the press to the console while the back-4 are held.
-	if ((b & CHORD_BACK4) == CHORD_BACK4)
-		b &= ~(uint32_t)(TB_A | TB_X | TB_Y | TB_DUP | TB_DDN | TB_DLF |
-				 TB_DRT);
 	// face buttons with optional A/B + X/Y swap (Nintendo physical-vs-label layout)
 	uint16_t fY = g_abSwap ? 0x08 : 0x01, fB = g_abSwap ? 0x04 : 0x02,
 		 fA = g_abSwap ? 0x02 : 0x04, fX = g_abSwap ? 0x01 : 0x08;
