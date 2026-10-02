@@ -196,8 +196,8 @@ static void diBuildStick(uint8_t bond, uint8_t out[DI_REPLEN])
 	le16(out + 6, diInv(in.ry));
 	out[8] = in.lt;
 	out[9] = in.rt;
-	out[10] = psHatNibble(in.buttons);
-	uint32_t btn = diButtons(in.buttons);
+	out[10] = psHatNibble(shortcutHostButtons(in.buttons));
+	uint32_t btn = diButtons(shortcutHostButtons(in.buttons));
 	out[11] = (uint8_t)(btn & 0xFF);
 	out[12] = (uint8_t)((btn >> 8) & 0xFF);
 	out[13] = (uint8_t)((btn >> 16) & 0xFF);

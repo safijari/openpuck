@@ -20,6 +20,7 @@
 using namespace Adafruit_LittleFS_Namespace;
 
 #include "config.h"
+#include "storage.h"
 #include "board_config.h"
 
 // OPK_GIT_HASH: tags the one-time factory-reset build
@@ -144,7 +145,7 @@ void setup()
 	// seed defaults so unbonded slots don't share the discovery address
 	for (int s = 0; s < NSLOT; s++)
 		rfGenSessionAddr(s);
-	InternalFS.begin();
+	storageBegin();
 #if OPK_FACTORY_RESET
 	// Recovery build (-DOPK_FACTORY_RESET=1): wipe ALL persistent storage ONCE on the first boot after flashing,
 	// then persist normally (tracked by a git-hash tag so it does NOT wipe every boot). See config.h / config.cpp.
@@ -385,6 +386,7 @@ void loop()
 	t = micros();
 	faultDiagSetStage(5);
 	hapticTask();
+	shortcutModeTask();
 	acc[5] += (uint32_t)(micros() - t);
 	t = micros();
 	faultDiagSetStage(6);
@@ -431,6 +433,7 @@ void loop()
 	rfLinkTask();
 	faultDiagSetStage(5);
 	hapticTask();
+	shortcutModeTask();
 	faultDiagSetStage(6);
 	ledTask();
 #if OPK_PWR_SWITCH

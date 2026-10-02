@@ -47,8 +47,11 @@
 	5 // squared curve: weak effects softer, strong ones untouched
 #define RUMBLE_STYLE_SOFT \
 	6 // sqrt curve: lifts weak effects so subtle rumble is felt
-#define RUMBLE_STYLE_MAX 6
+// Combined grip/trackpad rendering in Switch Pro; Normal elsewhere.
+#define RUMBLE_STYLE_HD 8
+#define RUMBLE_STYLE_MAX 8
 extern uint16_t g_rumbleScale; // percent, RUMBLE_SCALE_MIN..RUMBLE_SCALE_MAX
+extern uint16_t g_hdPadScale;
 extern uint8_t g_rumbleStyle; // RUMBLE_STYLE_*
 // Test buzz for the panel/console: a fixed mid-scale amplitude pushed through the SAME shaping path host
 // rumble takes, so what you feel is what a game at that amplitude would feel like. Auto-stops in hapticTask()
@@ -152,7 +155,15 @@ bool hapticRelaySlotOk(int slot);
 // defaults to 0 for the legacy single-controller callers. Per-slot so each connected controller can have its
 // own active rumble stream when the host presents multiple gamepads (e.g. 4 XInput devices).
 bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot = 0);
+void hapticSwitchHd(uint8_t slot, uint16_t leftLow, uint16_t leftHigh,
+		    uint16_t rightLow, uint16_t rightHigh);
 
+void hapticSwitchPitch(uint8_t slot, uint16_t ll, uint16_t lh, uint16_t rl,
+		       uint16_t rh, uint16_t lf, uint16_t hf, uint16_t rf,
+		       uint16_t rhf);
+
+void hapticShortcutFeedback(uint8_t slot, uint8_t pulses);
+bool hapticShortcutFeedbackActive(uint8_t slot);
 // queue + flush the pending host/test/stop relay inside the poll cadence (called from rf_link).
 // rfConnFlushRelay's s1 must carry a PID distinct from the GET poll that follows it. g_relayPid
 // is initialised 2 ahead of g_pollPid and both increment once per cycle, so the 2-bit PIDs stay

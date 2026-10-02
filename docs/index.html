@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>OpenPuck Config</title>
+<title>Profiles edition — OpenPuck Config</title>
 <style>
   :root{ --bg:#11131a; --card:#1b1f2b; --fg:#e7ecf3; --mut:#8a93a6; --acc:#5bd6a0; --acc2:#5b9bd6; --bad:#d65b6e; --warn:#e3b341; }
   *{box-sizing:border-box}
@@ -161,6 +161,8 @@
       <h2>Version</h2>
       <div class="statgrid">
         <div class="stat"><div class="k">Firmware build</div><div class="v" id="stVersionBuild">—</div></div>
+        <div class="stat"><div class="k">Saved storage</div><div class="v" id="swStorage">—</div></div>
+        <div class="stat"><div class="k">Paired controllers</div><div class="v" id="swBonds">—</div></div>
         <div class="stat"><div class="k">Status protocol</div><div class="v" id="stVersionProto">—</div></div>
         <div class="stat"><div class="k">Panel update</div><div class="v" id="stVersionUpdate">—</div></div>
       </div>
@@ -190,9 +192,27 @@
       </div>
     </div>
 
+    <div class="card" id="swProfilesCard">
+      <h2>Switch Pro back-button profiles</h2>
+      <p class="note" id="swProfilesHelp">Connect the profiles firmware to configure seven saved profiles.</p>
+      <div id="swProfilesControls" class="hide">
+        <div class="row"><label>Use profiles</label><select id="swProfilesEnabled"><option value="0">Off — use normal Switch mappings</option><option value="1">On</option></select></div>
+        <div class="row"><label>Profile to edit</label><select id="swProfileEdit"></select></div>
+        <p class="note" id="swProfileActive"></p>
+        <div id="swProfileBack"></div>
+        <button id="swProfileActivate">Use this profile</button>
+        <div id="swClickControls" class="hide"><div class="row"><label>Trackpad D-pad click feedback</label><select id="swClickFeedback"><option value="1">On</option><option value="0">Off</option></select></div>
+        <p class="note">A short pulse on the clicked pad, once per press, in either D-pad mapping mode. This controls D-pad click feedback independently of the native Trackpad haptics setting below.</p></div>
+        <p class="note hide" id="swStorageWarning"></p>
+        <p class="note">For trackpad D-pad controls, open the Switch settings below and choose D-pad on touch or D-pad on click for either trackpad. Both support diagonals; the center is neutral. These trackpad settings apply across profiles.</p>
+        <h3>Shortcuts while in Switch Pro mode</h3>
+        <p class="note">Hold the selected shortcut modifier plus the chosen button. In Switch profiles mode, unassigned shortcuts do nothing. In Controller modes, their configured mode action applies. Modifier + A always returns to Steam. Changes save automatically. “Use this profile” saves the selection for your next session.</p>
+        <div id="swProfileChords"></div>
+      </div>
+    </div>
     <div class="card">
       <h2>Back4 chords (face + D-pad)</h2>
-      <p class="note" style="margin-top:0">Hold all four back paddles (L4+R4+L5+R5) plus a face button or D-pad direction to switch mode without the WebUI. <strong>A is always Steam</strong> — that is the way back out of any mode. B / X / Y and all four D-pad directions are configurable below (defaults: B=Lizard, X=Xbox, Y=Switch Pro).</p>
+      <p class="note" style="margin-top:0">Hold the selected modifier (Quick Access or all four back paddles) plus a face button or D-pad direction to switch mode without the WebUI. <strong>A is always Steam</strong> — that is the way back out of any mode. B / X / Y and D-pad directions are configurable. The optional haptic shortcuts reserve Left / Up / Down (defaults: B=Lizard, X=Xbox, Y=Switch Pro).</p>
       <div class="chord-cols">
         <div>
           <div class="colhead">Face buttons</div>
@@ -290,12 +310,34 @@
       <!-- Host-rumble shaping (firmware >= v21). Applies to the translated modes (Xbox / Switch / PlayStation),
            where the puck decodes the host's rumble packet itself. Steam mode relays Steam's own haptics
            untouched, so these do nothing there. Older firmware hides the block. -->
+      <div class="row hide" id="qamSelectRow"><label>Quick Access + Minus / Select / Menu (Switch Pro)</label><select id="qamSelect"></select></div>
       <div id="rumbleBlock">
         <div class="row"><label>Style</label><select id="rumbleStyle"></select></div>
-        <div class="row"><label>Strength</label><select id="rumbleScale"></select></div>
+        <div class="row"><label>Grip rumble strength</label><select id="rumbleScale"></select></div>
+        <div id="hdTuning">
+          <div class="row"><label>HD trackpad strength</label><select id="hdPadScale"></select></div>
+          <p class="note">HD Emulation uses the finalized V2 Quiet trackpad rendering and Punchy grips. Trackpad output is capped at −15 dB from 250–300 Hz, with gradual transitions outside that range.</p>
+          <div id="finalShortcuts">
+            <h3>Controller shortcuts</h3>
+            <div class="row"><label>Shortcuts enabled</label><button id="scEnabled"></button></div>
+            <div class="row"><label>Shortcut modifier</label><button id="scQam"></button></div>
+            <div class="row"><label>Mode / profile shortcuts</label><button id="scProfiles"></button></div>
+            <div class="row"><label>D-pad haptic shortcuts</label><button id="scHaptics"></button></div>
+            <div class="row"><label>Shortcut confirmation pulses</label><button id="scFeedback"></button></div>
+            <div class="row"><label>Quick Access + Select action enabled</label><button id="scCapture"></button></div>
+            <div class="row"><label>Rumble option 1</label><select id="rumbleState1"></select></div>
+            <div class="row"><label>Rumble option 2</label><select id="rumbleState2"></select></div>
+            <div class="row"><label>Rumble option 3</label><select id="rumbleState3"></select></div>
+            <div id="strengthSteps"></div>
+            <p class="note" id="shortcutStrengths"></p>
+            <div class="row"><button id="shortcutSave">Save shortcut settings</button></div>
+            <p class="note" id="rumbleToggleHelp"></p>
+            <p class="note" id="rumbleStateActive"></p>
+          </div>
+        </div>
         <div class="row" style="margin:10px 0 0"><button id="rumbleTest">Test rumble</button>
           <span class="note" style="flex:1">Buzzes every connected controller for half a second at the settings above, so you can compare styles without launching a game.</span></div>
-        <p class="note">Strength is a percentage of the amplitude the game asked for; 200% is the shipped default, so leave it there for stock feel. Style reshapes the two motors before that scale: <strong>mono</strong> drives both at the stronger value, <strong>heavy</strong> and <strong>light</strong> mute one motor each, <strong>punchy</strong> softens weak effects while leaving strong ones alone, and <strong>soft</strong> lifts weak ones so subtle rumble is felt.</p>
+        <p class="note">Normal, Mono, Heavy, Light, Swapped motors, Punchy and Soft retain their original grip behavior. HD Emulation adds the finalized trackpad feedback in Switch Pro mode; other modes use normal grip rumble. Per-type Rumble switches disable game rumble. Set HD trackpad strength to 0 to disable HD pad output independently. Native trackpad feedback keeps its separate controls.</p>
       </div>
       <p id="rumbleOld" class="note hide">This puck's firmware predates the rumble-shaping settings — update it to configure them.</p>
     </div>
@@ -631,7 +673,7 @@ const typeEls = []; // one entry per TYPE_DEFS: {sec, tab, activeDot, back[], qa
 // stick re-centers, and an untouched mapped pad leaves the physical stick in control.
 const PAD_STICK_FIELD0 = 80;
 const PAD_STICK_OPTS = [[0,"Off (touchpad)"],[1,"Left stick"],[2,"Right stick"]];
-const PAD_STICK_LABELS = ["Left trackpad \u2192 stick","Right trackpad \u2192 stick"];
+const PAD_STICK_LABELS = ["Left trackpad mapping","Right trackpad mapping"];
 function mkSelect(def, includeNone){
   const sel=document.createElement("select");
   if(includeNone){ const o=document.createElement("option"); o.value=0; o.textContent="— none —"; sel.appendChild(o); }
@@ -640,6 +682,62 @@ function mkSelect(def, includeNone){
     const o=document.createElement("option"); o.value=c; o.textContent=def.labels[c]; sel.appendChild(o); }
   return sel;
 }
+for(const o of mkSelect(TYPE_DEFS[1],true).options){const c=o.cloneNode(true);if(+c.value===18)c.textContent="Take screenshot";$("#qamSelect").appendChild(c);}
+let swProfileState=null, swProfileCount=0;
+const swProfileOffset=p=>p<4?2+p*4:25+(p-4)*4;
+const swProfileField=(p,k)=>p<4?104+p*4+k:128+(p-4)*4+k;
+const swProfileBackEls=[], swProfileChordEls=[];
+function swProfileRender(){
+  if(!swProfileState) return;
+  const index=+$("#swProfileEdit").value;
+  swProfileBackEls.forEach((el,k)=>{el.value=swProfileState[swProfileOffset(index)+k];});
+}
+function swProfileApply(p){
+  const storageCap=p[0]>=24 && p.length>=233;
+  $("#swClickControls").classList.toggle("hide",!storageCap);
+  if(storageCap) $("#swClickFeedback").value=p[231];
+  $("#swBonds").textContent=p.length>60?p[60]:"—";
+  $("#swStorage").textContent=storageCap?(["Unavailable","Ready","Initialized","Save failed"][p[232]]||"Unknown"):"Not reported";
+  const storageBad=storageCap && (p[232]===0 || p[232]===3);
+  $("#swStorageWarning").classList.toggle("hide",!storageBad);
+  $("#swStorageWarning").textContent=storageBad?"Saved storage needs attention. Export a backup of your current setup. Failed saves retain the previous saved files; automatic erasing is disabled for nonblank storage.":"";
+  const capable=p[0]>=22 && p.length>=219;
+  $("#swProfilesControls").classList.toggle("hide",!capable);
+  $("#swProfilesHelp").textContent=capable ? "Independent sets of L4, R4, L5 and R5 mappings. New firmware supports seven profiles; the original build supports four. Trackpads, gyro, rumble and other settings are shared." : "Requires the custom profiles firmware. Existing firmware settings remain available below.";
+  if(!capable){swProfileState=null;swProfileCount=0;return;}
+  swProfileCount=p[0]>=23 && p.length>=231?7:4;
+  for(const o of $("#swProfileEdit").options) o.disabled=+o.value>=swProfileCount;
+  if(+$("#swProfileEdit").value>=swProfileCount) $("#swProfileEdit").value=0;
+  swProfileChordEls.forEach(el=>{for(const o of el.options)o.disabled=+o.value>swProfileCount;});
+  swProfileState=Array.from(p.slice(194,p[0]>=23 && p.length>=231?231:219));
+  $("#swProfilesEnabled").value=swProfileState[0];
+  $("#swProfileActive").textContent="Active: Profile "+(swProfileState[1]+1)+(swProfileState[0]?"":" (profiles off)");
+  swProfileChordEls.forEach((el,i)=>{el.value=swProfileState[18+i];});
+  swProfileRender();
+}
+for(let i=0;i<7;i++){
+  const o=document.createElement("option");o.value=i;o.textContent="Profile "+(i+1);$("#swProfileEdit").appendChild(o);
+}
+for(let i=0;i<4;i++){
+  const row=document.createElement("div");row.className="row";
+  const label=document.createElement("label");label.textContent=BACK_LABELS[i];row.appendChild(label);
+  const sel=mkSelect(TYPE_DEFS[1],true);row.appendChild(sel);$("#swProfileBack").appendChild(row);
+  sel.onchange=()=>setField(swProfileField(+$("#swProfileEdit").value,i),+sel.value);
+  swProfileBackEls.push(sel);
+}
+["B","X","Y","Left","Up","Right","Down"].forEach((key,i)=>{
+  const row=document.createElement("div");row.className="row";
+  const label=document.createElement("label");label.textContent="back4 + "+key;row.appendChild(label);
+  const sel=document.createElement("select");
+  for(let v=0;v<=7;v++){const o=document.createElement("option");o.value=v;o.textContent=v?"Profile "+v:"Keep normal mode shortcut";sel.appendChild(o);}
+  sel.onchange=()=>setField(120+i,+sel.value);
+  row.appendChild(sel);$("#swProfileChords").appendChild(row);swProfileChordEls.push(sel);
+});
+$("#swProfileEdit").onchange=swProfileRender;
+$("#swClickFeedback").onchange=()=>setField(140,+$("#swClickFeedback").value);
+$("#swProfilesEnabled").onchange=()=>setField(100,+$("#swProfilesEnabled").value);
+$("#swProfileActivate").onclick=()=>setField(101,+$("#swProfileEdit").value);
+
 let curTab=0, tabInited=false;
 function setTab(et){
   curTab=et;
@@ -702,7 +800,7 @@ function setTab(et){
       const row=document.createElement("div"); row.className="row";
       const lab=document.createElement("label"); lab.textContent=PAD_STICK_LABELS[pad]; row.appendChild(lab);
       const sel=document.createElement("select");
-      for(const [v,lbl] of PAD_STICK_OPTS){ const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
+      for(const [v,lbl] of (et===1 ? [...PAD_STICK_OPTS,[3,"D-pad on touch (Switch Pro)"],[4,"D-pad on click (Switch Pro)"]] : PAD_STICK_OPTS)){ const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
       row.appendChild(sel); sec.appendChild(row);
       sel.addEventListener("change",()=>setField(PAD_STICK_FIELD0+et*2+pad, +sel.value));
       rec.padStick.push(sel);
@@ -726,10 +824,11 @@ for(const sel of document.querySelectorAll("select.chordD")){
     const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
 }
 // Rumble style names track RUMBLE_STYLE_* in haptics.h; the value IS the wire value for field 39.
-const RUMBLE_STYLES=[["Normal (default)",0],["Mono (both motors)",1],["Heavy (low only)",2],["Light (high only)",3],["Swapped motors",4],["Punchy (squared)",5],["Soft (boost weak)",6]];
+const RUMBLE_STYLES=[["Normal (default)",0],["Mono (both motors)",1],["Heavy (low only)",2],["Light (high only)",3],["Swapped motors",4],["Punchy (squared)",5],["Soft (boost weak)",6],["HD Emulation",8]];
 // Strength is sent as percent/2 (field 22), so every value here must be even.
-const RUMBLE_SCALES=[50,75,100,150,200,250,300,400,500];
-{ const sel=document.getElementById("rumbleStyle");
+const RUMBLE_SCALES=Array.from({length:246},(_,i)=>10+i*2);
+const HD_PAD_SCALES=Array.from({length:251},(_,i)=>i*2);
+for(const id of ["rumbleStyle","rumbleState1","rumbleState2","rumbleState3"]){ const sel=document.getElementById(id);
   for(const [lbl,v] of RUMBLE_STYLES){
     const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
 }
@@ -738,6 +837,7 @@ const RUMBLE_SCALES=[50,75,100,150,200,250,300,400,500];
     const o=document.createElement("option"); o.value=v; o.textContent=v+"%"+(v===200?" (default)":""); sel.appendChild(o); }
 }
 
+for(const v of HD_PAD_SCALES){const o=document.createElement("option");o.value=v;o.textContent=v+"%"+(v===100?" (default)":"");$("#hdPadScale").appendChild(o);}
 // ---- per-slot tab state ----
 let g_activeSlot = 0;
 let g_slotData = []; // [{up, battery, rssi}] indexed by slot 0..3, only set for bonded slots
@@ -903,6 +1003,8 @@ async function readFrame(marker, minLen, readLen){
 }
 async function readBlob(){ return readFrame(0xA5, 12); }
 function applyBlob(p){
+  swProfileApply(p);
+  for(const rec of typeEls) for(const sel of rec.padStick) for(const o of sel.options) if(+o.value>=3) o.disabled=p[0]<23;
   lastP=p; // remember for Export (carries every config field the panel shows)
   window._lastBlobTs=Date.now(); // feeds the host-side heartbeat watchdog (hard-wedge detection)
   // Lazy, capability-gated lizard-map load: only after a blob proves the puck speaks v16+ (the op-0x11 dump).
@@ -1155,14 +1257,33 @@ function applyBlob(p){
     $("#swGyroMapBlock").classList.toggle("hide", !gyroMapCap);
     $("#swGyroOld").classList.toggle("hide", gyroMapCap);
     if(gyroMapCap && document.activeElement!==sel) sel.value=swGyroLegacy; }
-  { const sty=$("#rumbleStyle"), scl=$("#rumbleScale");
-    $("#rumbleBlock").classList.toggle("hide", !rumbleCap);
-    $("#rumbleOld").classList.toggle("hide", rumbleCap);
-    if(rumbleCap){
-      if(document.activeElement!==sty) sty.value=rumbleStyle;
-      // a strength set from the console can land between the presets -- show the nearest one
-      if(document.activeElement!==scl) scl.value=RUMBLE_SCALES.reduce((a,b)=>Math.abs(b-rumbleScale)<Math.abs(a-rumbleScale)?b:a);
-    } }
+  {
+    const finalCap=p[0]>=36 && p.length>=251;
+    $('#finalShortcuts').classList.toggle('hide',!finalCap);
+    $('#rumbleBlock').classList.toggle('hide',!rumbleCap);
+    $('#rumbleOld').classList.toggle('hide',rumbleCap);
+    $('#qamSelectRow').classList.toggle('hide',p[0]<34);
+    if(p.length>=242)$('#qamSelect').value=p[241];
+    $('#rumbleStyle').value=rumbleStyle===7?8:rumbleStyle;
+    $('#rumbleScale').value=rumbleScale;
+    if(p.length>=234)$('#hdPadScale').value=p[233]*2;
+    if(finalCap){
+      const flags=p[242],haptics=!!(flags&4),profiles=!!(flags&2),enabled=!!(flags&32);
+      for(const [id,bit] of SC_BITS){const el=$('#'+id);el.textContent=id==='scQam'?((flags&bit)?'Quick Access':'All four back buttons'):id==='scProfiles'?((flags&bit)?'Switch profiles':'Controller modes'):((flags&bit)?'on':'off');el.classList.toggle('active',!!(flags&bit));}
+      for(let i=0;i<3;i++)$('#rumbleState'+(i+1)).value=p[237+i]===7?8:p[237+i];
+      for(let w=0;w<2;w++)for(let i=0;i<3;i++)$('#strength'+w+i).value=p[243+w*3+i]*2;
+      $('#shortcutStrengths').textContent='Trackpads: '+p[233]*2+'% · Grips: '+rumbleScale+'%';
+      $('#rumbleStateActive').textContent=p[240]<3?'Current: Rumble option '+(p[240]+1):'Next Left shortcut selects option 1';
+      $('#rumbleToggleHelp').textContent='Hold '+((flags&1)?'Quick Access':'all four back buttons')+'. Left cycles rumble options; Up cycles trackpad strength; Down cycles grip strength. Slots confirm with 1–3 pulses on both trackpads, 250 ms each with 150 ms gaps. Other shortcut actions confirm with one pulse. A always returns to Steam. Save shortcut settings to retain controller changes across restarts.';
+      for(const rec of typeEls)rec.qam.parentElement.classList.toggle('hide',enabled && !!(flags&1));
+      for(const el of document.querySelectorAll('.chord,.chordD,#swProfileChords select')){const lab=el.parentElement.querySelector('label');if(lab)lab.textContent=lab.textContent.replace(/^(back4|Quick Access)/,(flags&1)?'Quick Access':'back4');}
+      swProfileChordEls.forEach((el,i)=>el.parentElement.classList.toggle('hide',!profiles || (haptics && [3,4,6].includes(i))));
+      for(const el of document.querySelectorAll('.chord'))el.parentElement.classList.toggle('hide',profiles);
+      for(const el of document.querySelectorAll('.chordD'))el.parentElement.classList.toggle('hide',profiles || (haptics && [0,1,3].includes(+el.dataset.i)));
+      $('#strengthSteps').classList.toggle('hide',!haptics);
+      for(let i=1;i<=3;i++)$('#rumbleState'+i).parentElement.classList.toggle('hide',!haptics);
+    }
+  }
   for(const sel of document.querySelectorAll("select.chord")){ if(document.activeElement!==sel) sel.value=chord[+sel.dataset.i]; }
   $("#dpadChords").classList.toggle("hide", !dpadCap);
   $("#dpadOld").classList.toggle("hide", dpadCap);
@@ -1270,6 +1391,16 @@ function buildBackup(p, bp){
   if(p[0]>=18 && p.length>183) cfg.chordD=[p[180],p[181],p[182],p[183]];
   if(p[0]>=19 && p.length>184) cfg.swGyroLegacy=p[184];
   if(p[0]>=21 && p.length>179) cfg.emulateSteamMachine=p[179];
+  if(p[0]>=22 && p.length>=219) cfg.swProfiles=Array.from(p.slice(194,p[0]>=23 && p.length>=231?231:219));
+  if(p[0]>=24 && p.length>=233) cfg.swDpadHaptics=p[231];
+  if(p[0]>=21 && p.length>=194){cfg.rumbleStyle=p[193];cfg.rumbleScale=p[51]*2;}
+  if(p[0]>=26 && p.length>=237)cfg.hdPadScale=p[233]*2;
+  if(p[0]>=36 && p.length>=251){
+    cfg.shortcutFlags=p[242];cfg.rumblePresets=Array.from(p.slice(237,240));
+    cfg.strengthSteps=Array.from(p.slice(243,249),v=>v*2);
+    if(p[240]<3)cfg.rumbleSlot=p[240];cfg.strengthSlots=Array.from(p.slice(249,251));
+  }
+  if(p[0]>=34 && p.length>=242)cfg.swQamSelect=p[241];
   // version 2: include the lizard map so it survives a backup/restore cycle.
   // Guard on !lizardBusy to avoid a race with the one-shot lazy load (lizardExchange sets
   // lizardBusy while the initial 0x11 fetch is in flight); if the load is still pending the
@@ -1308,6 +1439,40 @@ async function importBackup(file){
   let obj; try{ obj=JSON.parse(await file.text()); }
   catch(e){ log("import: not valid JSON"); return; }
   if(obj.magic!=="openpuck-backup" || !obj.bonds || !obj.config){ log("import: unrecognized backup file"); return; }
+  if(Array.isArray(obj.config.types) && obj.config.types.some(t=>Array.isArray(t.padStick) && t.padStick.some(v=>v>=3)) && (!lastP || lastP[0]<23)){
+    log("import: trackpad D-pad backup requires the new profiles/D-pad firmware");return;
+  }
+  if(obj.config.swDpadHaptics!==undefined && (!Number.isInteger(obj.config.swDpadHaptics) || obj.config.swDpadHaptics<0 || obj.config.swDpadHaptics>1 || !lastP || lastP[0]<24 || lastP.length<233)){
+    log("import: D-pad click-feedback setting requires matching firmware and a valid value");return;
+  }
+  if(obj.config.rumbleStyle!==undefined && (!Number.isInteger(obj.config.rumbleStyle) || obj.config.rumbleStyle<0 || obj.config.rumbleStyle>8 || !lastP || lastP[0]<21 || (obj.config.rumbleStyle===7 && lastP[0]<25) || (obj.config.rumbleStyle===8 && lastP[0]<27))){
+    log("import: rumble style requires a valid value and matching firmware");return;
+  }
+  if(obj.config.rumbleScale!==undefined && (!Number.isInteger(obj.config.rumbleScale) || obj.config.rumbleScale<10 || obj.config.rumbleScale>500 || !lastP || lastP[0]<21)){
+    log("import: invalid or unsupported rumble strength");return;
+  }
+  const hc=obj.config;
+  if((hc.hdPadScale!==undefined || hc.rumbleToggleStyles!==undefined || hc.hdWaveform!==undefined) && (!lastP || lastP[0]<26 || lastP.length<237)){
+    log("import: independent HD tuning requires matching firmware");return;
+  }
+  if((hc.hdPadScale!==undefined && (!Number.isInteger(hc.hdPadScale) || hc.hdPadScale<0 || hc.hdPadScale>500 || hc.hdPadScale%2)) || (hc.hdWaveform!==undefined && (!Number.isInteger(hc.hdWaveform) || hc.hdWaveform<0 || hc.hdWaveform>8 || (hc.hdWaveform===2 && lastP[0]<28) || (hc.hdWaveform===3 && lastP[0]<29) || (hc.hdWaveform===4 && lastP[0]<30) || (hc.hdWaveform===5 && lastP[0]<32) || (hc.hdWaveform>=6 && lastP[0]<34) || (hc.hdWaveform===8 && lastP[0]<35))) || (hc.rumbleToggleStyles!==undefined && (!Array.isArray(hc.rumbleToggleStyles) || hc.rumbleToggleStyles.length!==2 || hc.rumbleToggleStyles.some(v=>!Number.isInteger(v) || v<0 || v>8 || (v===8 && lastP[0]<27))))){
+    log("import: invalid HD tuning settings");return;
+  }
+  if(hc.waveToggle!==undefined && (!lastP || lastP[0]<28 || lastP.length<239 || !Array.isArray(hc.waveToggle) || (hc.waveToggle.length!==2 && hc.waveToggle.length!==3) || (hc.waveToggle.length===3 && (lastP[0]<33 || lastP.length<241)) || hc.waveToggle.some(v=>!Number.isInteger(v) || v<0 || v>8 || (v===3 && lastP[0]<29) || (v===4 && lastP[0]<30) || (v===5 && lastP[0]<32) || (v>=6 && lastP[0]<34) || (v===8 && lastP[0]<35)))){log("import: waveform presets require valid values and matching firmware");return;}
+  if(hc.swQamSelect!==undefined && (!lastP || lastP[0]<34 || lastP.length<242 || !Number.isInteger(hc.swQamSelect) || hc.swQamSelect<0 || hc.swQamSelect>20)){log("import: Quick Access + Select requires matching firmware and a valid target");return;}
+  if(hc.waveSlot!==undefined && (!lastP || lastP[0]<33 || !Number.isInteger(hc.waveSlot) || hc.waveSlot<0 || hc.waveSlot>2 || !hc.waveToggle || hc.waveToggle.length!==3 || hc.waveToggle[hc.waveSlot]!==hc.hdWaveform)){log("import: invalid waveform slot");return;}
+  if(hc.shortcutFlags!==undefined || hc.rumblePresets!==undefined || hc.strengthSteps!==undefined || hc.rumbleSlot!==undefined || hc.strengthSlots!==undefined){
+    if(!lastP || lastP[0]<36 || lastP.length<251){log('import: final shortcuts require matching firmware');return;}
+    if((hc.shortcutFlags!==undefined && (!Number.isInteger(hc.shortcutFlags)||hc.shortcutFlags<0||hc.shortcutFlags>63)) || (hc.rumblePresets!==undefined && (!Array.isArray(hc.rumblePresets)||hc.rumblePresets.length!==3||hc.rumblePresets.some(v=>!Number.isInteger(v)||!(v>=0&&v<=6||v===8)))) || (hc.strengthSteps!==undefined && (!Array.isArray(hc.strengthSteps)||hc.strengthSteps.length!==6||hc.strengthSteps.some((v,i)=>!Number.isInteger(v)||v<(i<3?0:10)||v>500||v%2))) || (hc.rumbleSlot!==undefined && (!Number.isInteger(hc.rumbleSlot)||hc.rumbleSlot<0||hc.rumbleSlot>2||!hc.rumblePresets||hc.rumblePresets[hc.rumbleSlot]!==hc.rumbleStyle)) || (hc.strengthSlots!==undefined && (!Array.isArray(hc.strengthSlots)||hc.strengthSlots.length!==2||hc.strengthSlots.some((v,w)=>!Number.isInteger(v)||!([0,1,2,255].includes(v))||v<3&&(!hc.strengthSteps||hc.strengthSteps[w*3+v]!==[hc.hdPadScale,hc.rumbleScale][w]))))){log('import: invalid final shortcut settings');return;}
+  }
+  const profileBackup=obj.config.swProfiles;
+  if(profileBackup!==undefined){
+    const q=profileBackup;
+    if(!Array.isArray(q) || (q.length!==25 && q.length!==37) || !q.every(Number.isInteger) || q[0]<0 || q[0]>1 || q[1]<0 || q[1]>(q.length===37?6:3) || q.slice(2,18).some(v=>v<0 || v>20) || q.slice(18,25).some(v=>v<0 || v>(q.length===37?7:4)) || q.slice(25).some(v=>v<0 || v>20)){
+      log("import: invalid Switch Pro profiles");return;
+    }
+    if(!lastP || lastP[0]<22 || lastP.length<219 || (q.length===37 && (lastP[0]<23 || lastP.length<231))){log("import: profile backup requires profiles firmware");return;}
+  }
   const bondedN=obj.bonds.filter(b=>b.used).length;
   if(!confirm("Restore this backup onto the CONNECTED puck (serial "+(dev.serialNumber||"?")+")?\n\nMake sure this is the TARGET puck, not the one you exported from — the panel only talks to the puck you last connected.\n\nThis OVERWRITES its "+bondedN+" controller pairing(s) and ALL settings, then reboots it.\n\nResult: any controller paired to the original puck will connect to this one with no re-pairing.")) return;
   log("importing onto puck "+(dev.serialNumber||"?"));
@@ -1323,7 +1488,7 @@ async function importBackup(file){
   const lizardN=(Array.isArray(c.lizardMap) && lizardCapable())?Math.min(c.lizardMap.length,LZ_MAX):0;
   const baseN=6 + (Array.isArray(c.chordD)?4:0) + (c.swGyroLegacy!==undefined?1:0);
   const padStickN=Array.isArray(c.types)?c.types.slice(0,typeN).filter(t=>Array.isArray(t.padStick)).length*2:0;
-  const total=baseN + typeN*9 + padStickN + lizardN + 4 + 1;
+  const total=baseN + typeN*9 + padStickN + lizardN + 4 + 1 + (c.swProfiles?c.swProfiles.length:0) + (c.swDpadHaptics!==undefined?1:0) + (c.rumbleStyle!==undefined?1:0) + (c.rumbleScale!==undefined?1:0) + (c.hdPadScale!==undefined?1:0) + (c.rumbleToggleStyles!==undefined?2:0) + (c.hdWaveform!==undefined?1:0) + (c.waveToggle!==undefined?c.waveToggle.length:0) + (c.waveSlot!==undefined?1:0) + (c.swQamSelect!==undefined?1:0) + (c.shortcutFlags!==undefined?1:0) + (c.rumblePresets?3:0) + (c.strengthSteps?6:0) + (c.rumbleSlot!==undefined?1:0) + (c.strengthSlots?c.strengthSlots.filter(v=>v<3).length:0);
   let step=0, stage="";
   const tick=()=>modalStage(stage, Math.min(99,Math.floor(step*100/total)));
   try{
@@ -1365,6 +1530,28 @@ async function importBackup(file){
         if(Array.isArray(t.padStick)){ await sf(PAD_STICK_FIELD0+et*2, t.padStick[0]); await sf(PAD_STICK_FIELD0+et*2+1, t.padStick[1]); } }
       log("settings replayed ("+(baseN+typeN*9)+" fields)");
     } else { log("settings replayed ("+baseN+" fields — no per-type config in this backup)"); }
+    if(Array.isArray(c.swProfiles) && (c.swProfiles.length===25 || c.swProfiles.length===37)){
+      if(!lastP || lastP[0]<22) throw new Error("Profile backup requires profiles firmware");
+      const q=c.swProfiles;
+      for(let i=0;i<16;i++) await sf(104+i,q[2+i]);
+      for(let i=0;i<7;i++) await sf(120+i,q[18+i]);
+      if(q.length===37) for(let i=0;i<12;i++) await sf(128+i,q[25+i]);
+      await sf(101,q[1]); await sf(100,q[0]);
+    }
+    if(c.swDpadHaptics!==undefined) await sf(140,c.swDpadHaptics);
+    if(c.rumbleStyle!==undefined) await sf(39,c.rumbleStyle);
+    if(c.rumbleScale!==undefined) await sf(22,Math.round(c.rumbleScale/2));
+    if(c.hdPadScale!==undefined) await sf(141,c.hdPadScale/2);
+    if(c.rumbleToggleStyles!==undefined){await sf(142,c.rumbleToggleStyles[0]);await sf(143,c.rumbleToggleStyles[1]);}
+    if(c.hdWaveform!==undefined) await sf(144,c.hdWaveform);
+    if(c.waveToggle!==undefined)for(let i=0;i<c.waveToggle.length;i++)await sf(145+i,c.waveToggle[i]);
+    if(c.waveSlot!==undefined)await sf(148,c.waveSlot);
+    if(c.swQamSelect!==undefined)await sf(149,c.swQamSelect);
+    if(c.rumblePresets)for(let i=0;i<3;i++)await sf(151+i,c.rumblePresets[i]);
+    if(c.strengthSteps)for(let i=0;i<6;i++)await sf(154+i,c.strengthSteps[i]/2);
+    if(c.rumbleSlot!==undefined)await sf(160,c.rumbleSlot);
+    if(c.strengthSlots)for(let w=0;w<2;w++)if(c.strengthSlots[w]<3)await sf(161+w,c.strengthSlots[w]);
+    if(c.shortcutFlags!==undefined)await sf(150,c.shortcutFlags);
     // restore the lizard map if the backup includes it (version 2+) and the puck speaks v16+.
     // pre-lizard-map backups simply lack c.lizardMap; skip silently so they still import cleanly.
     if(lizardN){
@@ -2313,7 +2500,21 @@ for(const id of ["mDiv","mFric"]){
 }
 // per-type back/QAM/A-B-swap/haptics handlers are wired in buildTypeCfgs()
 $("#rumbleTest").onclick=async()=>{ if(dev){ await send([0x16]); log("test rumble sent (style "+$("#rumbleStyle").value+", "+$("#rumbleScale").value+"%)"); } };
+const SC_BITS=[['scQam',1],['scProfiles',2],['scHaptics',4],['scFeedback',8],['scCapture',16],['scEnabled',32]];
+for(const [id,bit] of SC_BITS)$('#'+id).onclick=()=>{if(lastP && lastP[0]>=36)setField(150,lastP[242]^bit);};
+for(let w=0;w<2;w++)for(let i=0;i<3;i++){
+  const row=document.createElement('div');row.className='row';
+  const label=document.createElement('label');label.textContent=(w===0?'Trackpad':'Grip')+' strength '+(i+1)+' (%)';row.appendChild(label);
+  const input=document.createElement('input');input.type='number';input.min=w===0?0:10;input.max=500;input.step=2;input.id='strength'+w+i;
+  input.onchange=()=>{const v=+input.value;if(!Number.isInteger(v)||v<+input.min||v>500||v%2){log('Strength steps must be even percentages in the displayed range.');return;}setField(154+w*3+i,v/2);};
+  row.appendChild(input);$('#strengthSteps').appendChild(row);
+}
+
 $("#rumbleStyle").addEventListener("change", ()=>setField(39, +$("#rumbleStyle").value));
+$("#hdPadScale").addEventListener("change",()=>setField(141,+$("#hdPadScale").value/2));
+for(let i=0;i<3;i++)$('#rumbleState'+(i+1)).addEventListener('change',()=>setField(151+i,+$('#rumbleState'+(i+1)).value));
+$("#shortcutSave").onclick=async()=>{if(dev && lastP && lastP[0]>=36){await send([0x28]);log("shortcut settings save requested");}};
+$("#qamSelect").addEventListener("change",()=>setField(149,+$("#qamSelect").value));
 $("#rumbleScale").addEventListener("change", ()=>setField(22, (+$("#rumbleScale").value)/2));
 $("#swGyroMap").addEventListener("change", ()=>setField(38, +$("#swGyroMap").value));
 for(const sel of document.querySelectorAll("select.chord")){
@@ -2325,7 +2526,7 @@ for(const sel of document.querySelectorAll("select.chordD")){
 for(const b of document.querySelectorAll(".modebtn")){
   b.onclick=()=>{ const m=+b.dataset.mode;
     const clean=(m===7||m===8||m===9);
-    const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold all four back paddles (L4+R4+L5+R5) + A to return to Steam mode. The back4+D-pad chords are how you get back INTO these modes without the panel — check their assignments in the chords card first.":"");
+    const msg="Switch to "+MODE_NAMES[m]+"? The copycat will reboot."+(clean?"\n\nNOTE: the game/clean PlayStation modes (and PS3) drop WebUSB + host-wake, so THIS PANEL WILL DISCONNECT and can't reach the device while it's in this mode. To get back, chord on the controller: hold "+(lastP && lastP[0]>=36 && (lastP[242]&1)?"Quick Access":"all four back paddles")+" + A to return to Steam mode. The back4+D-pad chords are how you get back INTO these modes without the panel — check their assignments in the chords card first.":"");
     if(confirm(msg)){ send([0x03, m]); log("mode switch requested — device will reboot"); } };
 }
 updateUf2UI();

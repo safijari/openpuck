@@ -1,6 +1,7 @@
 #include "webusb_config.h"
 #include "board_config.h"
 #include "config.h"
+#include "storage.h"
 #include "bonds.h"
 #include "rf_link.h"
 #include "haptics.h"
@@ -100,7 +101,7 @@ static bool boardCommand(uint8_t op)
 //                [v20: p[187..194] per-type trackpad->stick map, 4x2B {left pad, right pad} (PS_OFF/LEFT/RIGHT)]
 //                [v21: p[53] rumble strength as PERCENT/2 (field 22, revived); p[195] rumble style
 //                 (field 39, RUMBLE_STYLE_* in haptics.h)]
-#define WB_PAYLEN 194
+#define WB_PAYLEN 251
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -148,7 +149,7 @@ static void webusbSendBlob()
 	// 7 = +raw accel; 
 	// 6 = +swPro120/gyroScale)
 	// clang-format on
-	p[2] = 21;
+	p[2] = 36;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -323,6 +324,24 @@ static void webusbSendBlob()
 	p[185] = g_chordDpad[CHD_DOWN];
 	// v19: Switch Pro gyro mapping (0 = corrected/default, 1 = legacy pre-#189 raw axes)
 	p[186] = g_swGyroLegacy;
+	memcpy(p + 196, &g_swProfiles, sizeof g_swProfiles);
+	p[233] = g_swDpadHaptics;
+	p[234] = g_storageState;
+	p[235] = (uint8_t)(g_hdPadScale / 2);
+	p[236] = 0xFF;
+	p[237] = 0xFF;
+	p[238] = 8; // fixed HD rendering; retained frame layout
+	p[239] = g_rumblePresets[0];
+	p[240] = g_rumblePresets[1];
+	p[241] = g_rumblePresets[2];
+	p[242] = g_rumbleSlot;
+	p[243] = g_swQamSelect;
+	p[244] = g_shortcutFlags;
+	for (uint8_t w = 0; w < 2; w++) {
+		for (uint8_t i = 0; i < 3; i++)
+			p[245 + w * 3 + i] = g_strengthSteps[w][i] / 2;
+		p[251 + w] = g_strengthSlots[w];
+	}
 	// v20: per-type trackpad->stick mapping, {left pad, right pad} per emulated type
 	for (int et = 0; et < ET_COUNT; et++) {
 		p[187 + et * 2] = g_padStickCfg[et][0];
@@ -668,7 +687,7 @@ void webusbPoll()
 			// 0x16 = test rumble (v21); extend this range whenever a new opcode is added, or the
 			// parser drops it as garbage and the handler below never runs.
 			if ((op < 0x01 || op > 0x16) &&
-			    (op < 0x20 || op > 0x25)) { // resync: drop one byte
+			    (op < 0x20 || op > 0x28)) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
 			}
@@ -686,6 +705,7 @@ void webusbPoll()
 			// 3-byte magic. Firmware update: 0x20 begin [size u32][crc32 u32], 0x21 data (6 B header +
 			// payload), 0x22/0x23/0x24 bare. (0x11/0x14/0x15 are bare lizard opcodes -> default 1.)
 			uint8_t need =
+				(op == 0x26) ? 13 :
 				(op == 0x0D) ? 27 :
 				(op == 0x12) ? 18 :
 				(op == 0x02) ? 3 :
@@ -744,8 +764,10 @@ void webusbPoll()
 				hapticReinit();
 			}
 
-			// rumble test buzz: exercises the current style/strength (protocol v21)
-			else if (op == 0x16) {
+			else if (op == 0x28) {
+				saveCfg();
+				g_blobRequest = true;
+			} else if (op == 0x16) {
 				hapticTestRumble();
 			}
 
@@ -948,7 +970,42 @@ void webusbPoll()
 					n -= need;
 					continue;
 				}
+				if ((f >= 100 && f <= 126) ||
+				    (f >= 128 && f < 140)) {
+					if (f == 100 && v <= 1) {
+						g_swProfiles.enabled = v;
+						g_shortcutFlags =
+							(g_shortcutFlags &
+							 ~SHORTCUT_PROFILES) |
+							(v ? SHORTCUT_PROFILES :
+							     0);
+					} else if (f == 101 &&
+						   v < SW_PROFILE_COUNT)
+						g_swProfiles.active = v;
+					else if (f >= 104 && f < 120 && v <= 20)
+						g_swProfiles
+							.back[(f - 104) / 4]
+							     [(f - 104) % 4] =
+							v;
+					else if (f >= 128 && f < 140 && v <= 20)
+						g_swProfiles
+							.extraBack[(f - 128) / 4]
+								  [(f - 128) %
+								   4] = v;
+					else if (f >= 120 && f <= 126 &&
+						 v <= SW_PROFILE_COUNT)
+						g_swProfiles.chord[f - 120] = v;
+					applyActiveType();
+					saveCfg();
+					g_blobRequest = true;
+					memmove(buf, buf + need, n - need);
+					n -= need;
+					continue;
+				}
 				switch (f) {
+				case 140:
+					g_swDpadHaptics = v ? 1 : 0;
+					break;
 				case 1:
 					g_mDiv = v < 4 ? 4 : v;
 					break;
@@ -1079,11 +1136,94 @@ void webusbPoll()
 				}
 
 				// Host-rumble style (RUMBLE_STYLE_*). Protocol v21.
+				case 141:
+					g_hdPadScale =
+						v > 250 ? 500 : (uint16_t)v * 2;
+					break;
+				case 142:
+				case 143:
+				case 144:
+				case 145:
+				case 146:
+				case 147:
+				case 148:
+					// Reserved for imports from development builds.
+					break;
+				case 150:
+					if (v <= 63) {
+						bool entering =
+							!(g_shortcutFlags &
+							  SHORTCUT_PROFILES) &&
+							(v & SHORTCUT_PROFILES);
+						g_shortcutFlags = v;
+						g_swProfiles.enabled = !!(
+							v & SHORTCUT_PROFILES);
+						bool assigned = false;
+						for (uint8_t i = 0; i < 7; i++)
+							assigned |=
+								g_swProfiles
+									.chord[i] !=
+								0;
+						if (entering && !assigned)
+							for (uint8_t i = 0;
+							     i < 7; i++)
+								g_swProfiles
+									.chord[i] =
+									i + 1;
+						applyActiveType();
+					}
+					break;
+				case 151:
+				case 152:
+				case 153:
+					if (v <= 6 || v == 8) {
+						g_rumblePresets[f - 151] = v;
+						if (g_rumbleSlot < 3 &&
+						    g_rumblePresets[g_rumbleSlot] !=
+							    g_rumbleStyle)
+							g_rumbleSlot = 0xFF;
+					}
+					break;
+				case 154:
+				case 155:
+				case 156:
+				case 157:
+				case 158:
+				case 159:
+					if (v <= 250) {
+						uint8_t w = (f - 154) / 3;
+						if (w == 1 && v < 5)
+							break;
+						g_strengthSteps[w][(f - 154) %
+								   3] = v * 2;
+						g_strengthSlots[w] = 0xFF;
+					}
+					break;
+				case 160:
+					if (v < 3 &&
+					    g_rumblePresets[v] == g_rumbleStyle)
+						g_rumbleSlot = v;
+					break;
+				case 161:
+				case 162:
+					if (v < 3 &&
+					    g_strengthSteps[f - 161][v] ==
+						    (f == 161 ? g_hdPadScale :
+								g_rumbleScale))
+						g_strengthSlots[f - 161] = v;
+					break;
+				case 149:
+					if (v <= 20)
+						g_swQamSelect = v;
+					break;
 				case 39:
-					g_rumbleStyle =
-						v > RUMBLE_STYLE_MAX ?
-							RUMBLE_STYLE_MAX :
-							v;
+					g_rumbleStyle = v <= 6 ? v : 8;
+					g_rumbleSlot = 0xFF;
+					for (uint8_t i = 0; i < 3; i++)
+						if (g_rumblePresets[i] ==
+							    g_rumbleStyle &&
+						    g_rumbleSlot == 0xFF)
+							g_rumbleSlot = i;
 					break;
 
 				// Switch Pro gyro mapping: 0 = corrected (default), 1 = legacy

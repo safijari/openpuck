@@ -105,8 +105,15 @@ void serialConsolePoll()
 				   (line[2] >= '0' && line[2] <= '9')) {
 				// "RY<n>": host-rumble style, see RUMBLE_STYLE_* in haptics.h. Persisted.
 				static const char *const RY_NAME[] = {
-					"normal", "mono",   "heavy", "light",
-					"swap",	  "punchy", "soft"
+					"normal",
+					"mono",
+					"heavy",
+					"light",
+					"swap",
+					"punchy",
+					"soft",
+					"HD emulation",
+					"HD emulation - Punchy grips"
 				};
 				long n = atol(line + 2);
 				if (n < 0)

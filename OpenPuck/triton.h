@@ -50,8 +50,50 @@
 #define TB_TOUCH 0x40000000u // PS touchpad click
 #define TB_MUTE 0x80000000u // PS5 mute
 
-// all four back paddles held -> mode-switch chord guard
+// Legacy mask retained for protocol tools; firmware shortcuts use TB_QAM.
 #define CHORD_BACK4 (TB_R4 | TB_L4 | TB_R5 | TB_L5)
+
+#define SHORTCUT_QAM 1u
+#define SHORTCUT_PROFILES 2u
+#define SHORTCUT_HAPTICS 4u
+#define SHORTCUT_FEEDBACK 8u
+#define SHORTCUT_CAPTURE 16u
+#define SHORTCUT_ENABLED 32u
+extern uint8_t g_shortcutFlags;
+
+static inline bool shortcutHeld(uint32_t buttons)
+{
+	uint32_t mask = (g_shortcutFlags & SHORTCUT_QAM) ? TB_QAM : CHORD_BACK4;
+	return (g_shortcutFlags & SHORTCUT_ENABLED) && (buttons & mask) == mask;
+}
+
+static inline uint32_t shortcutHostButtons(uint32_t buttons)
+{
+	if (shortcutHeld(buttons)) {
+		uint32_t mask = (g_shortcutFlags & SHORTCUT_QAM) ? TB_QAM :
+								   CHORD_BACK4;
+		buttons &= ~(mask | TB_A | TB_B | TB_X | TB_Y | TB_DUP |
+			     TB_DDN | TB_DLF | TB_DRT);
+	}
+	return buttons;
+}
+
+static inline bool switchSelectShortcut(uint8_t slot, uint32_t &buttons)
+{
+	static bool consumed[4] = {};
+	if (slot >= 4)
+		return false;
+	bool active = (g_shortcutFlags & SHORTCUT_CAPTURE) &&
+		      (buttons & (TB_QAM | TB_MENU)) == (TB_QAM | TB_MENU);
+	if (!(buttons & TB_MENU))
+		consumed[slot] = false;
+	else if (active)
+		consumed[slot] = true;
+	// Releasing the modifier first must not emit a delayed Minus press.
+	if (consumed[slot])
+		buttons &= ~TB_MENU;
+	return active;
+}
 
 // analog-trigger fraction (of 0xFF) at which digital ZL/ZR (Switch) etc. trip
 #define SW_TRIG_ON 40

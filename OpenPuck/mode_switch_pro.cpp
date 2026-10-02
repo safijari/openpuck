@@ -2,6 +2,7 @@
 #include "triton.h"
 #include "gamepad_util.h"
 #include "config.h"
+#include "storage.h"
 #include "haptics.h"
 #include "bonds.h"
 #include "rf_link.h"
@@ -34,15 +35,12 @@ void swProSaveCfg()
 	// ver 0x02 = [ver][gyroLegacy]. ver 0x01 was [ver][rate][gyroScale x10]; both knobs are gone, so such a
 	// file is simply ignored on load (defaults win) rather than migrated.
 	uint8_t b[2] = { 0x02, g_swGyroLegacy };
-	InternalFS.remove(SWPRO_CFG_FILE);
-	File f(InternalFS);
-	if (f.open(SWPRO_CFG_FILE, FILE_O_WRITE)) {
-		f.write(b, sizeof b);
-		f.close();
-	}
+	storageWriteFile(SWPRO_CFG_FILE, "/swprocfg.tmp", b, sizeof b);
 }
 static void swProLoadCfg()
 {
+	if (g_storageState == 0)
+		return;
 	File f(InternalFS);
 	uint8_t b[2];
 	if (f.open(SWPRO_CFG_FILE, FILE_O_READ)) {
@@ -164,12 +162,9 @@ static inline uint8_t jcBondOf(uint8_t usbSlot)
 	int b = (usbSlot < NSLOT) ? g_usbToBond[usbSlot] : -1;
 	return (b >= 0) ? (uint8_t)b : usbSlot;
 }
-// --- Switch HD-rumble amplitude decoder.
-//
-// When we emulate a Pro Controller, the console streams us its HD-rumble output
-// every frame. A genuine controller drives dual-band linear actuators from it;
-// OpenPuck drives the SC2's single motor, so all we need is a scalar amplitude.
-// This decodes the on-wire rumble format down to that amplitude.
+// Each side carries two amplitude bands. Keep them separate for the combined
+// grip/trackpad renderer; conventional styles still use each side's peak.
+// Game pitch carries frequency state; conventional styles use amplitude peaks.
 //
 // Format (from the public Switch controller protocol, cross-checked against
 // SDL's zlib-licensed hidapi_switch rumble encoder and community RE notes):
@@ -182,13 +177,7 @@ static inline uint8_t jcBondOf(uint8_t usbSlot)
 // A 7-bit field is an ABSOLUTE amplitude on the documented log2 curve. A 5-bit
 // field is a compact command that either substitutes a preset level or nudges
 // the amplitude by a small step -- so the decoder carries per-motor state across
-// frames. Frequency fields exist but do nothing for an ERM, so we step past them
-// and keep only amplitude.
-//
-// The naive "read fixed bytes as amplitude" decode we shipped before ignored the
-// mode bits, so any game using the packed modes (Fire Emblem: Three Houses,
-// Crash Bandicoot, ...) decoded to spurious nonzero amplitude -> random idle/menu
-// buzzing. Handling every mode is what fixes that.
+// frames. Frequency uses the same 1/32 log2 units around 160/320 Hz.
 //
 // Amplitude is carried in log2-linear 1/32 fixed-point over [-8.0, 0.0] -> the
 // integer range [-256, 0], and mapped to a 16-bit motor level via a boot-built
@@ -233,12 +222,33 @@ static inline int16_t hdrAmp5(uint8_t code, int16_t cur)
 	int v = (int)cur + step;
 	return v < HDR_AMP_MIN ? HDR_AMP_MIN : (v > 0 ? 0 : (int16_t)v);
 }
+// Protocol frequency codes span four octaves around each band's centre.
+static int16_t hdrFreq5(uint8_t code, int16_t current)
+{
+	if (!code)
+		return 0;
+	if (code >= 12 && code <= 16)
+		return ((int)code - 14) * 6;
+	int delta = 0;
+	if (code >= 17)
+		delta = (code - 17) % 3 == 0 ? 1 :
+					       ((code - 17) % 3 == 2 ? -1 : 0);
+	int value = current + delta;
+	return value < -64 ? -64 : (value > 64 ? 64 : value);
+}
+static uint16_t g_hdrFrequency[2][129];
 // exp2(units/32) scaled to a 16-bit motor level, built once at boot. The two
 // lowest steps are treated as silent (the curve floors out there), matching how
 // the neutral/idle frame -- which decodes to minimum amplitude -- reads as off.
 static uint16_t g_hdrLevel[257];
 static void hdrBuildLevels()
 {
+	for (int i = -64; i <= 64; i++)
+		for (int band = 0; band < 2; band++)
+			g_hdrFrequency[band][i + 64] =
+				(uint16_t)((band ? 320 : 160) *
+						   exp2f(i / 32.0f) +
+					   0.5f);
 	for (int u = HDR_AMP_MIN; u <= 0; u++) {
 		float lin = (float)u / 32.0f;
 		float amp = (lin >= -7.9375f) ? exp2f(lin) : 0.0f;
@@ -252,12 +262,15 @@ static void hdrBuildLevels()
 // Per-slot, per-motor (0 = left, 1 = right) running band amplitudes. The packed
 // 5-bit commands are relative, so this state must persist between frames.
 struct HdrBands {
+	int16_t lf, hf;
 	int16_t lo; // low-band amplitude, 1/32 log2 units
 	int16_t hi; // high-band amplitude, 1/32 log2 units
 };
 static HdrBands g_hdrState[NSLOT][2];
 static inline void hdrReset(uint8_t slot)
 {
+	g_hdrState[slot][0].lf = g_hdrState[slot][0].hf = 0;
+	g_hdrState[slot][1].lf = g_hdrState[slot][1].hf = 0;
 	g_hdrState[slot][0].lo = g_hdrState[slot][0].hi = HDR_AMP_OFF;
 	g_hdrState[slot][1].lo = g_hdrState[slot][1].hi = HDR_AMP_OFF;
 }
@@ -270,16 +283,21 @@ static inline uint8_t hdrField(uint32_t w, uint8_t shift, uint8_t width)
 // motor level over the frame's updates (max across both bands and all samples).
 // Peak rather than final-sample keeps short pulses that a multi-update frame
 // packs together, while every idle/neutral frame still resolves to 0.
-static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4])
+static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4],
+			  uint16_t *low = nullptr, uint16_t *high = nullptr)
 {
 	HdrBands &s = g_hdrState[slot][motor];
 	uint32_t w = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
 		     ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-	uint16_t peak = 0;
+	uint16_t peak = 0, peakLow = 0, peakHigh = 0;
 #define HDR_SAMPLE()                                          \
 	do {                                                  \
 		uint16_t la = g_hdrLevel[s.lo - HDR_AMP_MIN]; \
 		uint16_t ha = g_hdrLevel[s.hi - HDR_AMP_MIN]; \
+		if (la > peakLow)                             \
+			peakLow = la;                         \
+		if (ha > peakHigh)                            \
+			peakHigh = ha;                        \
 		uint16_t lv = la > ha ? la : ha;              \
 		if (lv > peak)                                \
 			peak = lv;                            \
@@ -292,16 +310,25 @@ static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4])
 	case 1:
 		if ((w & 0xFFFFF) == 0) { // single 5-bit update
 			s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 25, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 20, 5), s.hf);
 			HDR_SAMPLE();
 		} else if ((w & 0x3) == 0) { // single 7-bit absolute
 			s.lo = hdrAmp7(hdrField(w, 23, 7));
 			s.hi = hdrAmp7(hdrField(w, 9, 7));
+			s.lf = hdrField(w, 16, 7) - 64;
+			s.hf = hdrField(w, 2, 7) - 64;
 			HDR_SAMPLE();
 		} else { // 7-bit for one band + two 5-bit updates
 			bool wantHi = (w & 1) != 0;
 			bool isFreq = ((w >> 2) & 1) != 0;
-			if (!isFreq) { // else the 7-bit is a frequency: ignore
+			if (isFreq) {
+				if (wantHi)
+					s.hf = hdrField(w, 23, 7) - 64;
+				else
+					s.lf = hdrField(w, 23, 7) - 64;
+			} else {
 				if (wantHi)
 					s.hi = hdrAmp7(hdrField(w, 23, 7));
 				else
@@ -309,64 +336,108 @@ static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4])
 			}
 			HDR_SAMPLE();
 			s.lo = hdrAmp5(hdrField(w, 18, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 18, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 13, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 13, 5), s.hf);
 			HDR_SAMPLE();
 			s.lo = hdrAmp5(hdrField(w, 8, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 8, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 3, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 3, 5), s.hf);
 			HDR_SAMPLE();
 		}
 		break;
 	case 2:
 		if ((w & 0x3FF) == 0) { // two 5-bit updates
 			s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 25, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 20, 5), s.hf);
 			HDR_SAMPLE();
 			s.lo = hdrAmp5(hdrField(w, 15, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 15, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 10, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 10, 5), s.hf);
 			HDR_SAMPLE();
 		} else { // 7-bit + 5-bit, then a 5-bit update
 			if (w & 1) {
+				s.hf = hdrField(w, 1, 7) - 64;
 				s.hi = hdrAmp7(hdrField(w, 23, 7));
 				s.lo = hdrAmp5(hdrField(w, 18, 5), s.lo);
+				s.lf = hdrFreq5(hdrField(w, 18, 5), s.lf);
 			} else {
+				s.lf = hdrField(w, 1, 7) - 64;
 				s.lo = hdrAmp7(hdrField(w, 23, 7));
 				s.hi = hdrAmp5(hdrField(w, 18, 5), s.hi);
+				s.hf = hdrFreq5(hdrField(w, 18, 5), s.hf);
 			}
 			HDR_SAMPLE();
 			s.lo = hdrAmp5(hdrField(w, 13, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 13, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 8, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 8, 5), s.hf);
 			HDR_SAMPLE();
 		}
 		break;
 	case 3: // three 5-bit updates
 		s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+		s.lf = hdrFreq5(hdrField(w, 25, 5), s.lf);
 		s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+		s.hf = hdrFreq5(hdrField(w, 20, 5), s.hf);
 		HDR_SAMPLE();
 		s.lo = hdrAmp5(hdrField(w, 15, 5), s.lo);
+		s.lf = hdrFreq5(hdrField(w, 15, 5), s.lf);
 		s.hi = hdrAmp5(hdrField(w, 10, 5), s.hi);
+		s.hf = hdrFreq5(hdrField(w, 10, 5), s.hf);
 		HDR_SAMPLE();
 		s.lo = hdrAmp5(hdrField(w, 5, 5), s.lo);
+		s.lf = hdrFreq5(hdrField(w, 5, 5), s.lf);
 		s.hi = hdrAmp5(hdrField(w, 0, 5), s.hi);
+		s.hf = hdrFreq5(hdrField(w, 0, 5), s.hf);
 		HDR_SAMPLE();
 		break;
 	}
 #undef HDR_SAMPLE
+	if (low)
+		*low = peakLow;
+	if (high)
+		*high = peakHigh;
 	return peak;
 }
 // Per-slot: each Pro Controller has its own rumble stream, so the "last" relay tracking must be per-slot.
 static uint16_t g_jcLastLo[NSLOT] = { 0 };
 static uint16_t g_jcLastHi[NSLOT] = { 0 };
+static uint8_t g_jcLastStyle[NSLOT] = {};
 static void jcRumble(uint8_t slot, const uint8_t *p, uint16_t pn)
 {
 	if (pn < 9)
 		return; // [timer][left rumble x4][right rumble x4]
-	uint16_t lo = hdrDecode(slot, 0, p + 1), hi = hdrDecode(slot, 1, p + 5);
+	uint16_t ll, lh, rl, rh;
+	uint16_t lo = hdrDecode(slot, 0, p + 1, &ll, &lh);
+	uint16_t hi = hdrDecode(slot, 1, p + 5, &rl, &rh);
+	if (g_rumbleStyle == RUMBLE_STYLE_HD) {
+		const HdrBands &left = g_hdrState[slot][0];
+		const HdrBands &right = g_hdrState[slot][1];
+		hapticSwitchPitch(jcBondOf(slot),
+				  g_hdrLevel[left.lo - HDR_AMP_MIN],
+				  g_hdrLevel[left.hi - HDR_AMP_MIN],
+				  g_hdrLevel[right.lo - HDR_AMP_MIN],
+				  g_hdrLevel[right.hi - HDR_AMP_MIN],
+				  g_hdrFrequency[0][left.lf + 64],
+				  g_hdrFrequency[1][left.hf + 64],
+				  g_hdrFrequency[0][right.lf + 64],
+				  g_hdrFrequency[1][right.hf + 64]);
+		g_jcLastStyle[slot] = g_rumbleStyle;
+		return;
+	}
 	// only relay on change: the Switch streams rumble every frame; re-sending
 	// unchanged values would flood the RF relay and loop the motor
-	if (lo == g_jcLastLo[slot] && hi == g_jcLastHi[slot])
+	if (lo == g_jcLastLo[slot] && hi == g_jcLastHi[slot] &&
+	    g_jcLastStyle[slot] == g_rumbleStyle)
 		return;
 	g_jcLastLo[slot] = lo;
 	g_jcLastHi[slot] = hi;
+	g_jcLastStyle[slot] = g_rumbleStyle;
 	hapticSteamRumble(lo, hi,
 			  jcBondOf(slot)); // route to the mapped controller
 }
@@ -414,12 +485,9 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 {
 	uint8_t bond = jcBondOf(
 		slot); // input data comes from the mapped controller; timer/state stay per USB slot
-	uint32_t b = g_in[bond].buttons;
-	// QAM (3 dots) remap -> applied via codeToJc below like a back paddle (so Capture(18)/any target work).
-	bool qam = g_qamMap && (b & TB_QAM);
-	if ((b & CHORD_BACK4) == CHORD_BACK4)
-		b &= ~(uint32_t)(TB_A | TB_B | TB_X | TB_Y | TB_DUP | TB_DDN |
-				 TB_DLF | TB_DRT);
+	uint32_t b = g_in[bond].buttons | padDpadButtons(g_in[bond]);
+	bool qamSelect = switchSelectShortcut(bond, b);
+	b = shortcutHostButtons(b);
 	uint32_t fA = g_abSwap ? JC_BTN_B : JC_BTN_A,
 		 fB = g_abSwap ? JC_BTN_A : JC_BTN_B;
 	uint32_t fX = g_abSwap ? JC_BTN_Y : JC_BTN_X,
@@ -467,8 +535,10 @@ static void jcInputPrefix(uint8_t slot, uint8_t *out)
 		jc |= codeToJc(g_back[2], fA, fB, fX, fY);
 	if (b & TB_R5)
 		jc |= codeToJc(g_back[3], fA, fB, fX, fY);
-	if (qam)
+	if (!qamSelect && (b & TB_QAM) && g_qamMap)
 		jc |= codeToJc(g_qamMap, fA, fB, fX, fY);
+	if (qamSelect)
+		jc |= codeToJc(g_swQamSelect, fA, fB, fX, fY);
 	out[0] = g_jcTimer[slot]++;
 
 	// bat_con byte: [7:5]=capacity, bit4=charging, bit0=host_powered (see jcBatteryNibble). The controllers are
@@ -621,6 +691,10 @@ static void loadUserCal()
 {
 	for (int s = 0; s < NSLOT; s++) {
 		memset(g_userCal[s], 0xFF, sizeof g_userCal[s]);
+		if (g_storageState == 0) {
+			g_userCalLoaded[s] = true;
+			continue;
+		}
 		char fn[16];
 		swCalFileName((uint8_t)s, fn);
 		File f(InternalFS);
@@ -635,12 +709,8 @@ static void saveUserCal(uint8_t slot)
 {
 	char fn[16];
 	swCalFileName(slot, fn);
-	InternalFS.remove(fn);
-	File f(InternalFS);
-	if (f.open(fn, FILE_O_WRITE)) {
-		f.write(g_userCal[slot], sizeof g_userCal[slot]);
-		f.close();
-	}
+	storageWriteFile(fn, "/swcal.tmp", g_userCal[slot],
+			 sizeof g_userCal[slot]);
 }
 // jcSpiWrite runs in the USB ISR (via jcSet). NEVER do flash I/O here -- a blocking LittleFS erase/write in the
 // interrupt wedges USB + the RF poll and corrupts state (device drops into a bad state needing a replug). Only
@@ -949,12 +1019,38 @@ void SwitchProController::mountSlots(uint8_t k)
 		// prior session can't carry across the reconnect
 		hdrReset(u);
 		g_jcLastLo[u] = g_jcLastHi[u] = 0;
+		g_jcLastStyle[u] = 0xFF;
 		USBDevice.addInterface(g_swPro[u]);
 	}
 }
+static void swDpadClickFeedback(uint8_t bond, uint32_t buttons)
+{
+	static uint32_t held[NSLOT] = {};
+	if (bond >= NSLOT)
+		return;
+	uint32_t clicks = buttons & (TB_LPADC | TB_RPADC);
+	uint32_t pressed = clicks & ~held[bond];
+	held[bond] = clicks;
+	if (!g_swDpadHaptics || shortcutHeld(buttons) || haptic82Blocked(bond))
+		return;
+	uint8_t side = 0;
+	if ((pressed & TB_LPADC) && (buttons & TB_LPADT) &&
+	    g_padStick[0] >= PS_DPAD_TOUCH)
+		side |= 1;
+	if ((pressed & TB_RPADC) && (buttons & TB_RPADT) &&
+	    g_padStick[1] >= PS_DPAD_TOUCH)
+		side |= 2;
+	if (side) {
+		const uint8_t pulse[3] = { side, 2, 0xF7 };
+		relayEnqueue(0x82, pulse, sizeof pulse, true, bond);
+	}
+}
+
 void SwitchProController::task()
 {
 	for (uint8_t s = 0; s < g_usbMountCount; s++) {
+		uint8_t bond = jcBondOf(s);
+		swDpadClickFeedback(bond, g_in[bond].buttons);
 		if (!g_swPro[s].ready())
 			continue;
 		// Deferred user-cal flash write (queued by the USB ISR; debounced so a calibration write-burst
