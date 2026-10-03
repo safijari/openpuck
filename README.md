@@ -26,6 +26,8 @@ There are two fundamental problems with the controller:
 
 OpenPuck uses a [Pro Micro NRF52840](https://www.amazon.com/dp/B0GSZ7FD6T) ($8 on Amazon, possibly cheaper elsewhere) which uses a radio similar to the one being used by the controller and the puck. Once the arduino sketch is uploaded it emulates the puck over USB to Steam by default and allows pairing the controller normally (almost, the lizard mode for when Steam is off might not be 1:1). Latency [has been measured to be within 1ms of the official puck](https://www.reddit.com/r/SteamController/comments/1u754ze/complete_latency_testing_of_openpuck_project/).
 
+If you want a more robust board with an external antenna, the [MakerDiary nRF52840 Connect Kit](https://makerdiary.com/products/nrf52840-connectkit) (U.FL variant) is supported natively — dual crystals and a proper antenna connector, flashed by plain drag-and-drop. See [docs/CONNECT_KIT_SETUP.md](./docs/CONNECT_KIT_SETUP.md).
+
 At any point you can hold all 4 back buttons and press X to switch over to ***Xbox mode** which maps all canonical inputs to their expected counterparts (plus L4 -> LB, L5 -> L3, etc which are configurable). In this mode the right trackpad acts as a mouse but at present this only works in Android and SteamOS.
 
 Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to a **Switch mode**. This emulates a pro controller full with gyro and haptics. There's other modes as well:

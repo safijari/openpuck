@@ -1,0 +1,65 @@
+# MakerDiary nRF52840 Connect Kit, built against the installed Adafruit nRF52
+# core via a core reference (build.core=adafruit:nRF5). See platform.txt for why
+# the runtime-path flag there is mandatory. FQBN: openpuck:nrf52:makerdiary_connectkit.
+#
+# nosd: the Connect Kit's stock UF2 bootloader ships NO SoftDevice and hands the
+# application control at 0x1000 (per MakerDiary's official flash map,
+# nrf52840_partition_uf2_nosd.dtsi). Feather/XIAO boards run an app above an S140
+# (0x26000 / 0x27000); this board runs it directly at 0x1000. That single fact
+# drives both the linker origin and the -DSOFTDEVICE_PRESENT drop below.
+
+makerdiary_connectkit.name=MakerDiary nRF52840 Connect Kit (OpenPuck, nosd)
+
+# DFU / upload identity. The running app enumerates 1915:c00a; the UF2 bootloader
+# port is listed so arduino-cli can recognise it for `make flash`. Drag-and-drop
+# UF2 onto the UF2BOOT drive is the primary path and needs none of this.
+makerdiary_connectkit.vid.0=0x1915
+makerdiary_connectkit.pid.0=0xc00a
+makerdiary_connectkit.vid.1=0x239a
+makerdiary_connectkit.pid.1=0x0029
+
+makerdiary_connectkit.bootloader.tool=bootburn
+makerdiary_connectkit.upload.tool=nrfutil
+makerdiary_connectkit.upload.protocol=nrfutil
+makerdiary_connectkit.upload.use_1200bps_touch=true
+makerdiary_connectkit.upload.wait_for_upload_port=true
+# Application partition 0x1000..0xD4000 = 0xD3000 = 864256 bytes (official map:
+# 4 kB MBR, 844 kB app, 128 kB storage, 48 kB UF2 bootloader).
+makerdiary_connectkit.upload.maximum_size=864256
+makerdiary_connectkit.upload.maximum_data_size=237568
+
+makerdiary_connectkit.build.core=adafruit:nRF5
+makerdiary_connectkit.build.variant=makerdiary_connectkit
+makerdiary_connectkit.build.mcu=cortex-m4
+makerdiary_connectkit.build.f_cpu=64000000
+# -> -DARDUINO_MAKERDIARY_CONNECTKIT (available for future board gates; unused on main).
+makerdiary_connectkit.build.board=MAKERDIARY_CONNECTKIT
+makerdiary_connectkit.build.usb_manufacturer="MakerDiary"
+makerdiary_connectkit.build.usb_product="nRF52840 Connect Kit"
+makerdiary_connectkit.build.vid=0x1915
+makerdiary_connectkit.build.pid=0xc00a
+# `make build` overrides build.extra_flags with the required CFG_TUD_* values (a
+# bare arduino-cli compile without them #errors on purpose).
+makerdiary_connectkit.build.extra_flags=-DNRF52840_XXAA {build.flags.usb}
+makerdiary_connectkit.build.uf2_family=0xADA52840
+
+# nosd: link the application at 0x1000 (no SoftDevice). Variant-local script; its
+# INCLUDE "nrf52_common.ld" resolves through the inherited -L{build.core.path}/linker.
+makerdiary_connectkit.build.ldscript={build.variant.path}/nrf52840_connectkit_nosd.ld
+
+# sd_* here only put the SoftDevice API headers on the include path (declarations
+# only) and set the DFU zip's --sd-req; no SoftDevice is present or started.
+makerdiary_connectkit.build.sd_name=s140
+makerdiary_connectkit.build.sd_version=6.1.1
+makerdiary_connectkit.build.sd_fwid=0x00B6
+
+# nosd: OpenPuck builds SoftDevice-free on ALL boards via a force-included OpenPuck/nosd.h (see the
+# NOSD_INCLUDE flag in the repo Makefile) -- it drops -DSOFTDEVICE_PRESENT and routes the InternalFileSystem
+# sd_* flash calls to OpenPuck/nosd_flash.cpp (direct NVMC). So this board inherits the core's build.flags.nrf
+# unchanged -- no per-board override needed here.
+
+# No board menus: supply the flags the Adafruit recipe would otherwise take from a
+# menu selection, at Adafruit's release defaults (no debug, no serial logger).
+makerdiary_connectkit.build.debug_flags=-DCFG_DEBUG=0
+makerdiary_connectkit.build.logger_flags=-DCFG_LOGGER=0
+makerdiary_connectkit.build.sysview_flags=
