@@ -651,6 +651,29 @@ void hapticInit()
 		g_hapticBlockUntil[s] = 0;
 	}
 }
+// Emulated modes that report motion from the controller's RF IMU samples.
+static const uint32_t IMU_KEEP_MS = 5000;
+static bool modeWantsImu(uint8_t m)
+{
+	return m == MODE_SW_PRO || m == MODE_PS5 || m == MODE_PS5_GAME ||
+	       m == MODE_HIDGYRO || m == MODE_DS4_GAME || m == MODE_PS3 ||
+	       m == MODE_DINPUT || m == MODE_SINPUT;
+}
+// Steam can leave the controller's persisted IMU mode off, and it survives across pucks. Every emulated
+// gyro mode needs the raw RF samples that setting suppresses, so write raw accel + gyro for this slot.
+static void imuForceRaw(int slot)
+{
+	static const uint8_t RAW_IMU[] = {
+		SETTING_IMU_MODE,
+		SETTING_GYRO_MODE_SEND_RAW_ACCEL |
+			SETTING_GYRO_MODE_SEND_RAW_GYRO,
+		0x00
+	};
+	if (!modeWantsImu(g_usbMode))
+		return;
+	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, RAW_IMU, sizeof RAW_IMU,
+		     false, (uint8_t)slot);
+}
 // Schedule the clearing re-init for ONE slot. Called on the reliable first-reply signal from rf_link and
 // again from hapticTask's link-up edge detector. Strictly per-slot: only the reconnected controller gets
 // re-inits / its pending haptics scrubbed -- the other controllers hear nothing about it.
@@ -664,19 +687,7 @@ void hapticOnReconnect(int slot)
 	g_rumble80Ms[slot] = 0;
 	// Scrub haptics queued before the link came up (stale across the reconnect) -- this slot only.
 	hapticCancelPendingOn(slot);
-	if (g_usbMode == MODE_SW_PRO) {
-		static const uint8_t RAW_IMU[] = {
-			SETTING_IMU_MODE,
-			SETTING_GYRO_MODE_SEND_RAW_ACCEL |
-				SETTING_GYRO_MODE_SEND_RAW_GYRO,
-			0x00
-		};
-
-		// Steam can leave the controller's persisted IMU mode off. Switch
-		// Pro reports require the raw RF samples that setting suppresses.
-		relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, RAW_IMU,
-			     sizeof RAW_IMU, false, (uint8_t)slot);
-	}
+	imuForceRaw(slot);
 	// NO automatic haptic re-init. hapticReinit lands 0x81 (CLEAR DIGITAL MAPPINGS -- rid < 0x87 so it
 	// EXECUTES even on legacy framing). 0x81 is NON-IDEMPOTENT (ibex FUN_0001f554): EVERY call re-runs the
 	// lizard-disable event + func_0x0001bbf0 (a hardware peripheral re-arm unique to the 0x81 path) -- so
@@ -767,6 +778,23 @@ void hapticTask()
 				}
 			}
 		} // !modeIsPuck
+	}
+	// Re-assert the raw IMU mode on a mode switch (the link stays up, so hapticOnReconnect never fires)
+	// and periodically, in case Steam or the controller turned it back off while we were connected.
+	{
+		static uint8_t lastMode = 0xFF;
+		static unsigned long lastImu[NSLOT] = { 0 };
+		bool modeChanged = (g_usbMode != lastMode);
+		lastMode = g_usbMode;
+		for (int s = 0; s < NSLOT; s++) {
+			if (!g_slot[s].used || !hapticLinkUp(s))
+				continue;
+			if (!modeChanged &&
+			    (uint32_t)(millis() - lastImu[s]) < IMU_KEEP_MS)
+				continue;
+			lastImu[s] = millis();
+			imuForceRaw(s);
+		}
 	}
 	// Per-slot link-edge detect (backup for hapticOnReconnect in rf_link).
 	static bool wasHapticLinkUp[NSLOT] = { 0 };
