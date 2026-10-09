@@ -9,6 +9,7 @@
 #include "status_led.h"
 #include "fault_diag.h"
 #include "usb_mount.h" // modeSwitchReboot()
+#include "paddle_profiles.h" // paddleProfilesOnInput()
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -680,6 +681,11 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 								&g_in[g_curSlot]
 									 .gz);
 						}
+						// Paddle profiles: back4+RB/LB/Start gestures + paddle-assign mode. Masks its own buttons out of
+						// g_in and rep (assign mode blanks all input) before any mode builder sees this report.
+						paddleProfilesOnInput(
+							(uint8_t)g_curSlot,
+							(uint8_t *)rep);
 						// Mode-switch chord (all 4 back + face/dpad): don't leak the press to the host. g_in[g_curSlot].buttons stays
 						// intact so the chord detector still fires; per-mode builders mask the same bits while back-4 held.
 						if ((bb & CHORD_BACK4) ==

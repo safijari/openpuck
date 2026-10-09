@@ -1,6 +1,7 @@
 #include "config.h"
 #include "rf_link.h" // g_rxWin (poll RX window persisted here)
 #include "haptics.h" // g_hapticBlockOn, g_hapticBlockMs
+#include "paddle_profiles.h" // paddleProfilesSaveIfDirty()
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 #include <string.h>
@@ -150,6 +151,8 @@ void saveCfg()
 		f.write((uint8_t *)&c, sizeof c);
 		f.close();
 	}
+	// keep the paddle-profile file in step with every config save (mode switch, panel edit, deferred save)
+	paddleProfilesSaveIfDirty();
 }
 
 void loadCfg()
