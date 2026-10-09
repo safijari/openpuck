@@ -152,6 +152,9 @@ bool hapticRelaySlotOk(int slot);
 // defaults to 0 for the legacy single-controller callers. Per-slot so each connected controller can have its
 // own active rumble stream when the host presents multiple gamepads (e.g. 4 XInput devices).
 bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot = 0);
+// Fixed-strength UI buzz (paddle profiles): bypasses rumble style/strength and the per-type rumble disable.
+// on=false sends the stop (burst-relayed like any rumble stop).
+bool hapticFeedback(uint8_t slot, bool on);
 
 // queue + flush the pending host/test/stop relay inside the poll cadence (called from rf_link).
 // rfConnFlushRelay's s1 must carry a PID distinct from the GET poll that follows it. g_relayPid
