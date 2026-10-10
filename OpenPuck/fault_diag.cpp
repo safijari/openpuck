@@ -1,4 +1,5 @@
 #include "fault_diag.h"
+#include "board_config.h"
 #include <Arduino.h> // readResetReason(), NRF_POWER, NVIC_SystemReset, POWER_RESETREAS_*_Msk
 #include <FreeRTOS.h>
 #include <task.h> // uxTaskGetSystemState -> per-task stack high-water (overflow hypothesis check)
@@ -196,8 +197,7 @@ static const char *frEvtStr(uint8_t e)
 // priority-1 interrupts still run (PRIMASK-off hangs leave no record -- same caveat as the WDT capture, and
 // itself a signal); a task that is RUNNING (not blocked) has a stale TCB pxTopOfStack, so cross-check its PC
 // against irqPC.
-#define BB_ADDR \
-	0xE8000UL // raw page: app image (~170 KB, ends < 0x60000) < here < InternalFS (0xED000)
+#define BB_ADDR OPK_BB_ADDR // raw page, placed per board in board_config.h
 #define BB_MAGIC 0x62627831u // "bbx1"
 #define BB_WORDS 12
 static TaskHandle_t g_hLoop,

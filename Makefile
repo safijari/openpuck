@@ -63,6 +63,7 @@ UF2_OUTPUT_DIR ?= build/openpuck
 # the bottom swallows it so make doesn't try to build the port path as a target.
 FLASH_PORT := $(filter-out format format-check check build build-raytac \
 	package-raytac flash-raytac deploy-raytac provision-raytac-softdevice \
+	build-pca10059 package-pca10059 flash-pca10059 deploy-pca10059 \
 	build-recovery reversepuck reversepuck-flash reversepuck-deploy flash deploy,$(MAKECMDGOALS))
 UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" OpenPuck
 
@@ -74,6 +75,7 @@ RP_UPLOAD = arduino-cli upload -b $(FQBN) -p "$(FLASH_PORT)" ReversePuckFirmware
 
 .PHONY: format format-check check build build-raytac uf2 package-raytac \
 	flash-raytac deploy-raytac provision-raytac-softdevice build-recovery \
+	build-pca10059 package-pca10059 flash-pca10059 deploy-pca10059 \
 	reversepuck reversepuck-flash reversepuck-deploy flash deploy
 
 ## Compile the firmware with the required USB flags baked in. Override CFG_TUD_HID / CFG_TUD_TASK_QUEUE_SZ /
@@ -130,6 +132,65 @@ provision-raytac-softdevice:
 		build/raytac/s140-6.1.1.zip
 	nrfutil device program --firmware build/raytac/s140-6.1.1.zip \
 		--traits nordicDfu
+
+# Nordic's Open DFU bootloader on the nRF52840 Dongle (PCA10059) reserves
+# 0xE0000 and up, but the core hardcodes InternalFS at 0xED000 and its write
+# guard at 0xF4000. Build against a copy of the core's InternalFileSystem moved
+# to 0xD9000-0xDFFFF and guarded at 0xE0000; it shadows the
+# platform library because user --libraries take priority. The app must end
+# below the fault black-box page at 0xD8000 (0xD8000 - 0x26000 = 729088).
+PCA10059_CORE_DIR ?= $(lastword $(sort $(wildcard \
+	$(shell arduino-cli config get directories.data 2>/dev/null)/packages/adafruit/hardware/nrf52/*)))
+PCA10059_LIBS = build/cache/pca10059-libs
+PCA10059_PKG = build/pca10059/OpenPuck-pca10059.zip
+ifneq ($(SOFTDEVICE_HEX),)
+PCA10059_SD_ARGS = --sd-req 0x00,0xB6 --sd-id 0xB6 --softdevice "$(SOFTDEVICE_HEX)"
+else
+PCA10059_SD_ARGS = --sd-req 0xB6
+endif
+
+## Build for the Nordic nRF52840 Dongle (PCA10059) without replacing its Open DFU bootloader.
+build-pca10059:
+	@test -d "$(PCA10059_CORE_DIR)/libraries/InternalFileSytem" || { \
+		echo "Adafruit nRF52 core not found; set PCA10059_CORE_DIR"; exit 1; }
+	rm -rf $(PCA10059_LIBS) && mkdir -p $(PCA10059_LIBS) build/pca10059
+	cp -R "$(PCA10059_CORE_DIR)/libraries/InternalFileSytem" \
+		$(PCA10059_LIBS)/InternalFileSystem
+	sed -i.orig 's/LFS_FLASH_ADDR *0xED000/LFS_FLASH_ADDR 0xD9000/' \
+		$(PCA10059_LIBS)/InternalFileSystem/src/InternalFileSystem.cpp
+	sed -i.orig 's/BOOTLOADER_ADDR *0xF4000/BOOTLOADER_ADDR 0xE0000/' \
+		$(PCA10059_LIBS)/InternalFileSystem/src/flash/flash_nrf5x.c
+	grep -q 'LFS_FLASH_ADDR 0xD9000' \
+		$(PCA10059_LIBS)/InternalFileSystem/src/InternalFileSystem.cpp
+	grep -q 'BOOTLOADER_ADDR 0xE0000' \
+		$(PCA10059_LIBS)/InternalFileSystem/src/flash/flash_nrf5x.c
+	arduino-cli compile --clean -b adafruit:nrf52:mdbt50qrx \
+		--build-path build/cache/pca10059 \
+		--output-dir build/pca10059 \
+		--libraries $(PCA10059_LIBS) \
+		--build-property "upload.maximum_size=729088" \
+		--build-property "build.extra_flags=$(USB_EXTRA_FLAGS) -DOPK_BOARD_PCA10059=1" \
+		--build-property "compiler.c.elf.extra_flags=$(OPENPUCK_LINK_FLAGS)" OpenPuck
+
+## Package the Dongle build for Open DFU. With SOFTDEVICE_HEX (S140 6.1.1) set, S140 is
+## bundled so a fresh Dongle, which ships without one, is provisioned in the same flash.
+package-pca10059:
+	@test -f build/pca10059/OpenPuck.ino.hex || { \
+		echo "run 'make build-pca10059' first"; exit 1; }
+	$(RM) $(PCA10059_PKG)
+	nrfutil nrf5sdk-tools pkg generate --hw-version 52 --application-version 1 \
+		$(PCA10059_SD_ARGS) \
+		--application build/pca10059/OpenPuck.ino.hex $(PCA10059_PKG)
+
+## Program the package with the Dongle in Open DFU mode (press its sideways RESET button; red LED pulses).
+flash-pca10059:
+	@test -f $(PCA10059_PKG) || { echo "run 'make package-pca10059' first"; exit 1; }
+	nrfutil device program --firmware $(PCA10059_PKG) --traits nordicDfu
+
+deploy-pca10059:
+	$(MAKE) build-pca10059
+	$(MAKE) package-pca10059 SOFTDEVICE_HEX="$(SOFTDEVICE_HEX)"
+	$(MAKE) flash-pca10059
 
 ## One-time factory-reset recovery image (wipes persistent storage once on first boot). See §6 of the build doc.
 build-recovery:

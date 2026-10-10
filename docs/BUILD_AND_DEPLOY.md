@@ -152,6 +152,41 @@ build; use the physical Open DFU workflow above instead. The panel's factory
 erase (§6, filesystem-only) and the serial `ERASE-ALL` console command work
 normally.
 
+### 4b. Nordic nRF52840 Dongle (PCA10059)
+
+The Dongle ships with Nordic's Open DFU bootloader and no SoftDevice. That
+bootloader only accepts signed bootloader updates, so without a J-Link it can't
+be swapped for the Adafruit UF2 bootloader. These targets keep the stock
+bootloader and install S140 6.1.1 plus OpenPuck over USB. Install nRF Util as
+in §4a.
+
+```bash
+# Enter Open DFU: press the sideways RESET button; the red LED pulses.
+./gen_version.sh
+make build-pca10059
+
+# First flash bundles S140 6.1.1 (the Dongle has none). Any S140 6.1.1 HEX
+# works, e.g. from the nRF5 SDK v15.3.0 as in §4a.
+make package-pca10059 SOFTDEVICE_HEX=/path/to/s140_nrf52_6.1.1_softdevice.hex
+make flash-pca10059
+
+# Later updates: application only.
+make deploy-pca10059
+```
+
+The Dongle's bootloader reserves `0xE0000` and up, which overlaps the
+Adafruit core's InternalFS (`0xED000`). `build-pca10059` builds against a
+patched copy of the core's InternalFileSystem library, so the layout is:
+
+- OpenPuck starts at `0x26000` and must end before `0xD8000` (enforced).
+- Fault black-box page at `0xD8000`.
+- InternalFS occupies `0xD9000` through `0xDFFFF`.
+- The factory bootloader, MBR parameters and settings occupy `0xE0000` and up.
+
+The green LED (LD1, P0.06) is the wake diagnostic. As on the Raytac, the
+WebUSB firmware updater and UF2/serial DFU buttons are rejected; reflash with
+the Open DFU workflow above.
+
 ## 5. Upload the firmware
 
 The quickest path is `make`. The serial port is a **required argument** (find it with `arduino-cli board list`):
