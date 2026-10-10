@@ -23,6 +23,8 @@
   /* ReversePuck dongle: hide every puck-only Controller card, keep just the paired-pucks card (this leaves
      the debugonly/lizard inline visibility rules untouched, so switching back to a puck restores them). */
   body.dongle #tabMain > .cards > .card:not(#pairedCard){display:none !important}
+  .cloneSub{font-size:13px;color:var(--fg);margin:16px 0 6px;padding-top:12px;border-top:1px solid #272d3d}
+  #cloneHome .cloneSub{display:none}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 14px}
   .row{display:flex;align-items:center;gap:14px;margin:12px 0;flex-wrap:wrap}
   .row label{flex:0 0 150px;color:var(--fg)}
@@ -139,6 +141,9 @@
 </div>
 <div class="wrap">
   <p class="sub">First connect uses the Chrome/Edge device picker; reconnects are automatic. If the picker is empty, quit any app holding the device or replug.</p>
+
+  <!-- holds the clone section while no OpenPuck is connected (the Backup & clone card is hidden then) -->
+  <div class="card" id="cloneHome"><h2>Clone pairings from an official puck</h2></div>
 
   <div id="panel" class="hide">
     <div class="slot-tabs" id="mainTabs">
@@ -319,7 +324,7 @@
       <p class="note" id="lzStatus" style="margin-top:8px">—</p>
     </div>
 
-    <div class="card">
+    <div class="card" id="backupCard">
       <h2>Backup &amp; clone</h2>
       <p class="note" style="margin-top:0">Save this puck's controller pairings <em>and</em> every setting to a file, then restore them onto another puck. The other puck becomes a clone — any controller paired to this one connects to it with <strong>no re-pairing</strong>. (Also a plain backup: re-import after a factory erase to get everything back.)</p>
       <div class="row" style="margin:0;flex-wrap:wrap">
@@ -328,6 +333,17 @@
         <input type="file" id="backupFile" accept="application/json,.json" style="display:none">
       </div>
       <p class="note">Import <strong>overwrites</strong> all pairings and settings on the connected puck, then reboots it (~2 s — reconnect after). Tip: pair every controller to one puck, export once, then import onto each spare.</p>
+      <div id="cloneSec">
+        <h3 class="cloneSub">Clone from an official puck</h3>
+        <p class="note" style="margin-top:0">Copy the controller pairings off a Valve puck so those controllers connect to this OpenPuck with <strong>no re-pairing</strong>. Works with one USB port: <b>1.</b> plug in the official puck and read it, <b>2.</b> unplug it, plug in the OpenPuck, Connect, and write. With both plugged in, the browser lists two identical "Steam Controller Puck" entries in step 1 — pick either; if it's the OpenPuck, the panel says so and you pick the other. Existing pairings and settings on the OpenPuck are kept.</p>
+        <div class="row" style="margin:0;flex-wrap:wrap">
+          <button id="cloneRead">1. Read official puck…</button>
+          <button id="cloneWrite" class="primary" disabled>2. Write to this OpenPuck</button>
+          <button id="cloneForget" class="hide">Forget</button>
+        </div>
+        <p class="note" id="cloneStatus">—</p>
+        <p class="note"><b>macOS:</b> reading the official puck needs Chrome in <em>System Settings → Privacy &amp; Security → Input Monitoring</em> (restart Chrome after enabling it). The puck's interfaces include a keyboard, so macOS asks for this — the page can only reach the puck's vendor channel, never keystrokes. You can switch it off again afterwards.</p>
+      </div>
     </div>
 
     <div class="card wide debugonly">
@@ -808,6 +824,7 @@ async function openDevice(d){
     $("#connectBtn").textContent="Reconnect";
     $("#panel").classList.remove("hide");
     applyDeviceProfile(); // show the controller UI + hide puck-only cards (or vice-versa)
+    cloneRender();
     log(`connected — ${kind} ${dev.serialNumber||"?"} (VID ${dev.vendorId.toString(16)} PID ${dev.productId.toString(16)} iface ${ifNum})`);
     // resume a stability test across the reset: re-arm the firmware buzz and start timing the next run
     // (puck-only: the dongle has no stability-test / haptic path)
@@ -859,6 +876,7 @@ function onGone(){
   window._wedgeEp=false; window._wedgePeak=0; // re-arm the live wedge logger for the next wedge episode
   window._lastBlobTs=0; window._hbLostEp=false; // re-arm the heartbeat watchdog (don't fire on a stale pre-reset timestamp)
   polling=false; dev=null; tabInited=false; // re-default the config tab to the mode on next connect
+  cloneRender();
   checkUpdateNotice(); // no device = no notice
   $("#connState").textContent="reconnecting…"; $("#connState").className="pill dn";
   $("#panel").classList.add("hide");
@@ -1403,6 +1421,139 @@ async function importBackup(file){
     log("import FAILED — "+e.message);
     modalDone(false, e.message+" — the import stopped partway; reconnect and retry.", "Import failed");
   } finally { backupBusy=false; }
+}
+
+// ---- Clone from an official Valve puck ----
+// The Valve puck answers the bond read Steam itself uses: SET feature report 2 [0xA3], then GET report 2 ->
+// [0xA3][0x18][24-byte rec] for that interface's slot (one vendor interface per slot, plus one non-slot
+// interface that reads back empty). Only the 8 UUID bytes matter on-air -- the controller connects to any puck
+// beaconing its bonded UUID pair -- so the copied record makes this OpenPuck a drop-in for the Valve one.
+// The Valve puck is a plain HID device, so it is reached over WebHID: WebUSB cannot claim HID interfaces.
+const VALVE_PUCK_HID={vendorId:0x28DE, productId:0x1304, usagePage:0xFF00};
+async function readOfficialBonds(){
+  // the chooser grants every interface of the picked puck at once, one HIDDevice per interface
+  const picked=await navigator.hid.requestDevice({filters:[VALVE_PUCK_HID]});
+  if(!picked.length) return null;
+  const recs=[];
+  for(const d of picked){
+    if(!d.collections.some(c=>c.usagePage===0xFF00)) continue;
+    try{
+      if(!d.opened) await d.open();
+      const q=new Uint8Array(63); q[0]=0xA3;
+      await d.sendFeatureReport(2, q);
+      const v=await d.receiveFeatureReport(2);
+      const b=new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+      // Chrome may or may not keep the report-id byte at the front of a feature report
+      const o=(b[0]===0xA3) ? 0 : (b[1]===0xA3 ? 1 : -1);
+      if(o<0 || b[o+1]!==0x18 || b.length<o+26) continue;
+      const rec=Array.from(b.slice(o+2, o+26));
+      if(rec.slice(0,8).every(x=>x===0)) continue;
+      if(!recs.some(r=>r.slice(0,8).every((x,i)=>x===rec[i]))) recs.push(rec);
+    }catch(e){ /* an interface without the bond command; the slot interfaces still answer */ }
+    finally{ try{ if(d.opened) await d.close(); }catch(e){} }
+  }
+  return recs;
+}
+// Read pairings are held in localStorage between the two steps: with one USB port the official puck is
+// unplugged before the OpenPuck goes in, and a page reload in between must not lose them.
+const CLONE_KEY="opk-clone-recs";
+function cloneLoad(){
+  try{ const a=JSON.parse(localStorage.getItem(CLONE_KEY)||"[]"); return a.map(hexDec).filter(r=>r.length===24); }
+  catch(e){ return []; }
+}
+function cloneRender(){
+  // Inside the Backup & clone card while an OpenPuck is connected; standalone above the (hidden) panel otherwise,
+  // so step 1 still works with only the official puck plugged in.
+  const home=dev ? $("#backupCard") : $("#cloneHome"), sec=$("#cloneSec");
+  if(sec.parentNode!==home) home.appendChild(sec);
+  $("#cloneHome").classList.toggle("hide", !!dev);
+  const recs=cloneLoad(), st=$("#cloneStatus");
+  $("#cloneWrite").disabled = !recs.length || !dev || isDongle;
+  $("#cloneForget").classList.toggle("hide", !recs.length);
+  if(!recs.length) st.textContent="Nothing read yet.";
+  else if(!dev) st.textContent="Holding "+recs.length+" pairing(s) from the official puck. Unplug it, plug in the OpenPuck and click Connect.";
+  else if(isDongle) st.textContent="Holding "+recs.length+" pairing(s) — connect an OpenPuck (not a ReversePuck dongle) to write them.";
+  else st.textContent="Holding "+recs.length+" pairing(s) — ready to write to OpenPuck "+(dev.serialNumber||"?")+".";
+}
+// This OpenPuck's slots via the 0x09 bond dump (null = firmware too old to export, so too old to import too).
+// Caller holds backupBusy.
+async function openPuckSlots(){
+  await send([0x09]);
+  let bp=null; for(let t=0;t<8 && !bp;t++) bp=await readFrame(0xA7, 2+4*24);
+  if(!bp) return null;
+  const slots=[];
+  for(let s=0;s<4;s++) slots.push(((bp[1]>>s)&1) ? Array.from(bp.slice(2+s*24, 2+s*24+24)) : null);
+  return slots;
+}
+const sameBondKey=(a,b)=>a.slice(0,8).every((x,i)=>x===b[i]);
+const PICK_HINT=" — with both pucks plugged in the picker lists two identical \"Steam Controller Puck\" entries; read again and pick the other one.";
+async function cloneRead(){
+  if(!navigator.hid){ log("clone: this browser has no WebHID — use Chrome or Edge"); return; }
+  let recs;
+  try{ recs=await readOfficialBonds(); }
+  catch(e){ if(e.name!=="NotFoundError") log("clone: couldn't read the official puck — "+e.message); return; }
+  if(!recs) return;
+  if(!recs.length){
+    log("clone: no controller pairings found on the selected puck"+(dev && !isDongle ? PICK_HINT : ""));
+    return;
+  }
+  // Both pucks share VID/PID and name, so the picker can't tell them apart: catch picking the connected OpenPuck.
+  if(dev && !isDongle){
+    backupBusy=true; await waitIdle();
+    let slots=null;
+    try{ slots=await openPuckSlots(); } finally { backupBusy=false; }
+    if(slots && recs.every(r=>slots.some(x=>x && sameBondKey(x,r)))){
+      log("clone: those are this OpenPuck's own pairings (or they're already cloned)"+PICK_HINT);
+      return;
+    }
+  }
+  localStorage.setItem(CLONE_KEY, JSON.stringify(recs.map(hexEnc)));
+  log("clone: read "+recs.length+" pairing(s) from the official puck");
+  cloneRender();
+}
+async function cloneWrite(){
+  const recs=cloneLoad();
+  if(!dev || !recs.length) return;
+  backupBusy=true; await waitIdle();
+  try{
+    // the 0x09 bond dump doubles as the capability probe: firmware that can't export can't import (0x0D) either
+    const slots=await openPuckSlots();
+    if(!slots){ log("clone ABORTED — this OpenPuck's firmware is too old for bond import; update it first"); return; }
+    // also what happens when step 1 read this OpenPuck itself (same VID/PID as the Valve puck)
+    const todo=recs.filter(r=>!slots.some(x=>x && sameBondKey(x,r)));
+    if(!todo.length){
+      log("clone: those pairings are already on this OpenPuck — nothing to do");
+      localStorage.removeItem(CLONE_KEY); cloneRender(); return;
+    }
+    const free=[0,1,2,3].filter(s=>!slots[s]);
+    if(todo.length>free.length){
+      log("clone: needs "+todo.length+" free slot(s) but this OpenPuck has "+free.length+" — remove a pairing first");
+      return;
+    }
+    if(!confirm("Copy "+todo.length+" controller pairing(s) onto the CONNECTED OpenPuck (serial "+(dev.serialNumber||"?")
+      +")?\n\nExisting pairings and settings are kept. The OpenPuck reboots afterwards.\n\n"
+      +"Keep the official puck unplugged while using this one: with both powered, they compete for the same controller.")) return;
+    modalOpen("Clone from official puck");
+    try{
+      for(let i=0;i<todo.length;i++){
+        modalStage("Writing pairing "+(i+1)+" of "+todo.length, Math.floor(i*100/(todo.length+1)));
+        await send([0x0D, free[i], 1, ...todo[i]]); await readBlob();
+      }
+      modalStage("Committing + rebooting", 99);
+      // 0xFF = keep the current mode; the reboot regenerates the session addresses from the new bonds
+      await send([0x0E, 0xFF]);
+      localStorage.removeItem(CLONE_KEY);
+      log("cloned "+todo.length+" pairing(s) into slot(s) "+free.slice(0,todo.length).join(",")+" — rebooting");
+      modalDone(true, "Pairings copied — the OpenPuck is rebooting. Turn the controller on and it connects here.");
+    }catch(e){
+      log("clone FAILED — "+e.message);
+      modalDone(false, e.message+" — reconnect and retry.", "Clone failed");
+    }
+  } finally {
+    // polling was paused across the confirm dialog; restart the heartbeat clock so the pause doesn't read as a wedge
+    window._lastBlobTs=Date.now();
+    backupBusy=false; cloneRender();
+  }
 }
 async function setField(field,value){
   await send([0x02, field, value&0xff]); const p=await readBlob(); if(p) applyBlob(p);
@@ -2242,6 +2393,10 @@ for(const t of document.querySelectorAll("#mainTabs .slot-tab")){
 $("#backupExport").onclick=exportBackup;
 $("#backupImport").onclick=()=>$("#backupFile").click();
 $("#backupFile").onchange=async(e)=>{ const f=e.target.files[0]; if(f) await importBackup(f); e.target.value=""; };
+$("#cloneRead").onclick=cloneRead;
+$("#cloneWrite").onclick=cloneWrite;
+$("#cloneForget").onclick=()=>{ localStorage.removeItem(CLONE_KEY); cloneRender(); };
+cloneRender();
 $("#capDl").onclick=downloadCap;
 $("#capStart").onclick=startCapture;
 $("#capStop").onclick=stopCapture;
