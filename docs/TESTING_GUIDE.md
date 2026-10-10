@@ -11,6 +11,12 @@
 - Does rumble still work in the translated modes, and do the panel's Rumble style/strength settings
   change how it feels? (heavy vs light drive different motors, so they must feel clearly different;
   the Test rumble button must buzz and then stop on its own)
+- Does Switch Pro mode play HD rumble (a grip waveform and pad tones that change pitch with the game), and does
+  the HD trackpad strength change only the pad tones? The rumble style must not change Switch Pro rumble.
+- Grip limiter (Rumble card): must survive a reboot and change how the strongest hits feel in Switch HD rumble and
+  DualSense wave haptics (off is the punchiest, 50% the softest).
+- DualSense mode on Linux: do the audio haptics play in all four styles (rumble, tone, split, wave)?
+- Steam mode: does an audio-to-haptics app that streams OUTPUT `0x88` (e.g. Fancy Haptics) play smoothly?
 - Do the modes work as expected (including gyro in gyro modes)
 - Is signal quality shown?
 - Is battery level shown and correct?

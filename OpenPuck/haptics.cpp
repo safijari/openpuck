@@ -33,7 +33,9 @@ uint8_t g_suspendOff = 1;
 // Host-rumble shaping (persisted in cfg.bin; console "RS<pct>" / "RY<n>").
 uint16_t g_rumbleScale = RUMBLE_SCALE_PCT;
 uint8_t g_rumbleStyle = RUMBLE_STYLE_NORMAL;
-// Master enable for the puck->controller haptic RELAY (Steam OUTPUT reports 0x80-0x86, incl. the trackpad
+// Switch Pro HD rumble trackpad tone strength, percent (0 = grips only). Persisted -- WebUSB field 141.
+uint16_t g_hdPadScale = 100;
+// Master enable for the puck->controller haptic RELAY (Steam OUTPUT reports 0x80-0x89, incl. the trackpad
 // texture-feedback stream Steam pushes WHILE you drag). Each relayed frame is an extra TX that precedes the
 // E3 poll and steals its reply window, and the controller must stop to process it -- both can depress the
 // input rate exactly during a drag. On by default; console "HR" toggles it so the drag-smoothness cost of
@@ -66,7 +68,24 @@ void hapticSendShutdown(uint8_t slot)
 	puckNotePowerOff(slot);
 }
 
-// millis of last translated host rumble (0x80), per-slot (4 XInput interfaces each have their own stream)
+// Minimum send interval for active 0x80 rumble stream updates (~20ms / 50 Hz). Cuts relay
+// traffic by ~2.5x compared to 8ms audio frames, leaving bandwidth for telemetry (IMU/gyro).
+#define RUMBLE_THROTTLE_MS 20u
+
+// Legacy HID host rumble amplitudes (0..65535, post-shaping & scale), per bond slot.
+static uint16_t g_legacyLow[NSLOT] = { 0 };
+static uint16_t g_legacyHigh[NSLOT] = { 0 };
+static unsigned long g_legacyMs[NSLOT] = { 0 };
+
+// UAC1 PCM audio-haptic amplitudes (0..65535), per bond slot.
+static uint16_t g_audioLow[NSLOT] = { 0 };
+static uint16_t g_audioHigh[NSLOT] = { 0 };
+
+// Last transmitted low/high amplitudes per slot, used to deduplicate identical 0x80 frames.
+static uint16_t g_lastSentLow[NSLOT] = { 0 };
+static uint16_t g_lastSentHigh[NSLOT] = { 0 };
+
+// millis of last transmitted 0x80 frame to each slot, for rate-limiting and watchdog tracking.
 static unsigned long g_rumble80Ms[NSLOT] = { 0 };
 
 // Steam/Triton rumble is latched on until an explicit zero report; tracked per-slot so each controller's
@@ -104,6 +123,7 @@ static inline uint8_t rqNext(uint8_t i)
 // watchdog recovers (an invisible "watchdog (hang)" -- the live stall monitor can't see it because the SOF
 // IRQ is dead). The cap turns that into a logged, recovered event instead of a hang. Surfaced on the panel.
 volatile uint16_t g_ringFault = 0;
+volatile uint16_t g_relayDrops = 0;
 
 bool relayPending()
 {
@@ -114,8 +134,9 @@ bool relayPending()
 bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 		  bool isHaptic, uint8_t slot, bool expectReply)
 {
-	if (plen > RELAY_MAXP)
-		plen = RELAY_MAXP;
+	uint8_t cap = isHaptic ? RELAY_MAXP : RELAY_CMD_MAXP;
+	if (plen > cap)
+		plen = cap;
 	if (slot != 0xFF && slot >= NSLOT)
 		return false;
 	uint32_t pm = __get_PRIMASK();
@@ -134,8 +155,10 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 		if (slot == 0xFF && !g_slot[s].used)
 			continue;
 		uint8_t h = g_rqHead[s], nx = rqNext(h);
-		if (nx == g_rqTail[s])
+		if (nx == g_rqTail[s]) {
 			g_rqTail[s] = rqNext(g_rqTail[s]);
+			g_relayDrops++;
+		}
 		g_rq[s][h].rid = rid;
 		g_rq[s][h].len = plen;
 		g_rq[s][h].expectReply = expectReply;
@@ -145,6 +168,34 @@ bool relayEnqueue(uint8_t rid, const uint8_t *payload, uint8_t plen,
 		g_rqHead[s] = nx;
 	}
 
+	__set_PRIMASK(pm);
+	faultDiagTrace(FR_RELAY, (uint16_t)((slot << 8) | rid));
+	return true;
+}
+bool relayEnqueueFront(uint8_t rid, const uint8_t *payload, uint8_t plen,
+		       bool isHaptic, uint8_t slot)
+{
+	if (slot >= NSLOT)
+		return false;
+	uint8_t cap = isHaptic ? RELAY_MAXP : RELAY_CMD_MAXP;
+	if (plen > cap)
+		plen = cap;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	// Full ring: drop the newest entry to make room, so the entries already waiting keep their order.
+	if (rqNext(g_rqHead[slot]) == g_rqTail[slot]) {
+		g_rqHead[slot] =
+			(uint8_t)((g_rqHead[slot] + RELAY_QLEN - 1) % RELAY_QLEN);
+		g_relayDrops++;
+	}
+	uint8_t t = (uint8_t)((g_rqTail[slot] + RELAY_QLEN - 1) % RELAY_QLEN);
+	g_rq[slot][t].rid = rid;
+	g_rq[slot][t].len = plen;
+	g_rq[slot][t].expectReply = false;
+	g_rq[slot][t].isHaptic = isHaptic;
+	if (plen)
+		memcpy(g_rq[slot][t].data, payload, plen);
+	g_rqTail[slot] = t;
 	__set_PRIMASK(pm);
 	faultDiagTrace(FR_RELAY, (uint16_t)((slot << 8) | rid));
 	return true;
@@ -294,6 +345,10 @@ static void hapticCancelPendingOn(int slot)
 				if (on)
 					m.rid = 0;
 			}
+			// 0x83 tones (audio haptics, HD trackpads) play for up to 200 ms; keep only the -128 dB cuts.
+			if (m.isHaptic && m.rid == 0x83 && m.len >= 2 &&
+			    (int8_t)m.data[1] != -128)
+				m.rid = 0;
 			if (m.rid == 0x80) {
 				bool on = false;
 				for (uint8_t j = 0; j < m.len; j++)
@@ -327,13 +382,103 @@ static uint32_t isqrt32(uint32_t v)
 	return r;
 }
 
-bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
+// Merged rumble & audio-haptics path: sums legacy HID rumble and UAC1 PCM audio waveforms
+// on the same actuator (matching physical DualSense hardware LRA behavior), gates each
+// source independently on its mute toggle (g_rumble vs g_audioHaptics), enforces the ~20ms
+// rate throttle, and owns the single 0x80 relay queue + STOP burst logic.
+static bool hapticUpdateRumble(uint8_t slot)
 {
 	if (slot >= NSLOT)
 		return false;
+
+	// Per-type mute gates: g_rumble zeroes legacy host rumble, g_audioHaptics zeroes
+	// audio PCM haptics. Each source can be silenced without cutting off the other.
+	uint16_t legL = g_rumble ? g_legacyLow[slot] : 0;
+	uint16_t legH = g_rumble ? g_legacyHigh[slot] : 0;
+	uint16_t audL = g_audioHaptics ? g_audioLow[slot] : 0;
+	uint16_t audH = g_audioHaptics ? g_audioHigh[slot] : 0;
+
+	// Additive sum with 16-bit saturation clamp: DualSense hardware physically sums
+	// HID rumble and audio-haptic drive signals on the same LRA voice coil.
+	uint32_t sumL = (uint32_t)legL + audL;
+	uint32_t sumH = (uint32_t)legH + audH;
+	uint16_t lowFreq = (sumL > 0xFFFF) ? 0xFFFF : (uint16_t)sumL;
+	uint16_t highFreq = (sumH > 0xFFFF) ? 0xFFFF : (uint16_t)sumH;
+
+	bool on = lowFreq || highFreq;
+
+	// Per-slot settle gate (the per-slot reconnect block + link-up check).
+	if (on && haptic82Blocked(slot))
+		return false;
+	if (!on && !hapticLinkUp(slot))
+		return false;
+
+	unsigned long now = millis();
+	bool stopping = !on && g_rumble80On[slot];
+	bool starting = on && !g_rumble80On[slot];
+
+	// Rate throttle (~20ms / 50 Hz): only throttle ongoing active streams (ON -> ON).
+	// State transitions (OFF -> ON start, or ON -> OFF stop) send immediately.
+	// Redundant frames with identical low/high amplitudes are also skipped.
+	if (!stopping && !starting) {
+		if (!on)
+			return true;
+		if ((uint32_t)(now - g_rumble80Ms[slot]) < RUMBLE_THROTTLE_MS)
+			return true;
+		if (lowFreq == g_lastSentLow[slot] &&
+		    highFreq == g_lastSentHigh[slot])
+			return true;
+	}
+
+	// SDL's current Steam/Triton structs define output report 0x80 as:
+	//   type, uint16 intensity, {uint16 speed, int8 gain} left/right.
+	// We map conventional gamepad low/high-frequency motors to left/right speeds and use max as intensity.
+	uint16_t intensity = lowFreq > highFreq ? lowFreq : highFreq;
+	uint8_t p[9];
+
+	// haptic_type_t::HAPTIC_TYPE_RUMBLE; 0 is the off/zero report
+	p[0] = on ? 0x04 : 0x00;
+	p[1] = (uint8_t)(intensity & 0xFF);
+	p[2] = (uint8_t)(intensity >> 8);
+	p[3] = (uint8_t)(lowFreq & 0xFF);
+	p[4] = (uint8_t)(lowFreq >> 8);
+	p[5] = 0;
+	p[6] = (uint8_t)(highFreq & 0xFF);
+	p[7] = (uint8_t)(highFreq >> 8);
+	p[8] = 0;
+
+	// The RF relay is NO-ACK -- any single frame can be lost. For an ON that's self-healing: a continuous
+	// stream of rumble commands follows during play, so a dropped frame is corrected microseconds later. A
+	// STOP is the dangerous one: if the host's FINAL zero (game/stream quit) -- or the watchdog's stop below
+	// -- is the last frame on the wire and it's lost, the controller stays latched rumbling with nothing left
+	// to correct it (the reported "constant rumble that didn't stop after closing GFN", cleared only by a
+	// replug). And once we optimistically mark g_rumble80On=false, the watchdog can't rescue it either. So
+	// relay a STOP as a short BURST: rfConnFlushRelay drains one ring entry per poll cycle, so N copies go out
+	// on successive cycles (~4ms apart) -- temporal diversity that a single-frame RF loss can't wipe out.
+	// Bursting only the on->off transition leaves steady-state (repeated-ON / repeated-OFF) traffic unchanged.
+	uint8_t reps = stopping ? RUMBLE_STOP_REPS : 1;
+	bool queued = false;
+	for (uint8_t i = 0; i < reps; i++)
+		if (relayEnqueue(0x80, p, sizeof p, true, slot))
+			queued = true;
+	if (!queued)
+		return false;
+
+	g_rumble80Ms[slot] = now;
+	g_rumble80On[slot] = on;
+	g_lastSentLow[slot] = lowFreq;
+	g_lastSentHigh[slot] = highFreq;
+	return true;
+}
+
+static bool hapticRumbleGrip(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
+{
+	if (slot >= NSLOT)
+		return false;
+
 	// Shape the decoded host amplitudes: style first (which motor plays, and the response curve), then the
 	// strength scale. Integer-only -- this runs in the USB OUT callback (ISR context), so no float math.
-	{
+	if (lowFreq || highFreq) {
 		uint32_t l = lowFreq, h = highFreq, t;
 		switch (g_rumbleStyle) {
 		case RUMBLE_STYLE_MONO:
@@ -367,55 +512,340 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 		lowFreq = (l > 0xFFFF) ? 0xFFFF : (uint16_t)l;
 		highFreq = (h > 0xFFFF) ? 0xFFFF : (uint16_t)h;
 	}
-	bool on = lowFreq || highFreq;
-	// per-type rumble disable: drop ON commands; zero/stop still pass to clear any queued relay
-	if (on && !g_rumble)
-		return false;
-	// Per-slot settle gate (the per-slot reconnect block + link-up check). 0x82 haptics in Steam mode use the
-	// same gate; for XInput, the host only sends a stream while a controller is connected, so this also doubles
-	// as "no controller here, no relay".
-	if (on && haptic82Blocked(slot))
-		return false;
-	if (!on && !hapticLinkUp(slot))
+
+	g_legacyLow[slot] = lowFreq;
+	g_legacyHigh[slot] = highFreq;
+	if (lowFreq || highFreq)
+		g_legacyMs[slot] = millis();
+
+	return hapticUpdateRumble(slot);
+}
+
+// Audio-driven haptics bypass the standard motor rumble toggle (g_rumble)
+// and check g_audioHaptics instead, allowing standard game motor rumble
+// to be muted in the UI while retaining pure audio-driven haptics. The
+// strengths arrive with g_audioHapticGain already applied (ps5AudioTask).
+bool hapticAudioRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
+{
+	if (slot >= NSLOT)
 		return false;
 
-	// SDL's current Steam/Triton structs define output report 0x80 as:
-	//   type, uint16 intensity, {uint16 speed, int8 gain} left/right.
-	// We map conventional gamepad low/high-frequency motors to left/right speeds and use max as intensity.
-	uint16_t intensity = lowFreq > highFreq ? lowFreq : highFreq;
-	uint8_t p[9];
+	g_audioLow[slot] = lowFreq;
+	g_audioHigh[slot] = highFreq;
 
-	// haptic_type_t::HAPTIC_TYPE_RUMBLE; 0 is the off/zero report
-	p[0] = on ? 0x04 : 0x00;
-	p[1] = (uint8_t)(intensity & 0xFF);
-	p[2] = (uint8_t)(intensity >> 8);
-	p[3] = (uint8_t)(lowFreq & 0xFF);
-	p[4] = (uint8_t)(lowFreq >> 8);
-	p[5] = 0;
-	p[6] = (uint8_t)(highFreq & 0xFF);
-	p[7] = (uint8_t)(highFreq >> 8);
-	p[8] = 0;
-	// The RF relay is NO-ACK -- any single frame can be lost. For an ON that's self-healing: a continuous
-	// stream of rumble commands follows during play, so a dropped frame is corrected microseconds later. A
-	// STOP is the dangerous one: if the host's FINAL zero (game/stream quit) -- or the watchdog's stop below
-	// -- is the last frame on the wire and it's lost, the controller stays latched rumbling with nothing left
-	// to correct it (the reported "constant rumble that didn't stop after closing GFN", cleared only by a
-	// replug). And once we optimistically mark g_rumble80On=false, the watchdog can't rescue it either. So
-	// relay a STOP as a short BURST: rfConnFlushRelay drains one ring entry per poll cycle, so N copies go out
-	// on successive cycles (~4ms apart) -- temporal diversity that a single-frame RF loss can't wipe out.
-	// Bursting only the on->off transition leaves steady-state (repeated-ON / repeated-OFF) traffic unchanged.
-	bool stopping = !on && g_rumble80On[slot];
-	uint8_t reps = stopping ? RUMBLE_STOP_REPS : 1;
-	bool queued = false;
-	for (uint8_t i = 0; i < reps; i++)
-		if (relayEnqueue(0x80, p, sizeof p, true, slot))
-			queued = true;
-	if (!queued)
+	return hapticUpdateRumble(slot);
+}
+
+// Report 0x83 is MsgHapticLfoTone (SDL steam/controller_structs.h): {u8 side; s8 gain_db; u16 frequency;
+// u16 duration_ms; u16 lfo_freq; u8 lfo_depth}. Measured on the controller's IMU: its tone generator is
+// smooth where the 0x80 rumble imitates a spinning motor at every setting, and a tone re-sent before it ends
+// plays on without a seam. No LFO -- the audio envelope already carries the modulation.
+bool hapticAudioTone(uint8_t side, int8_t gainDb, uint16_t freqHz,
+		     uint16_t durMs, uint8_t slot)
+{
+	if (slot >= NSLOT || haptic82Blocked(slot) || !hapticLinkUp(slot))
 		return false;
-	g_rumble80Ms[slot] = millis();
-	g_rumble80On[slot] = on;
+	uint8_t p[9] = { side,
+			 (uint8_t)gainDb,
+			 (uint8_t)(freqHz & 0xFF),
+			 (uint8_t)(freqHz >> 8),
+			 (uint8_t)(durMs & 0xFF),
+			 (uint8_t)(durMs >> 8),
+			 0,
+			 0,
+			 0 };
+	return relayEnqueue(0x83, p, sizeof p, true, slot);
+}
+// The USB callback only publishes the latest bands. Rendering in loop avoids
+// queueing every host packet and keeps waveform generation off the input ISR.
+// HD Emulation streams each side's two bands, summed, as PCM to that side's grip (where a Pro Controller has its
+// actuators), and plays each side's high band as an 0x83 tone on that side's trackpad. Index k matches bands[]:
+// 0/2 left/right low band, 1/3 left/right high band; tone[] uses the pad entries only.
+struct HdTone {
+	uint16_t hz;
+	int8_t gain;
+	bool on;
+	unsigned long ms; // last ON send
+};
+struct HdRumbleState {
+	uint16_t bands[4];
+	uint16_t frequencies[4];
+	unsigned long received;
+	bool active;
+	HdTone tone[4];
+};
+static HdRumbleState g_hdRumble[NSLOT] = {};
+
+void hapticSwitchHd(uint8_t slot, uint16_t leftLow, uint16_t leftHigh,
+		    uint16_t rightLow, uint16_t rightHigh)
+{
+	if (slot >= NSLOT)
+		return;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	HdRumbleState &s = g_hdRumble[slot];
+	s.bands[0] = leftLow;
+	s.bands[1] = leftHigh;
+	s.bands[2] = rightLow;
+	s.bands[3] = rightHigh;
+	s.frequencies[0] = s.frequencies[2] = 160;
+	s.frequencies[1] = s.frequencies[3] = 320;
+	s.received = millis();
+	__set_PRIMASK(pm);
+}
+
+void hapticSwitchPitch(uint8_t slot, uint16_t ll, uint16_t lh, uint16_t rl,
+		       uint16_t rh, uint16_t lf, uint16_t hf, uint16_t rf,
+		       uint16_t rhf)
+{
+	if (slot >= NSLOT)
+		return;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	hapticSwitchHd(slot, ll, lh, rl, rh);
+	uint16_t *f = g_hdRumble[slot].frequencies;
+	f[0] = lf;
+	f[1] = hf;
+	f[2] = rf;
+	f[3] = rhf;
+	__set_PRIMASK(pm);
+}
+
+static void hdStop(uint8_t slot);
+
+bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
+{
+	if (slot >= NSLOT)
+		return false;
+	// Switch Pro always renders HD rumble; the styles apply to every other mode
+	if (g_usbMode == MODE_SW_PRO) {
+		hapticSwitchHd(slot, lowFreq, lowFreq, highFreq, highFreq);
+		return true;
+	}
+	if (g_hdRumble[slot].active)
+		hdStop(slot);
+	return hapticRumbleGrip(lowFreq, highFreq, slot);
+}
+
+static uint16_t hdScale(uint16_t amplitude)
+{
+	uint32_t v = (uint32_t)amplitude * g_hdPadScale / 100;
+	return v > 65535u ? 65535u : (uint16_t)v;
+}
+
+static int8_t hdToneGain(uint16_t amplitude)
+{
+	int gain = -9;
+	while (amplitude < 32768 && amplitude) {
+		amplitude <<= 1;
+		gain -= 6;
+	}
+	const uint16_t threshold[5] = { 36766, 41252, 46286, 51933, 58274 };
+	for (uint8_t i = 0; i < 5; i++)
+		if (amplitude < threshold[i])
+			gain--;
+	return gain < -60 ? -60 : gain;
+}
+
+static int hdQuietCeiling(uint16_t frequency)
+{
+	if (frequency <= 230 || frequency >= 320)
+		return -3;
+	if (frequency < 250)
+		return -3 - (frequency - 230) * 12 / 20;
+	if (frequency <= 300)
+		return -15;
+	return -15 + (frequency - 300) * 12 / 20;
+}
+
+// Tone timing: ON tones last HD_TONE_MS, so a lost stop can't strand one and a lost refresh can't gap one. A
+// tone is re-sent on a hit (+HD_HIT_DB) at once, on a retune or a gain step of HD_STEP_DB or more at most every
+// HD_STEP_MS, and otherwise every HD_REFRESH_MS. A tone re-sent before it ends plays on without a seam, while
+// 1 dB steps every few ms stutter (DUALSENSE_HAPTICS.md section 5). An actuator that goes quiet is cut with
+// -128 dB, which ends it within ~25-50 ms.
+#define HD_TONE_MS 120u
+#define HD_REFRESH_MS 50u
+#define HD_STEP_MS 32u
+#define HD_STEP_DB 2
+#define HD_HIT_DB 6
+#define HD_CUT_DB (-128)
+
+static void hdToneSend(uint8_t slot, uint8_t side, int8_t gain, uint16_t hz,
+		       uint16_t ms)
+{
+	uint8_t p[9] = { side,
+			 (uint8_t)gain,
+			 (uint8_t)hz,
+			 (uint8_t)(hz >> 8),
+			 (uint8_t)ms,
+			 (uint8_t)(ms >> 8),
+			 0,
+			 0,
+			 0 };
+	relayEnqueue(0x83, p, sizeof p, true, slot);
+}
+
+// Wanted pad tone, or false when the pad should be quiet: HD trackpad strength, under the 250-300 Hz quiet ceiling.
+static bool hdToneWant(uint16_t amplitude, uint16_t hz, int8_t *gain)
+{
+	uint16_t a = hdScale(amplitude);
+	if (!a)
+		return false;
+	int g = hdToneGain(a) + 6;
+	if (g > hdQuietCeiling(hz))
+		g = hdQuietCeiling(hz);
+	*gain = (int8_t)g;
 	return true;
 }
+
+// Grip renderer: each grip plays its side's low + high band summed, phase-continuous, at PCM_RATE_HZ on a
+// micros() sample clock. The stream stays up through silent gaps of HD_PCM_HANG_MS so a new effect doesn't pay
+// the controller's ~40 ms pre-buffer again; 0x86 re-states the format every second (it survives, but a
+// power-cycled controller comes back without it).
+// one full band at 100% grip strength; two full bands reach full scale
+#define HD_PCM_GAIN 0.5f
+#define HD_PCM_HANG_MS 500u
+struct HdPcmState {
+	float phase[4];
+	uint32_t clockUs;
+	unsigned long fmtMs, activeMs;
+	uint8_t fill;
+	uint16_t queued;
+	bool on;
+	uint8_t l[PCM_SAMPLES], r[PCM_SAMPLES];
+};
+static HdPcmState g_hdPcmState[NSLOT];
+
+static void hdPcmStop(uint8_t slot)
+{
+	HdPcmState &p = g_hdPcmState[slot];
+	if (p.on) {
+		// op 1 trims the tail the controller would otherwise play out
+		static const uint8_t off[3] = { 1, 2, 0 };
+		relayEnqueue(0x86, off, sizeof off, true, slot);
+	}
+	p.on = false;
+}
+
+static void hdPcmRun(uint8_t slot, const uint16_t bands[4],
+		     const uint16_t frequencies[4], unsigned long nowMs)
+{
+	HdPcmState &p = g_hdPcmState[slot];
+	uint32_t nowUs = micros();
+	if (!p.on) {
+		hapticPcmStart(slot);
+		p = {};
+		p.on = true;
+		p.clockUs = nowUs;
+		p.fmtMs = nowMs;
+	} else if (nowMs - p.fmtMs >= 1000u) {
+		hapticPcmStart(slot);
+		p.fmtMs = nowMs;
+	}
+	const uint32_t usPerSample = 1000000u / PCM_RATE_HZ;
+	uint32_t due = (nowUs - p.clockUs) / usPerSample;
+	// after a stall, skip ahead rather than burst a backlog
+	if (due > 2 * PCM_SAMPLES) {
+		p.clockUs = nowUs - 2 * PCM_SAMPLES * usPerSample;
+		due = 2 * PCM_SAMPLES;
+	}
+	float gain = HD_PCM_GAIN * g_rumbleScale / (100.0f * 65535.0f);
+	float step[4];
+	for (uint8_t k = 0; k < 4; k++) {
+		uint16_t hz = frequencies[k] < 40   ? 40 :
+			      frequencies[k] > 1280 ? 1280 :
+						      frequencies[k];
+		step[k] = 6.2831853f * hz / PCM_RATE_HZ;
+	}
+	for (; due; due--) {
+		p.clockUs += usPerSample;
+		for (uint8_t side = 0; side < 2; side++) {
+			float v = 0;
+			for (uint8_t band = 0; band < 2; band++) {
+				uint8_t k = side * 2 + band;
+				p.phase[k] += step[k];
+				if (p.phase[k] > 6.2831853f)
+					p.phase[k] -= 6.2831853f;
+				v += bands[k] * sinf(p.phase[k]);
+			}
+			// the two bands can sum past full scale
+			(side ? p.r : p.l)[p.fill] =
+				hapticUlaw(hapticSoftLimit(v * gain));
+		}
+		if (++p.fill == hapticPcmFrameLen(p.queued, PCM_RATE_HZ)) {
+			hapticPcmSend(slot, p.l, p.r, p.fill);
+			if (p.queued < 1000u)
+				p.queued += p.fill;
+			p.fill = 0;
+		}
+	}
+}
+
+static void hdStop(uint8_t slot)
+{
+	hapticCancelPendingOn(slot);
+	// Two cut copies reduce the chance that RF loss stretches the tail.
+	for (uint8_t n = 0; n < 2; n++)
+		hdToneSend(slot, HSIDE_PADS, HD_CUT_DB, 160, 30);
+	g_hdRumble[slot].active = false;
+	for (uint8_t k = 0; k < 4; k++)
+		g_hdRumble[slot].tone[k].on = false;
+	hdPcmStop(slot);
+}
+
+static void hapticHdTask()
+{
+	unsigned long now = millis();
+	for (uint8_t slot = 0; slot < NSLOT; slot++) {
+		uint32_t pm = __get_PRIMASK();
+		__disable_irq();
+		HdRumbleState snapshot = g_hdRumble[slot];
+		__set_PRIMASK(pm);
+		bool enabled = g_usbMode == MODE_SW_PRO && g_rumble &&
+			       g_hapticRelay && !USBDevice.suspended();
+		bool on = snapshot.bands[0] || snapshot.bands[1] ||
+			  snapshot.bands[2] || snapshot.bands[3];
+		if (on)
+			g_hdPcmState[slot].activeMs = now;
+		// a silent gap keeps the grip stream (and its pre-buffer) alive for HD_PCM_HANG_MS
+		bool hang = g_hdPcmState[slot].on &&
+			    now - g_hdPcmState[slot].activeMs < HD_PCM_HANG_MS;
+		if (!enabled || (!on && !hang) ||
+		    now - snapshot.received > 600u || haptic82Blocked(slot)) {
+			if (snapshot.active)
+				hdStop(slot);
+			continue;
+		}
+		g_hdRumble[slot].active = true;
+		// pads play each side's high band as tones
+		for (uint8_t k = 1; k < 4; k += 2) {
+			HdTone &t = g_hdRumble[slot].tone[k];
+			uint8_t side = HSIDE_LPAD + k / 2;
+			uint16_t hz = snapshot.frequencies[k];
+			hz = hz < 40 ? 40 : (hz > 1280 ? 1280 : hz);
+			int8_t gain;
+			if (!hdToneWant(snapshot.bands[k], hz, &gain)) {
+				if (t.on)
+					hdToneSend(slot, side, HD_CUT_DB, t.hz,
+						   30);
+				t.on = false;
+				continue;
+			}
+			unsigned long since = now - t.ms;
+			int step = gain - t.gain;
+			bool change = hz != t.hz || step >= HD_STEP_DB ||
+				      step <= -HD_STEP_DB;
+			if (t.on && step < HD_HIT_DB &&
+			    !(change && since >= HD_STEP_MS) &&
+			    since < HD_REFRESH_MS)
+				continue;
+			hdToneSend(slot, side, gain, hz, HD_TONE_MS);
+			t = { hz, gain, true, now };
+		}
+		hdPcmRun(slot, snapshot.bands, snapshot.frequencies, now);
+	}
+}
+
 // Queue a pending test-haptic / stop relay (runs inside the poll cadence -- never at raw loop rate). Test
 // haptics broadcast to all connected slots (slot 0xFF); the stop frame is broadcast too (a stuck latch can
 // affect any controller, and the haptic-engine clear-re-init is settings-only so it's harmless on healthy
@@ -450,6 +880,42 @@ void hapticStabTask()
 		enqLive(off);
 		offAt = 0;
 	}
+}
+
+// 0x86 {op 2 = enable, channel 2 = both grips, format 9 = 4 kHz u-law}.
+void hapticPcmStart(uint8_t slot)
+{
+	if (slot >= NSLOT || haptic82Blocked(slot) || !hapticLinkUp(slot))
+		return;
+	static const uint8_t p[3] = { 2, 2, 9 };
+	relayEnqueue(0x86, p, sizeof p, true, slot);
+}
+
+bool hapticPcmSend(uint8_t slot, const uint8_t *left, const uint8_t *right,
+		   uint8_t n)
+{
+	if (slot >= NSLOT || haptic82Blocked(slot) || !hapticLinkUp(slot))
+		return false;
+	uint8_t p[1 + 2 * PCM_SAMPLES];
+	p[0] = n;
+	memcpy(p + 1, left, PCM_SAMPLES);
+	memcpy(p + 1 + PCM_SAMPLES, right, PCM_SAMPLES);
+	return relayEnqueue(0x88, p, sizeof p, true, slot);
+}
+
+uint8_t hapticUlaw(float x)
+{
+	if (x > 1.0f)
+		x = 1.0f;
+	else if (x < -1.0f)
+		x = -1.0f;
+	int s = (int)(x * 32635.0f);
+	uint8_t sign = s < 0 ? 0x80 : 0;
+	s = (s < 0 ? -s : s) + 0x84;
+	uint8_t exp = 7;
+	while (exp && !(s & (1 << (exp + 7))))
+		exp--;
+	return (uint8_t) ~(sign | (exp << 4) | ((s >> (exp + 3)) & 0x0F));
 }
 
 void rfConnQueueHapticRelay()
@@ -507,7 +973,7 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 				rl = RELAY_MAXP;
 			// On-air sub-TLV framing. CONFIRMED from real puck<->controller sniffs: a command LANDS on
 			// the controller only with the type-01 + inner-len form E3 [2+rl][01][rid][innerlen][data];
-			// the legacy form E3 [1+rl][05][rid][data] makes the controller DISCARD any 0x87+ command.
+			// the form E3 [1+rl][05][rid][data] routes 0x87+ to the OUTPUT haptic sample streams instead.
 
 			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
 			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
@@ -571,9 +1037,12 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 			// full F1 decode (seq-dedup guards double-forward), so a drag streaming haptics now collects
 			// ~2x the samples, closing the gap to the real puck. A present reply returns early (~90us);
 			// only a genuine no-reply pays the bounded 400us window, so airtime stays in budget.
-			rfConnTx(
-				ch, s1, p, plen,
-				400); // one relay per poll cycle -- reply harvested as input
+			uint8_t rx = rfConnTx(ch, s1, p, plen,
+					      400); // reply harvested as input
+			// PCM mode/sample streams (0x86-0x89) underrun audibly when a frame is lost. Resend an
+			// unanswered one once with the SAME PID: ESB dedup drops it if the first copy landed.
+			if (!rx && m.isHaptic && m.rid >= 0x86 && m.rid <= 0x89)
+				rfConnTx(ch, s1, p, plen, 400);
 		}
 	}
 	return have; // true = a relay frame went out this cycle (its reply is harvested as input, above)
@@ -640,13 +1109,19 @@ void hapticReinit(uint8_t slot)
 			     slot);
 	}
 }
+
 void hapticInit()
 {
 	g_hapticStop = 0;
 	for (int s = 0; s < NSLOT; s++) {
 		g_rqHead[s] = g_rqTail[s] = 0;
+		g_legacyLow[s] = g_legacyHigh[s] = 0;
+		g_legacyMs[s] = 0;
+		g_audioLow[s] = g_audioHigh[s] = 0;
+		g_lastSentLow[s] = g_lastSentHigh[s] = 0;
 		g_rumble80On[s] = false;
 		g_rumble80Ms[s] = 0;
+		g_hdRumble[s] = {};
 		// post-connect haptic block is permanently disabled (not armed, not configurable)
 		g_hapticBlockUntil[s] = 0;
 	}
@@ -660,6 +1135,11 @@ void hapticOnReconnect(int slot)
 		return;
 	// post-connect haptic block is permanently disabled -- relay haptics immediately on (re)connect
 	g_hapticBlockUntil[slot] = 0;
+	g_hdRumble[slot] = {};
+	g_legacyLow[slot] = g_legacyHigh[slot] = 0;
+	g_legacyMs[slot] = 0;
+	g_audioLow[slot] = g_audioHigh[slot] = 0;
+	g_lastSentLow[slot] = g_lastSentHigh[slot] = 0;
 	g_rumble80On[slot] = false;
 	g_rumble80Ms[slot] = 0;
 	// Scrub haptics queued before the link came up (stale across the reconnect) -- this slot only.
@@ -709,6 +1189,7 @@ void hapticTask()
 		for (uint8_t s = 0; s < NSLOT; s++)
 			hapticSteamRumble(0, 0, s);
 	}
+	hapticHdTask();
 	// id9 steering (SET_SETTINGS index 9 = digital-mappings / the controller's AUTONOMOUS mapping+haptic
 	// engine, which is what generates the trackpad tick haptics). We decide per mode whether that autonomous
 	// engine should be ON, then either land id9=1 ONCE per connect episode (engine on) or hold id9=0 every
@@ -774,6 +1255,14 @@ void hapticTask()
 		if (!g_slot[s].used)
 			continue;
 		bool up = hapticLinkUp(s);
+		if (up) {
+			if (!g_rumble80On[s] &&
+			    ((g_audioLow[s] || g_audioHigh[s]) ||
+			     ((g_legacyLow[s] || g_legacyHigh[s]) &&
+			      (millis() - g_legacyMs[s] < 2500u)))) {
+				hapticUpdateRumble((uint8_t)s);
+			}
+		}
 		if (up && !wasHapticLinkUp[s]) {
 			uint8_t mk = 1;
 			hapLogAdd(0xFD, 0xEE, &mk, 1);
@@ -825,8 +1314,14 @@ void hapticTask()
 	wasSusp = susp;
 	// Per-slot stuck-rumble watchdog: force zero after 2.5s without a refresh.
 	for (int s = 0; s < NSLOT; s++) {
-		if (g_rumble80On[s] && millis() - g_rumble80Ms[s] > 2500u)
+		if ((g_legacyLow[s] || g_legacyHigh[s]) &&
+		    millis() - g_legacyMs[s] > 2500u)
 			hapticSteamRumble(0, 0, (uint8_t)s);
+		if (g_rumble80On[s] && millis() - g_rumble80Ms[s] > 2500u) {
+			g_legacyLow[s] = g_legacyHigh[s] = 0;
+			g_audioLow[s] = g_audioHigh[s] = 0;
+			hapticUpdateRumble((uint8_t)s);
+		}
 	}
 	// (No automatic idle-clear re-init either: same 0x81-click reason. A genuinely stuck buzz is cleared
 	// on demand from the panel. Verbatim relay -- like the real puck -- is the steady-state behavior.)

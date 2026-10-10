@@ -68,6 +68,12 @@ static inline bool modeIsCleanPS(uint8_t m)
 	return m == MODE_PS5_GAME || m == MODE_DS4_GAME || m == MODE_PS3;
 }
 
+static inline bool modeIsPS(uint8_t m)
+{
+	return m == MODE_PS5 || m == MODE_PS5_GAME || m == MODE_HIDGYRO ||
+	       m == MODE_DS4_GAME || m == MODE_PS3;
+}
+
 static inline bool modeIsPuck(uint8_t m)
 {
 	return m == MODE_STEAM || m == MODE_LIZARD;
@@ -185,6 +191,22 @@ extern uint8_t
 	g_padHaptics; // 1 = trackpad haptics on (default), 0 = disabled for the active type
 // 1 = host rumble relay on (default), 0 = silenced for the active emulated type
 extern uint8_t g_rumble;
+// 1 = audio-driven haptics on (default), 0 = silenced for DualSense UAC1 audio
+extern uint8_t g_audioHaptics;
+// Audio-driven haptic gain: 0 = auto (default, see ps5AudioTask), else a fixed 10-500%
+extern uint16_t g_audioHapticGain;
+// How audio-driven haptics drive the controller (see ps5AudioTask)
+#define AUDIO_STYLE_RUMBLE 0
+#define AUDIO_STYLE_TONE 1
+// below ~80 Hz as rumble, the rest as tones
+#define AUDIO_STYLE_SPLIT 2
+// the haptic channels themselves, streamed to the grip actuators as 4 kHz PCM (0x88)
+#define AUDIO_STYLE_WAVE 3
+extern uint8_t g_audioHapticStyle;
+// Grip PCM soft-limit knee (DualSense wave style, Switch Pro HD grips), percent of full scale: 50..100, 70 default.
+// Peaks above it are rounded off toward full scale; 100 leaves only the hard clip at full scale.
+#define HAPTIC_LIMIT_KNEE_DEFAULT 70u
+extern uint8_t g_hapticLimitKnee;
 // LED brightness for the active emulated type (0 = no override, 1-100 = brightness %)
 extern uint8_t g_ledBright;
 // Live mirror of g_padStickCfg[g_etype]: {left pad, right pad} -> stick (PS_*).

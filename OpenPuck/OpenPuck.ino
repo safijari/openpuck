@@ -116,7 +116,10 @@ void modeSwitchReboot(uint8_t mode)
 			mode); // 0xFF / invalid => keep the current mode (bond-import reboot)
 	if (USBDevice.mounted())
 		USBDevice.detach();
-	delay(60); // let the host see the disconnect before the pullup returns on reset
+
+	// USB hub disconnect debounce is 100ms. Waiting 120ms ensures the host
+	// xHCI controller tears down the previous device before the new one attaches.
+	delay(120);
 	faultDiagArmIntentionalReset();
 	NVIC_SystemReset();
 }
@@ -137,6 +140,9 @@ void setup()
 #endif
 	genSerial();
 	ledInit();
+	// Drop the USB D+ line immediately on boot so the host doesn't attempt to
+	// enumerate the Adafruit core's default USB descriptor while we load flash config.
+	USBDevice.detach();
 #if OPK_PWR_SWITCH
 	pwrSwitchInit();
 #endif
@@ -188,8 +194,8 @@ void setup()
 
 	if (dynamic) {
 		// Dynamic mount: present only ACTIVELY-CONNECTED controllers; usbReenumerate re-attaches (no reboot)
-		// as the set changes. Emulated modes are never puck; clean-PS drops the wake mouse + WebUSB.
-		s_dynWantWakeMouse = !psClean;
+		// as the set changes. Emulated modes are never puck; clean-PS drops WebUSB; all PS modes drop the wake mouse.
+		s_dynWantWakeMouse = !psClean && !modeIsPS(g_usbMode);
 		s_dynWantWebusb = !psClean;
 		USBDevice.detach();
 		delay(30);
@@ -244,8 +250,8 @@ void setup()
 
 		// Boot-mouse wake interface for clean (non-puck) modes, and for puck on the one-shot debug boot (CDC on,
 		// no endpoint room for wake mouse on a normal puck boot -- wake is registered above instead). Skipped for PS
-		// modes so the device stays a single clean HID gamepad (see psClean above).
-		if (!puckMode && !keepCdc && !psClean)
+		// modes so the device stays a genuine PlayStation controller without an unexpected mouse interface.
+		if (!puckMode && !keepCdc && !psClean && !modeIsPS(g_usbMode))
 			wakeHidBegin();
 
 		// WebUSB config panel -- every mode EXCEPT the PlayStation modes. Puck: registered above (IF 0) before wake +

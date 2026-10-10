@@ -96,10 +96,11 @@ brightness   E3 05 01 87 03 2D <val> 00        (report 0x87 reg 0x2D, LANDING)
 power-off    E3 06 01 9F 04 6F 66 66 21        (report 0x9F "off!", LANDING)
 ```
 
-The relay carries the command's declared length, up to 60 bytes — the most one RF frame fits. Relays are staged
-in a small ring (not a single buffer): the USB SET callbacks run in ISR context and Steam sends
-settings/calibration as back-to-back bursts, so a single pending slot both drops reports and can be torn
-mid-flush. One queued relay is emitted per poll cycle.
+The relay carries the command's declared length, up to 60 bytes for type 01 commands and 63 for type 05 haptic
+reports (a full OUTPUT `0x87`/`0x88` sample frame). Relays are staged in a small ring (not a single buffer): the
+USB SET callbacks run in ISR context and Steam sends settings/calibration as back-to-back bursts, so a single
+pending slot both drops reports and can be torn mid-flush. One queued relay is emitted per poll cycle, plus a
+second in the same cycle while the ring still holds a backlog (PCM sample streams need ~258 frames/s).
 
 ### 3.4 Connection presentation (input reports `0x79` / `0x7B`)
 
@@ -329,11 +330,12 @@ does a `detach -> rebuild -> attach` so the host re-reads the descriptor cleanly
   the same command, leaving the controller buzzing; suppressing them keeps the lizard state clean. The
   same gate applies during the post-resume input mute (`POST_RESUME_MUTE_MS`): Steam can't read `0x45`
   back in that window either, so a wake-time haptic would loop identically.
-- **Which OUTPUT reports are relayed**: the haptic/actuator reports `0x80`–`0x86` are forwarded to the
+- **Which OUTPUT reports are relayed**: all haptic/actuator reports `0x80`–`0x89` are forwarded to the
   **connected slot only** (the slot gate is what stops a haptic aimed at another of the four exposed
-  slots from buzzing the single controller). The 63-byte settings/config reports `0x87`/`0x88`/`0x89`
-  are not haptics and are not pushed on this path (`0x87` lizard-off reaches the controller via the
-  feature `0x01` passthrough). Steam owns `IMU_MODE` in native puck mode. Switch Pro mode instead writes
+  slots from buzzing the single controller). The 63-byte `0x87`/`0x88`/`0x89` are raw haptic sample
+  streams (table below), used by audio-to-haptics apps; the real puck forwards every OUTPUT report
+  unfiltered. (The feature-`0x01` command `0x87`, `SET_SETTINGS_VALUES`, is a different id space and
+  reaches the controller via the feature passthrough.) Steam owns `IMU_MODE` in native puck mode. Switch Pro mode instead writes
   raw accelerometer + gyroscope (`0x18`) when the RF link comes up because the controller retains Steam's
   IMU-off state across pucks. Restricting haptics to `0x82` alone silently dropped the ping/grip/test
   haptics, which use other report IDs.
@@ -353,8 +355,35 @@ from the feature-`0x01` **command** space even though the numbers overlap. Groun
 | `0x83` | `HAPTIC_LFO_TONE` `[side][gain_db][freq u16][dur u16][lfo_freq u16][lfo_depth]` | 9 | `GET_ATTRIBUTES_VALUES` |
 | `0x84` | `HAPTIC_LOG_SWEEP` `[side][gain_db][dur u16][start u16][end u16]` | 8 | `GET_ATTRIBUTE_LABEL` |
 | `0x85` | `HAPTIC_SCRIPT` `[side][script_id][gain_db]` | 3 | `SET_DEFAULT_DIGITAL_MAPPINGS` |
-| `0x86` | (unnamed) | 3 | `FACTORY_RESET` |
-| `0x87`+ | 63-byte settings/config | 63 | `SET_SETTINGS_VALUES` … |
+| `0x86` | PCM mode `[op][channel][format]`: op 2 enables with format (0-3 16-bit, 4-7 8-bit, 8-11 u-law, each 8/4/2/1 kHz), op 1 sends the stream a stop message; channel 1 right grip, 2 both grips, 3 left touchpad, 4 right touchpad, 5 both touchpads | 3 | `FACTORY_RESET` |
+| `0x87` | mono sample stream `[target][samples]`: target 0 left grip, 2 or `0x80` both grips, 3 left touchpad, 4 right grip, 5 both touchpads (1 and the right touchpad alone are not addressable) | 63 | `SET_SETTINGS_VALUES` |
+| `0x88` | stereo **grip** stream `[n<=31][31 samples left grip][31 samples right grip]` in the `0x86` format | 63 | `CLEAR_SETTINGS_VALUES` |
+| `0x89` | length-prefixed `0x87`: `[len][0x87 payload]` | 63 | `GET_SETTINGS_VALUES` |
+
+Actuator routing: the controller has four LRAs, one under each trackpad and a higher-output one in each grip.
+- `0x80` rumble plays on **both grips**.
+- `0x82` / `0x83` side (bit 7 ignored): 0 left touchpad, 1 right touchpad, 2 both touchpads, 3 left grip,
+  4 right grip, 5 both grips. `0x81` is the same except 0 = right touchpad and 1 = left touchpad.
+- `0x88` PCM plays on the **grips** (first half left, second half right); `0x87` / `0x89` as in the table.
+
+PCM streaming, measured with the controller's IMU over USB (2026-10-03):
+- `0x86` sets the sample format, and the format persists. Op 1 does not stop playback, and channel 5 measured the
+  same as channel 2. OpenPuck sends `{2, 2, 9}` (4 kHz u-law) before each stream and every second while streaming.
+- The controller pre-buffers about 40 ms (onset ~43 ms against ~16 ms for a `0x83` tone). It rides out 124 ms bursts
+  and 0-20 ms jitter without a dip, and falls silent by itself 60-85 ms later than a tone once frames stop
+  (op 1 at the stop trims that to about 50 ms). The playback clock does not drift against 4 kHz pacing. `0x82`
+  does not cut a stream.
+- A stream starts on the first frame to arrive once more than 16 ms of samples are queued, and that fill stays
+  queued for the whole stream; running dry stops it. With 31-sample 4 kHz frames, playback starts at 124 samples
+  (31 ms). OpenPuck makes the third frame of each stream 3 samples (`n` = 3, same 63-byte layout) so it starts at
+  96 (24 ms). Measured through OpenPuck in Steam mode (20 runs each, 2026-10-04): IMU onset median 61 ms with full
+  frames, 54 ms with the short third frame.
+- Level: a u-law sample amplitude of about 0.4 (0.31 at 100 Hz, 0.49 at 320 Hz) matches a -3 dB `0x83` tone.
+- An 8 kHz stereo stream is 258 frames/s, above one relay per 4 ms poll. OpenPuck flushes a second queued relay in
+  the same cycle when the ring holds a backlog, and resends an unanswered `0x86`-`0x89` frame once with the same PID.
+
+OpenPuck uses this stream itself for the DualSense wave haptics style (DUALSENSE_HAPTICS.md) and for Switch Pro HD
+rumble (§9.5).
 
 
 ### 9.2 Xbox mode
@@ -381,6 +410,25 @@ from the feature-`0x01` **command** space even though the numbers overlap. Groun
 - Also answers the XID report requests the protocol carries on EP0, in parallel with the interrupt
   endpoints: `GET_REPORT` (`0xA1 0x01`, `wValue 0x0100`) and `SET_REPORT` (`0x21 0x09`, `wValue 0x0200`)
 
+### 9.5 Switch Pro HD rumble
+
+The console streams HD rumble in every output report: per side, a 4-byte word packing one or more amplitude and
+frequency updates for a low band (around 160 Hz) and a high band (around 320 Hz), in 1/32 log2 units
+(`hdrDecode` in `mode_switch_pro.cpp`). Amplitude code 100 is full scale, as in the public amplitude table and
+SDL's encoder; codes above it play at full scale. OpenPuck renders the latest bands in the main loop
+(`hapticHdTask` in `haptics.cpp`), not per USB packet:
+
+- **Grips:** each side's low and high band, summed and phase-continuous, as a 4 kHz `0x88` PCM stream on that
+  side's grip, where a Pro Controller has its actuators. Scaled by the rumble strength (field `22`) and rounded off
+  by the grip limiter (field `115`). The stream stays up through 500 ms of silence so a new effect doesn't pay the
+  controller's pre-buffer again, and ends with `0x86` op 1.
+- **Trackpads:** each side's high band as an `0x83` tone on that side's trackpad, scaled by the HD trackpad
+  strength (field `141`) and held at or below -15 dB between 250 and 300 Hz, where the pads ring loudly. Tones
+  last 120 ms and are refreshed every 50 ms, re-sent at once on a +6 dB hit and at most every 32 ms on a retune;
+  a band going quiet is cut with -128 dB.
+- The output stops when no rumble arrives for 600 ms, the per-type rumble toggle is off, the host suspends, or the
+  mode changes. Switch Pro always renders HD rumble; the rumble style (field `39`) applies to the other modes.
+
 ## 10. WebUSB control channel
 
 The WebUSB vendor interface is present only in Steam mode (Xbox/Switch are clean controllers with no
@@ -392,7 +440,15 @@ Messages:
   - `0x01`: get status blob
   - `0x02 <field> <value>`: set one field. Notable fields: `22` host-rumble strength as **percent/2**
     (10–500%, revived in blob version 21), `39` host-rumble style (`RUMBLE_STYLE_*` in `haptics.h`:
-    0 normal, 1 mono, 2 heavy, 3 light, 4 swapped, 5 punchy, 6 soft), `38` Switch Pro gyro mapping
+    0 normal, 1 mono, 2 heavy, 3 light, 4 swapped, 5 punchy, 6 soft; not used in Switch Pro mode, which
+    renders HD rumble, §9.5), `38` Switch Pro gyro mapping.
+    DualSense audio haptics: `31` on/off, `30` gain as percent/2 (10-500%, 0 = automatic), `88` style
+    (0 rumble, 1 tone, 2 split, 3 wave; default 3). See DUALSENSE_HAPTICS.md.
+    Grip limiter (blob version ≥ 22): `115` soft-limit knee of the grip PCM stream, percent of full scale,
+    50..100 (70 default, 100 = off: hard clip only); other values are ignored. One setting for the DualSense
+    wave style and Switch Pro HD rumble grips.
+    `141` (blob version ≥ 22): Switch Pro HD rumble trackpad strength as percent/2 (0-500%, 100 default;
+    0 = grips only).
   - `0x03 <mode>`: switch mode and reboot
   - `0x07`: re-init haptics (clear a stuck buzz)
   - `0x08`: send controller power-off
@@ -473,6 +529,10 @@ the per-emulated-type trackpad-to-stick mapping at payload bytes 187..194 — tw
 A mapped pad **blends** with its stick: while the pad is touched each axis reports whichever of the two
 sources is deflected further from center (signed); an untouched pad contributes nothing and the physical
 stick passes straight through. A mapped pad also stops reporting as a touchpad contact / mouse.
+
+From version 21, payload byte 193 (`p[195]`) is the rumble style. From version 22, payload bytes 194..198
+(`p[196..200]`) are the DualSense audio-haptic gain as percent/2 (0 = automatic), audio haptics on/off, audio
+haptics style, the grip-limiter knee in percent, and the Switch Pro HD trackpad strength as percent/2.
 
 
 ### 10.1 Backup / clone (bond export & import)

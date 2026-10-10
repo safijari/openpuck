@@ -4,7 +4,7 @@
 // (interface N owns bond slot N). It implements:
 //   - the puck feature COMMAND CHANNEL (handleSet/handleGet): reports 0x83/0xAE/0xB4/0xAD/0xA2/0xA3 the host
 //     uses to read attributes/serials and read/write/clear bond slots, plus the host->controller haptic relay
-//     ride-along on OUTPUT reports 0x80-0x86 and feature passthrough (report 0x01).
+//     ride-along on OUTPUT reports 0x80-0x89 and feature passthrough (report 0x01).
 //   - the seamless LIZARD decision: when Steam is driving the gamepad (recent OUTPUT/heartbeat) we forward the
 //     gamepad report 0x45; when Steam is closed we present keyboard+mouse on the SAME interface. MODE_LIZARD
 //     forces lizard always. lizardActive() is the single source of truth, shared with the haptic gate so we

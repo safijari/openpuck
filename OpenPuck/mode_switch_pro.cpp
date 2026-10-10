@@ -164,12 +164,12 @@ static inline uint8_t jcBondOf(uint8_t usbSlot)
 	int b = (usbSlot < NSLOT) ? g_usbToBond[usbSlot] : -1;
 	return (b >= 0) ? (uint8_t)b : usbSlot;
 }
-// --- Switch HD-rumble amplitude decoder.
+// --- Switch HD-rumble decoder.
 //
 // When we emulate a Pro Controller, the console streams us its HD-rumble output
-// every frame. A genuine controller drives dual-band linear actuators from it;
-// OpenPuck drives the SC2's single motor, so all we need is a scalar amplitude.
-// This decodes the on-wire rumble format down to that amplitude.
+// every frame. A genuine controller drives dual-band linear actuators from it.
+// The decoder keeps each side's two bands, amplitude and frequency, for the HD
+// renderer (hapticSwitchPitch); hapticSteamRumble takes each side's peak.
 //
 // Format (from the public Switch controller protocol, cross-checked against
 // SDL's zlib-licensed hidapi_switch rumble encoder and community RE notes):
@@ -182,8 +182,7 @@ static inline uint8_t jcBondOf(uint8_t usbSlot)
 // A 7-bit field is an ABSOLUTE amplitude on the documented log2 curve. A 5-bit
 // field is a compact command that either substitutes a preset level or nudges
 // the amplitude by a small step -- so the decoder carries per-motor state across
-// frames. Frequency fields exist but do nothing for an ERM, so we step past them
-// and keep only amplitude.
+// frames. Frequency uses the same 1/32 log2 units around 160/320 Hz.
 //
 // The naive "read fixed bytes as amplitude" decode we shipped before ignored the
 // mode bits, so any game using the packed modes (Fire Emblem: Three Houses,
@@ -198,16 +197,19 @@ enum { HDR_AMP_MIN = -256, HDR_AMP_OFF = -256 }; // -8.0 log2 units == silent
 
 // Absolute 7-bit amplitude code -> 1/32 log2 units. The documented curve is
 // piecewise linear with progressively finer steps toward full scale (slopes
-// 1/4, 1/16, 1/32); code 0 is silence.
+// 1/4, 1/16, 1/32); code 0 is silence. Code 100 is amplitude 1.0: the public
+// amplitude table and SDL's encoder map full strength to 0xC8 (code 100), and
+// codes 101-127 overdrive past it, so they play at full scale. The curve used
+// to put 1.0 at code 127, which played every level at 0.56x (Super Mario
+// Odyssey's strongest hit, code 94, at 0.49 instead of 0.88).
 static inline int16_t hdrAmp7(uint8_t code)
 {
 	if (code == 0)
 		return HDR_AMP_MIN;
-	if (code < 16)
-		return (int16_t)(8 * (int)code - 248); // slope 1/4
-	if (code < 32)
-		return (int16_t)(2 * (int)code - 158); // slope 1/16
-	return (int16_t)((int)code - 127); // slope 1/32
+	int u = code < 16 ? 8 * (int)code - 221 : // slope 1/4
+			code < 32 ? 2 * (int)code - 131 : // slope 1/16
+				    (int)code - 100; // slope 1/32
+	return (int16_t)(u > 0 ? 0 : u);
 }
 // Apply a compact 5-bit command to the running amplitude (1/32 log2 units):
 //   0        -> silence
@@ -233,12 +235,33 @@ static inline int16_t hdrAmp5(uint8_t code, int16_t cur)
 	int v = (int)cur + step;
 	return v < HDR_AMP_MIN ? HDR_AMP_MIN : (v > 0 ? 0 : (int16_t)v);
 }
+// Protocol frequency codes span four octaves around each band's centre.
+static int16_t hdrFreq5(uint8_t code, int16_t current)
+{
+	if (!code)
+		return 0;
+	if (code >= 12 && code <= 16)
+		return ((int)code - 14) * 6;
+	int delta = 0;
+	if (code >= 17)
+		delta = (code - 17) % 3 == 0 ? 1 :
+					       ((code - 17) % 3 == 2 ? -1 : 0);
+	int value = current + delta;
+	return value < -64 ? -64 : (value > 64 ? 64 : value);
+}
+static uint16_t g_hdrFrequency[2][129];
 // exp2(units/32) scaled to a 16-bit motor level, built once at boot. The two
 // lowest steps are treated as silent (the curve floors out there), matching how
 // the neutral/idle frame -- which decodes to minimum amplitude -- reads as off.
 static uint16_t g_hdrLevel[257];
 static void hdrBuildLevels()
 {
+	for (int i = -64; i <= 64; i++)
+		for (int band = 0; band < 2; band++)
+			g_hdrFrequency[band][i + 64] =
+				(uint16_t)((band ? 320 : 160) *
+						   exp2f(i / 32.0f) +
+					   0.5f);
 	for (int u = HDR_AMP_MIN; u <= 0; u++) {
 		float lin = (float)u / 32.0f;
 		float amp = (lin >= -7.9375f) ? exp2f(lin) : 0.0f;
@@ -252,12 +275,15 @@ static void hdrBuildLevels()
 // Per-slot, per-motor (0 = left, 1 = right) running band amplitudes. The packed
 // 5-bit commands are relative, so this state must persist between frames.
 struct HdrBands {
+	int16_t lf, hf;
 	int16_t lo; // low-band amplitude, 1/32 log2 units
 	int16_t hi; // high-band amplitude, 1/32 log2 units
 };
 static HdrBands g_hdrState[NSLOT][2];
 static inline void hdrReset(uint8_t slot)
 {
+	g_hdrState[slot][0].lf = g_hdrState[slot][0].hf = 0;
+	g_hdrState[slot][1].lf = g_hdrState[slot][1].hf = 0;
 	g_hdrState[slot][0].lo = g_hdrState[slot][0].hi = HDR_AMP_OFF;
 	g_hdrState[slot][1].lo = g_hdrState[slot][1].hi = HDR_AMP_OFF;
 }
@@ -270,16 +296,21 @@ static inline uint8_t hdrField(uint32_t w, uint8_t shift, uint8_t width)
 // motor level over the frame's updates (max across both bands and all samples).
 // Peak rather than final-sample keeps short pulses that a multi-update frame
 // packs together, while every idle/neutral frame still resolves to 0.
-static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4])
+static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4],
+			  uint16_t *low = nullptr, uint16_t *high = nullptr)
 {
 	HdrBands &s = g_hdrState[slot][motor];
 	uint32_t w = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
 		     ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-	uint16_t peak = 0;
+	uint16_t peak = 0, peakLow = 0, peakHigh = 0;
 #define HDR_SAMPLE()                                          \
 	do {                                                  \
 		uint16_t la = g_hdrLevel[s.lo - HDR_AMP_MIN]; \
 		uint16_t ha = g_hdrLevel[s.hi - HDR_AMP_MIN]; \
+		if (la > peakLow)                             \
+			peakLow = la;                         \
+		if (ha > peakHigh)                            \
+			peakHigh = ha;                        \
 		uint16_t lv = la > ha ? la : ha;              \
 		if (lv > peak)                                \
 			peak = lv;                            \
@@ -292,16 +323,25 @@ static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4])
 	case 1:
 		if ((w & 0xFFFFF) == 0) { // single 5-bit update
 			s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 25, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 20, 5), s.hf);
 			HDR_SAMPLE();
 		} else if ((w & 0x3) == 0) { // single 7-bit absolute
 			s.lo = hdrAmp7(hdrField(w, 23, 7));
 			s.hi = hdrAmp7(hdrField(w, 9, 7));
+			s.lf = hdrField(w, 16, 7) - 64;
+			s.hf = hdrField(w, 2, 7) - 64;
 			HDR_SAMPLE();
 		} else { // 7-bit for one band + two 5-bit updates
 			bool wantHi = (w & 1) != 0;
 			bool isFreq = ((w >> 2) & 1) != 0;
-			if (!isFreq) { // else the 7-bit is a frequency: ignore
+			if (isFreq) {
+				if (wantHi)
+					s.hf = hdrField(w, 23, 7) - 64;
+				else
+					s.lf = hdrField(w, 23, 7) - 64;
+			} else {
 				if (wantHi)
 					s.hi = hdrAmp7(hdrField(w, 23, 7));
 				else
@@ -309,66 +349,93 @@ static uint16_t hdrDecode(uint8_t slot, uint8_t motor, const uint8_t b[4])
 			}
 			HDR_SAMPLE();
 			s.lo = hdrAmp5(hdrField(w, 18, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 18, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 13, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 13, 5), s.hf);
 			HDR_SAMPLE();
 			s.lo = hdrAmp5(hdrField(w, 8, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 8, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 3, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 3, 5), s.hf);
 			HDR_SAMPLE();
 		}
 		break;
 	case 2:
 		if ((w & 0x3FF) == 0) { // two 5-bit updates
 			s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 25, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 20, 5), s.hf);
 			HDR_SAMPLE();
 			s.lo = hdrAmp5(hdrField(w, 15, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 15, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 10, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 10, 5), s.hf);
 			HDR_SAMPLE();
 		} else { // 7-bit + 5-bit, then a 5-bit update
 			if (w & 1) {
+				s.hf = hdrField(w, 1, 7) - 64;
 				s.hi = hdrAmp7(hdrField(w, 23, 7));
 				s.lo = hdrAmp5(hdrField(w, 18, 5), s.lo);
+				s.lf = hdrFreq5(hdrField(w, 18, 5), s.lf);
 			} else {
+				s.lf = hdrField(w, 1, 7) - 64;
 				s.lo = hdrAmp7(hdrField(w, 23, 7));
 				s.hi = hdrAmp5(hdrField(w, 18, 5), s.hi);
+				s.hf = hdrFreq5(hdrField(w, 18, 5), s.hf);
 			}
 			HDR_SAMPLE();
 			s.lo = hdrAmp5(hdrField(w, 13, 5), s.lo);
+			s.lf = hdrFreq5(hdrField(w, 13, 5), s.lf);
 			s.hi = hdrAmp5(hdrField(w, 8, 5), s.hi);
+			s.hf = hdrFreq5(hdrField(w, 8, 5), s.hf);
 			HDR_SAMPLE();
 		}
 		break;
 	case 3: // three 5-bit updates
 		s.lo = hdrAmp5(hdrField(w, 25, 5), s.lo);
+		s.lf = hdrFreq5(hdrField(w, 25, 5), s.lf);
 		s.hi = hdrAmp5(hdrField(w, 20, 5), s.hi);
+		s.hf = hdrFreq5(hdrField(w, 20, 5), s.hf);
 		HDR_SAMPLE();
 		s.lo = hdrAmp5(hdrField(w, 15, 5), s.lo);
+		s.lf = hdrFreq5(hdrField(w, 15, 5), s.lf);
 		s.hi = hdrAmp5(hdrField(w, 10, 5), s.hi);
+		s.hf = hdrFreq5(hdrField(w, 10, 5), s.hf);
 		HDR_SAMPLE();
 		s.lo = hdrAmp5(hdrField(w, 5, 5), s.lo);
+		s.lf = hdrFreq5(hdrField(w, 5, 5), s.lf);
 		s.hi = hdrAmp5(hdrField(w, 0, 5), s.hi);
+		s.hf = hdrFreq5(hdrField(w, 0, 5), s.hf);
 		HDR_SAMPLE();
 		break;
 	}
 #undef HDR_SAMPLE
+	if (low)
+		*low = peakLow;
+	if (high)
+		*high = peakHigh;
 	return peak;
 }
-// Per-slot: each Pro Controller has its own rumble stream, so the "last" relay tracking must be per-slot.
-static uint16_t g_jcLastLo[NSLOT] = { 0 };
-static uint16_t g_jcLastHi[NSLOT] = { 0 };
+// HD rumble: publish each side's two bands with their frequencies; hapticTask renders them on the grips (PCM)
+// and trackpads (0x83 tones), routed to the mapped controller. Every frame is published -- the renderer keeps
+// its own pacing, so the console's per-frame stream never floods the RF relay.
 static void jcRumble(uint8_t slot, const uint8_t *p, uint16_t pn)
 {
 	if (pn < 9)
 		return; // [timer][left rumble x4][right rumble x4]
-	uint16_t lo = hdrDecode(slot, 0, p + 1), hi = hdrDecode(slot, 1, p + 5);
-	// only relay on change: the Switch streams rumble every frame; re-sending
-	// unchanged values would flood the RF relay and loop the motor
-	if (lo == g_jcLastLo[slot] && hi == g_jcLastHi[slot])
-		return;
-	g_jcLastLo[slot] = lo;
-	g_jcLastHi[slot] = hi;
-	hapticSteamRumble(lo, hi,
-			  jcBondOf(slot)); // route to the mapped controller
+	hdrDecode(slot, 0, p + 1);
+	hdrDecode(slot, 1, p + 5);
+	const HdrBands &left = g_hdrState[slot][0];
+	const HdrBands &right = g_hdrState[slot][1];
+	hapticSwitchPitch(jcBondOf(slot), g_hdrLevel[left.lo - HDR_AMP_MIN],
+			  g_hdrLevel[left.hi - HDR_AMP_MIN],
+			  g_hdrLevel[right.lo - HDR_AMP_MIN],
+			  g_hdrLevel[right.hi - HDR_AMP_MIN],
+			  g_hdrFrequency[0][left.lf + 64],
+			  g_hdrFrequency[1][left.hf + 64],
+			  g_hdrFrequency[0][right.lf + 64],
+			  g_hdrFrequency[1][right.hf + 64]);
 }
 static int jcStick12(int16_t v, bool inv)
 { // steam int16 (center 0) -> 12-bit (center 0x800), clamped
@@ -671,7 +738,11 @@ static void spiRead(uint8_t slot, uint32_t addr, uint8_t len, uint8_t *dst)
 	for (uint8_t i = 0; i < len; i++) {
 		uint32_t a = addr + i;
 		uint8_t v = 0xFF;
-		if (a >= 0x6020 && a < 0x6020 + 24)
+		if (a == 0x6012)
+			// device type: 3 = Pro Controller (1/2 = Joy-Con L/R). Eden's direct Pro Controller driver reads
+			// it to tell a real Pro Controller from a third-party pad and drops input when it is blank.
+			v = 0x03;
+		else if (a >= 0x6020 && a < 0x6020 + 24)
 			v = SPI_IMU_CAL[a - 0x6020];
 		else if (a >= 0x603D && a < 0x603D + 18)
 			v = g_spiStickCal[a - 0x603D];
@@ -945,10 +1016,9 @@ void SwitchProController::mountSlots(uint8_t k)
 		// don't stream 0x30 before the (new) host has re-selected report mode.
 		g_swProReportMode[u] = 0;
 		g_jcQh[u] = g_jcQt[u] = 0;
-		// reset the rumble decoder + relay dedup so a stale amplitude from a
+		// reset the rumble decoder so a stale amplitude from a
 		// prior session can't carry across the reconnect
 		hdrReset(u);
-		g_jcLastLo[u] = g_jcLastHi[u] = 0;
 		USBDevice.addInterface(g_swPro[u]);
 	}
 }

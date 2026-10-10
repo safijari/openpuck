@@ -985,6 +985,11 @@ static void rfConnStep()
 
 	unsigned long nowMs = millis();
 
+	// Prioritize telemetry over haptics: if the previous poll cycle for this slot did
+	// not get a reply (packet drop / contention), skip the relay flush and go straight
+	// to the E3 GET poll so telemetry (especially gyro) never starves under RF load.
+	static bool lastPollReplied[NSLOT] = { true, true, true, true };
+
 	// Inline poll helper; emits E7 re-assert (every 32 polls, bounded reply window so a
 	// missed F3 doesn't burn the whole slot budget), queues haptics, flushes relay, sends E3 GET.
 	auto doPoll = [&](int k) {
@@ -995,12 +1000,20 @@ static void rfConnStep()
 			uint8_t pa[3] = { 0xE7, 0x00, g_e7b };
 			rfConnTx(ch, 0x01, pa, 3, 600);
 		}
-		rfConnQueueHapticRelay();
-		{
+		if (lastPollReplied[k]) {
+			rfConnQueueHapticRelay();
 			uint8_t rs1 =
 				(uint8_t)((((g_relayPid[k]++) & 3) << 1) | 1);
 			if (rfConnFlushRelay(ch, rs1))
 				g_stRelay[k]++;
+			// Backlog: a second frame this cycle. A wireless PCM stream (0x88, 8 kHz) needs ~258/s,
+			// above the 250 Hz cycle rate, so one per cycle starves it and the ring evicts samples.
+			if (relayPending()) {
+				rs1 = (uint8_t)((((g_relayPid[k]++) & 3) << 1) |
+						1);
+				if (rfConnFlushRelay(ch, rs1))
+					g_stRelay[k]++;
+			}
 		}
 		// per-slot PID cycle so each bonded controller's polls stay distinct
 		uint8_t pidv = g_pollPid[k]++;
@@ -1018,6 +1031,7 @@ static void rfConnStep()
 			uint8_t p[1] = { 0xE3 };
 			rx = rfConnTx(ch, s1, p, 1);
 		}
+		lastPollReplied[k] = (rx > 0);
 		if (rx)
 			g_chF1[0]++;
 		g_stPoll[k]++; // one true poll cycle for this slot
@@ -1275,11 +1289,12 @@ void rfLinkTask()
 		// was the confirmed diagnostic-induced hang: the capture ended truncated mid-"# stat".)
 		if (Serial.availableForWrite() > 130)
 			Serial.printf(
-				"# stat polls=%lu/s F1=%lu/s new=%lu/s F3=%lu/s(v%d) e7b=%u crcfail=%lu noRx=%lu slot=%d\n",
+				"# stat polls=%lu/s F1=%lu/s new=%lu/s F3=%lu/s(v%d) e7b=%u crcfail=%lu noRx=%lu slot=%d relay=%lu/s drop=%u\n",
 				(unsigned long)tPoll, (unsigned long)tF1,
 				(unsigned long)tNew, (unsigned long)g_stF3,
 				(int8_t)g_connF3v, g_e7b, (unsigned long)tCrc,
-				(unsigned long)tNoRx, g_curSlot);
+				(unsigned long)tNoRx, g_curSlot,
+				(unsigned long)tRelay, (unsigned)g_relayDrops);
 		g_stF3 = 0;
 		g_chF1[0] = g_chF1[1] = g_chF1[2] = 0;
 		g_stMs = millis();

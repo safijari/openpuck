@@ -12,6 +12,9 @@
 
 Ps5Controller g_ps5Ctl;
 
+// Byte-for-byte the USB report descriptor of a real DualSense (CFI-ZCT1W, github.com/nondebug/dualsense).
+// Sony's libScePad inspects the parsed report layout, so feature reports we never answer (0x80-0xF5) are
+// still declared.
 static const uint8_t PS5_HID_DESC[] = {
 	0x05, 0x01, 0x09, 0x05, 0xA1, 0x01, 0x85, 0x01, 0x09, 0x30, 0x09, 0x31,
 	0x09, 0x32, 0x09, 0x35, 0x09, 0x33, 0x09, 0x34, 0x15, 0x00, 0x26, 0xFF,
@@ -37,6 +40,7 @@ static const uint8_t PS5_HID_DESC[] = {
 	0x95, 0x0F, 0xB1, 0x02, 0x85, 0xF4, 0x09, 0x35, 0x95, 0x3F, 0xB1, 0x02,
 	0x85, 0xF5, 0x09, 0x36, 0x95, 0x03, 0xB1, 0x02, 0xC0
 };
+static_assert(sizeof PS5_HID_DESC == 273, "PS5 report descriptor size");
 #define PS5_TOUCH_H 1080
 #define PS5_STATUS_USB 0x1A // charging + level 10 (~100%)
 static unsigned long g_ps5LastMs[NSLOT] = { 0 };
@@ -59,53 +63,139 @@ static void initPs5Macs()
 	g_ps5MacInit = true;
 }
 
+// USB firmware-information payload from a DualSense, excluding report ID 0x20.
+// This emulated identity is independent of OpenPuck's own build version.
+static const uint8_t PS5_FIRMWARE_INFO[] = {
+	0x4A, 0x75, 0x6C, 0x20, 0x20, 0x34, 0x20, 0x32, 0x30, 0x32, 0x35,
+	0x31, 0x30, 0x3A, 0x31, 0x30, 0x3A, 0x33, 0x32, 0x02, 0x00, 0x04,
+	0x00, 0x13, 0x04, 0x00, 0x00, 0x2A, 0x00, 0x10, 0x01, 0x50, 0x38,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30,
+	0x06, 0x00, 0x00, 0x2A, 0x00, 0x01, 0x00, 0x0A, 0x00, 0x02, 0x00,
+	0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+static_assert(sizeof PS5_FIRMWARE_INFO == 63, "PS5 firmware report size");
+
+// Pairing-report bytes after the pad's MAC: a constant 08 25 00, then the paired host's MAC (little-endian).
+static const uint8_t PS5_PAIRING_TAIL[9] = { 0x08, 0x25, 0x00, 0x1E, 0x00,
+					     0xEE, 0x74, 0xD0, 0xBC };
+
 // GET_FEATURE handler. Per-slot dispatch via per-instance callback. Sizes per drivers/hid/hid-playstation.c:
 // 0x05=41, 0x09=20, 0x20=64. TinyUSB writes the report id itself and hands us the buffer PAST it, so we
 // fill only the PAYLOAD and return size-1.
+//
+// A real USB DualSense either answers a feature GET in full or stalls it; it never sends a short reply.
+// TinyUSB always prepends the report id and stalls only when the total length is 0, so PS5_STALL wraps its
+// uint16_t length (1 + 0xFFFF) to 0.
+#define PS5_STALL 0xFFFFu
+static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63]);
+
 static uint16_t ps5GetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 			     uint8_t *buf, uint16_t reqlen)
 {
 	(void)slot;
-	if (type != HID_REPORT_TYPE_FEATURE || !buf || reqlen == 0)
+	if (!buf || reqlen == 0)
 		return 0;
 	memset(buf, 0, reqlen);
-	switch (rid) {
-	// capabilities: identify as DualSense-capable (SDL-only probe; hid-playstation never reads 0x03)
-	case 0x03: {
-		if (reqlen < 47)
-			return 0;
-		buf[0] = 0x00;
-		buf[1] = 0x28;
-		buf[2] = 0x01;
-		buf[3] = 0x00;
-		buf[4] = 0x0E; // sensors + lightbar + vibration capability bits
-		return 47;
-	}
-	case 0x05: // motion calibration (41 incl id)
-		if (reqlen < 40)
-			return 0;
-		psNeutralCalib(buf);
-		return 40;
-	case 0x09: // pairing info / MAC (20 incl id)
-		if (reqlen < 19)
-			return 0;
-		// MAC at kernel buf[1..6] = payload[0..5]
-		memcpy(buf, g_ps5Mac[slot], 6);
-		return 19;
-	case 0x20: // firmware info (64 incl id)
-		if (reqlen < 63)
-			return 0;
-		buf[23] = 0x01; // hw_version (le32 @ kernel buf[24]) non-zero
-		buf[27] = 0x01; // fw_version (le32 @ kernel buf[28]) non-zero
-		return 63;
-	default:
+
+	// DirectInput and game polling via GET_REPORT(INPUT, 0x01)
+	if (type == HID_REPORT_TYPE_INPUT) {
+		if ((rid == 0x01 || rid == 0) && reqlen >= 63) {
+			int bond = (slot < NSLOT) ? g_usbToBond[slot] : -1;
+			if (bond < 0 || !g_slot[bond].used) {
+				for (int s = 0; s < NSLOT; s++) {
+					if (g_slot[s].used) {
+						bond = s;
+						break;
+					}
+				}
+			}
+			if (bond >= 0)
+				ps5Build(slot, (uint8_t)bond, buf);
+			return 63;
+		}
 		return 0;
 	}
+
+	if (type != HID_REPORT_TYPE_FEATURE)
+		return 0;
+
+	// Payload sizes as declared by PS5_HID_DESC; the replies mirror a real pad's (all-zero unless set below).
+	uint16_t len;
+	switch (rid) {
+	case 0x05: // motion calibration
+		len = 40;
+		break;
+	case 0x09: // pairing info / MAC
+		len = 19;
+		break;
+	case 0x20: // firmware info
+	case 0x22: // hardware info
+	case 0x81:
+	case 0x83:
+	case 0xE0:
+	case 0xF1:
+		len = 63;
+		break;
+	case 0x85:
+		len = 2;
+		break;
+	case 0xF2:
+		len = 15;
+		break;
+	case 0xF5:
+		len = 3;
+		break;
+	default: // 0x08, 0x0A, 0x21, 0x80, 0x82, 0x84, 0xA0, 0xF0, 0xF4 and undeclared ids
+		return PS5_STALL;
+	}
+	if (reqlen < len)
+		return PS5_STALL;
+
+	switch (rid) {
+	case 0x05:
+		psNeutralCalib(buf);
+		break;
+	case 0x09:
+		// MAC at kernel buf[1..6] = payload[0..5]
+		memcpy(buf, g_ps5Mac[slot], 6);
+		// A real pad follows its MAC with 08 25 00 and the MAC of the host it is paired with; mirror
+		// that rather than an all-zero tail, which a genuine DualSense never reports.
+		memcpy(buf + 6, PS5_PAIRING_TAIL, sizeof PS5_PAIRING_TAIL);
+		break;
+	case 0x20:
+		memcpy(buf, PS5_FIRMWARE_INFO, sizeof PS5_FIRMWARE_INFO);
+		break;
+	case 0x22:
+		// Repeats fields of the firmware report around the pad's MAC. The real pad's remaining bytes are
+		// of unknown meaning or per-unit, so they stay zero.
+		buf[0] = PS5_FIRMWARE_INFO[19];
+		memcpy(buf + 2, PS5_FIRMWARE_INFO + 23, 8);
+		memcpy(buf + 16, g_ps5Mac[slot], 6);
+		memcpy(buf + 22, PS5_FIRMWARE_INFO + 51, 6);
+		memcpy(buf + 52, PS5_FIRMWARE_INFO + 47, 4);
+		break;
+	case 0x83:
+		memset(buf, 0xFF, 4);
+		break;
+	case 0x85:
+		buf[1] = 0xFF;
+		break;
+	case 0xE0:
+		buf[0] = 0x04;
+		buf[2] = 0x18;
+		buf[3] = 0x07;
+		buf[11] = 0x06;
+		break;
+	case 0xF2:
+		buf[2] = 0x10;
+		break;
+	}
+	return len;
 }
 static void ps5SetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 			 uint8_t const *b, uint16_t n)
 {
-	if (type != HID_REPORT_TYPE_OUTPUT || n < 1)
+	if (type != HID_REPORT_TYPE_OUTPUT || !b || n < 1)
 		return;
 	uint8_t id;
 	const uint8_t *p;
@@ -114,12 +204,7 @@ static void ps5SetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 		id = b[0];
 		p = b + 1;
 		pn = (uint16_t)(n - 1);
-	} else if (rid == 0x02 && b[0] == 0x02 && n >= 5) {
-		id = rid;
-		p = b + 1;
-		pn = (uint16_t)(n - 1);
-	} // some paths leave report id in b
-	else {
+	} else {
 		id = rid;
 		p = b;
 		pn = n;
@@ -128,6 +213,14 @@ static void ps5SetCommon(uint8_t slot, uint8_t rid, hid_report_type_t type,
 		return;
 	// `slot` here is the USB slot the report arrived on -> route rumble to the bond slot it's mapped to.
 	int bond = (slot < NSLOT) ? g_usbToBond[slot] : -1;
+	if (bond < 0 || !g_slot[bond].used) {
+		for (int s = 0; s < NSLOT; s++) {
+			if (g_slot[s].used) {
+				bond = s;
+				break;
+			}
+		}
+	}
 	if (bond < 0)
 		return;
 	hapticSteamRumble((uint16_t)p[3] * 257u, (uint16_t)p[2] * 257u,
@@ -164,7 +257,7 @@ static ps5_setcb_t const PS5_SETCB[NSLOT] = { ps5Set0, ps5Set1, ps5Set2,
 static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 {
 	uint32_t b = psButtonsFromSteam(g_in[slot].buttons);
-	psPadClickEdge(slot, (b & (TB_LPADC | TB_RPADC)) != 0);
+	psPadClickEdge(slot, b & (TB_LPADC | TB_RPADC));
 	// A pad mapped to a stick must NOT also report as a touchpad contact -- the host would read the same
 	// finger twice (stick deflection AND a cursor drag).
 	bool lTouch = g_padStick[0] == PS_OFF &&
@@ -187,6 +280,12 @@ static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 	out[9] = ((b & TB_STEAM) ? 0x01 : 0) |
 		 ((b & TB_TOUCH || b & TB_LPADC || b & TB_RPADC) ? 0x02 : 0) |
 		 ((b & TB_MUTE) ? 0x04 : 0);
+	static uint32_t pktSeq[NSLOT] = { 0 };
+	uint32_t s = ++pktSeq[usbSlot];
+	out[11] = (uint8_t)(s & 0xFF);
+	out[12] = (uint8_t)((s >> 8) & 0xFF);
+	out[13] = (uint8_t)((s >> 16) & 0xFF);
+	out[14] = (uint8_t)((s >> 24) & 0xFF);
 	out[15] = g_in[slot].gx & 0xFF;
 	out[16] = g_in[slot].gx >> 8;
 	out[17] = g_in[slot].gz & 0xFF;
@@ -205,6 +304,12 @@ static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 	out[28] = (uint8_t)((ps5SensorTimestamp >> 8) & 0xFF);
 	out[29] = (uint8_t)((ps5SensorTimestamp >> 16) & 0xFF);
 	out[30] = (uint8_t)((ps5SensorTimestamp >> 24) & 0xFF);
+	// Values a real pad sends where we have no source: sensor temperature, two constant bytes, and a second
+	// clock that runs alongside the sensor timestamp.
+	out[31] = 0x02;
+	out[41] = 0x09;
+	out[42] = 0x09;
+	memcpy(out + 48, out + 27, 4);
 	uint16_t tlx, tly, trx, trry;
 	steamPadsToTouch(b, PS5_TOUCH_H, g_in[slot].lpx, g_in[slot].lpy,
 			 g_in[slot].rpx, g_in[slot].rpy, &tlx, &tly, &trx,
@@ -219,6 +324,7 @@ static void ps5Build(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 	le16(out + 21, imu.ax);
 	le16(out + 23, imu.ay);
 	le16(out + 25, imu.az);
+	out[53] = 0x08; // USB connected state
 }
 
 // Dynamic-mount mode: begin() is unused (setup() calls beginPool()+usbReenumerate instead).
@@ -236,10 +342,13 @@ void Ps5Controller::usbIdentity()
 {
 	USBDevice.setID(0x054C, 0x0CE6);
 	USBDevice.setVersion(0x0200);
-	USBDevice.setDeviceVersion(0x0110);
+	// bcdDevice 1.00 like a real DualSense; Windows/Wine report it to games as the HID VersionNumber.
+	USBDevice.setDeviceVersion(0x0100);
 	USBDevice.setManufacturerDescriptor("Sony Interactive Entertainment");
 	USBDevice.setProductDescriptor("DualSense Wireless Controller");
 }
+#include "mode_ps5_audio.h"
+
 // One-time: create the DualSense HID pool and lock instance indices (wake mouse, if any, was begun first).
 void Ps5Controller::beginPool()
 {
@@ -253,19 +362,48 @@ void Ps5Controller::beginPool()
 		g_ps5[s].begin();
 	}
 }
+// A real DualSense has its audio function on interfaces 0-2 and the gamepad on 3. Linux names the sound card
+// after the first audio interface (...Wireless_Controller-00), a name GE-Proton's DualSense
+// patches match, and Wine reports the gamepad's interface number to games.
 void Ps5Controller::mountSlots(uint8_t k)
 {
-	for (uint8_t u = 0; u < k; u++)
+	USBDevice.addInterface(g_ps5Audio);
+	uint8_t count = (k > 0) ? k : 1;
+	for (uint8_t u = 0; u < count; u++)
 		USBDevice.addInterface(g_ps5[u]);
+}
+
+// A real DualSense reports no serial string, so its card is named ...Wireless_Controller-00 with no serial in
+// it. The Adafruit core always reports one, so drop it in the clean mode. MODE_PS5 keeps it: the mount count
+// in it makes Windows re-read the configuration when a controller connects.
+extern "C" uint8_t const *__real_tud_descriptor_device_cb(void);
+extern "C" uint8_t const *__wrap_tud_descriptor_device_cb(void)
+{
+	const uint8_t *desc = __real_tud_descriptor_device_cb();
+	if (g_usbMode != MODE_PS5_GAME)
+		return desc;
+	static tusb_desc_device_t s_noSerial __attribute__((aligned(4)));
+	memcpy(&s_noSerial, desc, sizeof s_noSerial);
+	s_noSerial.iSerialNumber = 0;
+	return (const uint8_t *)&s_noSerial;
 }
 void Ps5Controller::task()
 {
+	ps5AudioTask();
 	for (uint8_t u = 0; u < g_usbMountCount; u++) {
 		if (!g_ps5[u].ready())
 			continue;
 		if (millis() - g_ps5LastMs[u] < USB_STREAM_MS)
 			continue;
 		int bond = g_usbToBond[u];
+		if (bond < 0 || !g_slot[bond].used) {
+			for (int s = 0; s < NSLOT; s++) {
+				if (g_slot[s].used) {
+					bond = s;
+					break;
+				}
+			}
+		}
 		if (bond < 0)
 			continue;
 		g_ps5LastMs[u] = millis();
