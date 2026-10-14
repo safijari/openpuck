@@ -588,7 +588,6 @@ void hapticReinit(uint8_t slot)
 
 	// clang-format off
 	static const uint8_t haptic_reset_data_1[] = { 
-			SETTING_IMU_MODE, 0x00, 0x00, 
 			SETTING_LEFT_TRACKPAD_MODE, 0x07, 0x00, 
 			SETTING_RIGHT_TRACKPAD_MODE, 0x07, 0x00, 
 			SETTING_WIRELESS_PACKET_VERSION, 0x02, 0x00, 
@@ -652,6 +651,29 @@ void hapticInit()
 		g_hapticBlockUntil[s] = 0;
 	}
 }
+// Emulated modes that report motion from the controller's RF IMU samples.
+static const uint32_t IMU_KEEP_MS = 5000;
+static bool modeWantsImu(uint8_t m)
+{
+	return m == MODE_SW_PRO || m == MODE_PS5 || m == MODE_PS5_GAME ||
+	       m == MODE_HIDGYRO || m == MODE_DS4_GAME || m == MODE_PS3 ||
+	       m == MODE_DINPUT || m == MODE_SINPUT;
+}
+// Steam can leave the controller's persisted IMU mode off, and it survives across pucks. Every emulated
+// gyro mode needs the raw RF samples that setting suppresses, so write raw accel + gyro for this slot.
+static void imuForceRaw(int slot)
+{
+	static const uint8_t RAW_IMU[] = {
+		SETTING_IMU_MODE,
+		SETTING_GYRO_MODE_SEND_RAW_ACCEL |
+			SETTING_GYRO_MODE_SEND_RAW_GYRO,
+		0x00
+	};
+	if (!modeWantsImu(g_usbMode))
+		return;
+	relayEnqueue(IBEX_CMD_SET_SETTINGS_VALUES, RAW_IMU, sizeof RAW_IMU,
+		     false, (uint8_t)slot);
+}
 // Schedule the clearing re-init for ONE slot. Called on the reliable first-reply signal from rf_link and
 // again from hapticTask's link-up edge detector. Strictly per-slot: only the reconnected controller gets
 // re-inits / its pending haptics scrubbed -- the other controllers hear nothing about it.
@@ -665,6 +687,7 @@ void hapticOnReconnect(int slot)
 	g_rumble80Ms[slot] = 0;
 	// Scrub haptics queued before the link came up (stale across the reconnect) -- this slot only.
 	hapticCancelPendingOn(slot);
+	imuForceRaw(slot);
 	// NO automatic haptic re-init. hapticReinit lands 0x81 (CLEAR DIGITAL MAPPINGS -- rid < 0x87 so it
 	// EXECUTES even on legacy framing). 0x81 is NON-IDEMPOTENT (ibex FUN_0001f554): EVERY call re-runs the
 	// lizard-disable event + func_0x0001bbf0 (a hardware peripheral re-arm unique to the 0x81 path) -- so
@@ -678,6 +701,30 @@ void hapticOnReconnect(int slot)
 // hapticSteamRumble() path (so g_rumbleStyle / g_rumbleScale / the per-type rumble toggle all apply), and
 // schedule the stop. Deadline 0 = idle; millis()+MS can be 0 only once every 49 days, so bias it off zero.
 static unsigned long g_rumbleTestStop = 0;
+static unsigned long g_rfJournalBuilderTickStop = 0;
+static uint8_t g_rfJournalBuilderTickMask = 0;
+
+static const uint8_t RF_JOURNAL_BUILDER_TICK_ON[3] = { 0x01, 0x01, 0xF7 };
+static const uint8_t RF_JOURNAL_BUILDER_TICK_OFF[3] = { 0x01, 0x01, 0x00 };
+
+void hapticRfJournalBuilderTick(uint8_t participantMask)
+{
+	g_rfJournalBuilderTickMask = 0;
+	for (uint8_t s = 0; s < NSLOT; s++) {
+		const uint8_t bit = (uint8_t)(1u << s);
+		if ((participantMask & bit) && hapticLinkUp((int)s) &&
+		    relayEnqueue(0x82, RF_JOURNAL_BUILDER_TICK_ON,
+				 sizeof RF_JOURNAL_BUILDER_TICK_ON, true, s))
+			g_rfJournalBuilderTickMask |= bit;
+	}
+	if (!g_rfJournalBuilderTickMask) {
+		g_rfJournalBuilderTickStop = 0;
+		return;
+	}
+	g_rfJournalBuilderTickStop = millis() + RF_JOURNAL_BUILDER_TICK_MS;
+	if (!g_rfJournalBuilderTickStop)
+		g_rfJournalBuilderTickStop = 1;
+}
 
 void hapticTestRumble()
 {
@@ -697,6 +744,21 @@ void hapticTask()
 		for (uint8_t s = 0; s < NSLOT; s++)
 			hapticSteamRumble(0, 0, s);
 	}
+
+	// The journal-builder tick is outside the measured window. Queue explicit
+	// stops before the builder's inter-channel quiet guard expires.
+	if (g_rfJournalBuilderTickStop &&
+	    (long)(millis() - g_rfJournalBuilderTickStop) >= 0) {
+		g_rfJournalBuilderTickStop = 0;
+		const uint8_t mask = g_rfJournalBuilderTickMask;
+		g_rfJournalBuilderTickMask = 0;
+		for (uint8_t s = 0; s < NSLOT; s++)
+			if (mask & (uint8_t)(1u << s))
+				relayEnqueue(0x82, RF_JOURNAL_BUILDER_TICK_OFF,
+					     sizeof RF_JOURNAL_BUILDER_TICK_OFF,
+					     true, s);
+	}
+
 	// id9 steering (SET_SETTINGS index 9 = digital-mappings / the controller's AUTONOMOUS mapping+haptic
 	// engine, which is what generates the trackpad tick haptics). We decide per mode whether that autonomous
 	// engine should be ON, then either land id9=1 ONCE per connect episode (engine on) or hold id9=0 every
@@ -720,9 +782,13 @@ void hapticTask()
 		static const uint8_t DATA_LIZARD_ON[3] = { SETTING_LIZARD_MODE,
 							   0x01, 0x00 };
 
-		// In puck mode Steam owns haptics; skip id9 steering.
-		if (!modeIsPuck(g_usbMode)) {
-			bool wantAuto = (g_padHaptics != 0);
+		// In puck mode Steam owns haptics; skip id9 steering. Pure
+		// lizard is the exception: Steam never sees the controller, so
+		// nothing else would re-enable the pad layer after a session
+		// left id9=0, and the trackpad ticks stay silent.
+		const bool pureLizard = (g_usbMode == MODE_LIZARD);
+		if (!modeIsPuck(g_usbMode) || pureLizard) {
+			bool wantAuto = pureLizard || (g_padHaptics != 0);
 			for (int s = 0; s < NSLOT; s++) {
 				if (!g_slot[s].used || !hapticLinkUp(s)) {
 					// re-land id9 on the next (re)connect: a fresh controller defaults to
@@ -755,6 +821,23 @@ void hapticTask()
 				}
 			}
 		} // !modeIsPuck
+	}
+	// Re-assert the raw IMU mode on a mode switch (the link stays up, so hapticOnReconnect never fires)
+	// and periodically, in case Steam or the controller turned it back off while we were connected.
+	{
+		static uint8_t lastMode = 0xFF;
+		static unsigned long lastImu[NSLOT] = { 0 };
+		bool modeChanged = (g_usbMode != lastMode);
+		lastMode = g_usbMode;
+		for (int s = 0; s < NSLOT; s++) {
+			if (!g_slot[s].used || !hapticLinkUp(s))
+				continue;
+			if (!modeChanged &&
+			    (uint32_t)(millis() - lastImu[s]) < IMU_KEEP_MS)
+				continue;
+			lastImu[s] = millis();
+			imuForceRaw(s);
+		}
 	}
 	// Per-slot link-edge detect (backup for hapticOnReconnect in rf_link).
 	static bool wasHapticLinkUp[NSLOT] = { 0 };

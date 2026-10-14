@@ -29,6 +29,9 @@ extern uint8_t g_rfCh; // current TX/RX channel (hopped during beacon/poll)
 extern uint8_t g_rfBase[4]; // "ibex"
 // connected-session channel: a CLEAN data channel off the congested adv ch2 (shared by all slots on a puck)
 extern uint8_t g_sessCh;
+extern uint8_t g_rfStartupLastGoodChannel;
+void rfApplyStartupLastGoodChannel();
+bool saveRfStartupLastGoodChannel(uint8_t channel);
 
 // Per-bond SESSION address (base+prefix). Discovery stays on the SHARED "ibex" address (g_rfBase) so any
 // controller can find us; the host frame advertises THIS slot's unique address and the controller adopts it

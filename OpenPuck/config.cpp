@@ -20,6 +20,8 @@ uint8_t g_chordDpad[4] = { MODE_PS3, MODE_DS4_GAME, MODE_PS5_GAME,
 bool g_persistMode = false;
 uint8_t g_bootMode = 0xFF;
 
+bool g_isMachineInternal = false;
+
 bool g_debugCdcThisBoot = false;
 
 // persisted one-shot arm, stored in Cfg.rsvd0 (1 = keep CDC for the next boot)
@@ -96,8 +98,8 @@ struct Cfg {
 	// RUMBLE_SCALE_PCT default. This revives the byte the removed rumble-strength slider used, so the
 	// on-flash layout is unchanged and an existing cfg.bin still loads.
 	// rxWin10: legacy RF tunable slot (window now fixed; ignored). lizKeep: the id9=0 hold enable (see
-	// haptics.h LIZKEEP_MS). rsvd2 used to be landAll87, this is now ignored.
-	uint8_t rxWin10, lizKeep, rsvd2;
+	// haptics.h LIZKEEP_MS).
+	uint8_t rxWin10, lizKeep, isMachineInternal;
 	TypeCfg type[ET_COUNT]; // per-emulated-type back/qam/abSwap/padHaptics
 	// TAIL (appended after CFG_MAGIC 0xCF shipped): back4+D-pad mode assignments. New tail fields go HERE, at
 	// the end, and loadCfg accepts a short file so an upgrade keeps every existing setting -- see CFG_LEN_MIN.
@@ -109,12 +111,28 @@ struct Cfg {
 	// autonomous controller power-off on host sleep (see haptics.h g_suspendOff). 0/1; 0xFF (short
 	// pre-tail file) -> compiled default (on)
 	uint8_t suspendOff;
+	uint8_t ext[CFG_EXT_STORAGE_BYTES];
 }; // rsvd0 = ex-padSmooth, now the one-shot debug-CDC arm
 
 // Shortest cfg.bin we still accept: the layout as of CFG_MAGIC 0xCF, i.e. everything before the appended tail.
 // A file that stops anywhere in the tail leaves those bytes at the 0xFF prefill loadCfg() applies, which every
 // tail field treats as "unset" and replaces with its default.
 #define CFG_LEN_MIN (offsetof(struct Cfg, chordDpad))
+
+static uint8_t g_cfgExt[CFG_EXT_STORAGE_BYTES] = {
+	0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF
+};
+
+uint8_t cfgExtRead(uint8_t index)
+{
+	return index < CFG_EXT_STORAGE_BYTES ? g_cfgExt[index] : 0xFFu;
+}
+
+void cfgExtWrite(uint8_t index, uint8_t value)
+{
+	if (index < CFG_EXT_STORAGE_BYTES)
+		g_cfgExt[index] = value;
+}
 
 void saveCfg()
 {
@@ -130,13 +148,15 @@ void saveCfg()
 		  (uint8_t)(g_rumbleScale / 2), // host-rumble strength, pct/2
 		  (uint8_t)(g_rxWin / 10),
 		  g_lizKeep,
-		  0, //rsvd2, used to be g_landAll87
+		  (uint8_t)(g_isMachineInternal ? 0xEE : 0),
 		  {},
 		  { g_chordDpad[0], g_chordDpad[1], g_chordDpad[2],
 		    g_chordDpad[3] },
 		  {},
 		  g_rumbleStyle,
-		  g_suspendOff };
+		  g_suspendOff,
+		  {} };
+	memcpy(c.ext, g_cfgExt, sizeof c.ext);
 	for (int i = 0; i < ET_COUNT; i++) {
 		c.type[i] = g_type[i];
 		c.padStick[i][0] = g_padStickCfg[i][0];
@@ -153,6 +173,7 @@ void saveCfg()
 void loadCfg()
 {
 	Cfg c;
+	memset(g_cfgExt, 0xFF, sizeof g_cfgExt);
 	// 0xFF prefill: bytes a SHORT (pre-tail) cfg.bin never wrote stay 0xFF, which is not a valid mode/flag, so
 	// each tail field below falls back to its compiled default instead of reading whatever was on the stack.
 	memset(&c, 0xFF, sizeof c);
@@ -164,6 +185,13 @@ void loadCfg()
 		// predating the tail keeps mode/paddles/chords instead of silently reverting to factory defaults.
 		// Anything shorter, or a stale magic, is a real layout change -> discard and use defaults.
 		if (got >= (int)CFG_LEN_MIN && c.magic == CFG_MAGIC) {
+			const int extOff = (int)offsetof(struct Cfg, ext);
+			if (got > extOff) {
+				int n = got - extOff;
+				if (n > (int)sizeof g_cfgExt)
+					n = sizeof g_cfgExt;
+				memcpy(g_cfgExt, c.ext, (size_t)n);
+			}
 			g_mDiv = c.mDiv ? c.mDiv : 64;
 			g_mFric = c.mFric;
 			for (int i = 0; i < ET_COUNT; i++)
@@ -207,14 +235,20 @@ void loadCfg()
 					if (c.padStick[i][k] <= PS_MAX)
 						g_padStickCfg[i][k] =
 							c.padStick[i][k];
-			// grow a short file to the current layout on the next save
-			if (got < (int)sizeof c)
+			// Missing extension bytes alone do not force a config rewrite.
+			if (got < (int)offsetof(struct Cfg, ext))
 				consume = true;
 
 			// lizard-suppression keepalive enable (0/1; anything else = a pre-0xCE cfg leaked
 			// through -> keep the on default)
 			if (c.lizKeep <= 1)
 				g_lizKeep = c.lizKeep;
+
+			// This variable previously used to have values 0/1.
+			// Use a seperate trigger value 0xEE if we want to emulate a Steam Machine's
+			// internal receiver.
+			g_isMachineInternal = (c.isMachineInternal == 0xEE);
+
 			// host-rumble strength (pct/2; 0 = never set, or a cfg.bin from before this
 			// field was revived -> keep the RUMBLE_SCALE_PCT default)
 			if (c.rumbScale2) {
@@ -231,6 +265,7 @@ void loadCfg()
 			// suspend power-off enable (0xFF = a cfg.bin predating this tail field -> keep the on default)
 			if (c.suspendOff <= 1)
 				g_suspendOff = c.suspendOff;
+
 			// The poll RX window is now FIXED (g_rxWin is const) -- any persisted rxWin10 is ignored.
 		}
 		f.close();

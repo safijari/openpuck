@@ -1,21 +1,12 @@
-// mode_xinput.cpp -- Xbox 360 wired (XInput) personality (MODE_XBOX): one XInput gamepad per bonded controller.
-//
-// Real Xbox 360 pads are NOT HID: they use a vendor interface (class 0xFF / sub 0x5D / proto 0x01) carrying a
-// 20-byte XInput report. A custom TinyUSB class driver serves that interface plus a second boot-mouse interface
-// for the right trackpad. Host binds by VID/PID (045E:028E) + the FF/5D/01 interface. The OUT endpoint carries
-// rumble, relayed to the controller as a haptic by task().
-//
-// Multi-controller: one XInput interface per CONNECTED controller (dynamic mount -- see usb_mount.h; the device
-// re-enumerates without rebooting as controllers connect/disconnect). The single class driver routes xfer/open
-// callbacks by endpoint address into the per-bond-slot state; xi_open claims slots in connection order. The
-// right-pad mouse is a single shared interface (only bond slot 0's right-pad drives it).
+// One wired Xbox 360 pad, independent of RF controller joins and departures.
 #include "mode_xinput.h"
+#include "xinput_auth.h"
+#include "xinput_descriptors.h"
 #include "triton.h"
 #include "gamepad_util.h"
 #include "config.h"
 #include "haptics.h"
 #include "bonds.h"
-#include "usb_mount.h"
 #include "usb_tx.h"
 #include "usb_app_drivers.h"
 #include <Adafruit_TinyUSB.h>
@@ -24,7 +15,6 @@
 
 XboxController g_xboxCtl;
 
-// XInput button bits
 enum {
 	XB_DUP = 0x0001,
 	XB_DDOWN = 0x0002,
@@ -43,141 +33,180 @@ enum {
 	XB_Y = 0x8000
 };
 
-// ===================== XInput custom TinyUSB class driver =====================
-// Custom class driver + an Adafruit_USBD_Interface subclass emitting the interface + 0x21-blob + 2 endpoints.
-// Per-slot state lives in g_xiSlot[]: each XInput interface gets one. The class driver dispatches open/xfer
-// by endpoint address; xinputSend() targets a specific slot's IN endpoint.
-#define XINPUT_DESC_LEN \
-	(9 + 17 + 7 + 7) // interface(9)+vendor0x21(17)+IN ep(7)+OUT ep(7) = 40
-
-// per-slot state. `inUse` is set in xi_open from the USB ISR and read in xinputSend from the loop -- mark
-// volatile so the loop doesn't observe a stale 0 across a freshly-attached interface.
-struct XiSlot {
-	uint8_t itf, epIn, epOut;
-	uint8_t inBuf[32], outBuf[32];
-	volatile uint16_t rumbleLow,
-		rumbleHigh; // last host rumble values, x 257
-	volatile unsigned long
-		rumbleMs; // millis of last OUT packet (stuck-rumble watchdog)
-	volatile bool inUse;
-	// inBuf holds a built-but-not-yet-sent 20B XInput report; the actual usbd_edpt_xfer is issued from the
-	// usbd task (usbTxDrainHook), never from loop(), so the cross-task blocking-defer can't stall the loop.
-	volatile bool txPending;
-};
-static XiSlot g_xiSlot[NSLOT];
-// Dynamic mount: xi_open is called once per XInput interface in descriptor order; this counts them so the
-// u-th interface claims the u-th connected controller (g_usbToBond[u]). Reset on every (re)enumeration.
-static uint8_t g_xiOpenU = 0;
-// release a held rumble if no OUT packet refreshes it for this long (covers a lost stop)
+#define XINPUT_CONN_MS 1200u
 #define RUMBLE_STUCK_MS 2500u
+
+struct XiState {
+	volatile bool inUse;
+	volatile int8_t bond;
+	volatile bool txPending;
+	volatile bool neutralPending;
+	volatile bool outRearm;
+	uint8_t claimedInterfaces;
+	uint8_t rhport;
+	uint8_t latest[20];
+	CFG_TUD_MEM_ALIGN uint8_t inBuf[32];
+	CFG_TUD_MEM_ALIGN uint8_t outBuf[32];
+	volatile uint16_t rumbleLow, rumbleHigh;
+	volatile unsigned long rumbleMs;
+	volatile bool rumblePending;
+	volatile int8_t rumbleBond;
+	volatile uint8_t player;
+};
+
+static XiState g_xi;
+static volatile uint32_t g_xiGeneration;
+// Reset callbacks must stop the old RF destination later, never a replacement.
+static volatile uint8_t g_stopBonds;
+
+static void xiNeutral(uint8_t *report)
+{
+	memset(report, 0, 20);
+	report[1] = 20;
+}
+
+// Only used before attach or after TinyUSB has cancelled endpoint DMA.
+static void xiClear(void)
+{
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	if (g_xi.inUse && g_xi.bond >= 0)
+		g_stopBonds |= 1u << g_xi.bond;
+	g_xiGeneration++;
+	memset(&g_xi, 0, sizeof g_xi);
+	g_xi.bond = g_xi.rumbleBond = -1;
+	xiNeutral(g_xi.latest);
+	xiNeutral(g_xi.inBuf);
+	g_xi.neutralPending = true;
+	__set_PRIMASK(pm);
+	xinputAuthReset();
+}
 
 static void xi_init(void)
 {
-	for (int s = 0; s < NSLOT; s++)
-		g_xiSlot[s].inUse = false;
+	xiClear();
 }
+
 static bool xi_deinit(void)
 {
+	xiClear();
 	return true;
 }
+
 static void xi_reset(uint8_t rhport)
 {
 	(void)rhport;
-	g_xiOpenU =
-		0; // restart per-interface claim ordering for this enumeration
-	for (int s = 0; s < NSLOT; s++) {
-		g_xiSlot[s].itf = 0;
-		g_xiSlot[s].epIn = g_xiSlot[s].epOut = 0;
-		g_xiSlot[s].inUse = false;
-	}
+	xiClear();
 }
-// TinyUSB calls xi_open once per XInput interface in the config descriptor. Claim the first free BONDED
-// slot so the xiSlot index matches the bond-slot index (begin() registers them in ascending bond-slot order).
-// Fallback to any free slot when there are no bonds (fresh device).
+
 static uint16_t xi_open(uint8_t rhport, tusb_desc_interface_t const *itf,
 			uint16_t max_len)
 {
-	if (!(itf->bInterfaceClass == 0xFF && itf->bInterfaceSubClass == 0x5D &&
-	      itf->bInterfaceProtocol == 0x01))
+	if (!itf || max_len < sizeof(tusb_desc_interface_t) ||
+	    itf->bInterfaceNumber >= 4)
 		return 0;
-	// The u-th XInput interface in the descriptor serves the u-th connected controller. g_xiSlot is keyed by
-	// BOND slot so onReport45(bond)/rumble route straight through; only connected bonds get an interface.
-	uint8_t u = g_xiOpenU++;
-	int slot = (u < g_usbMountCount) ? g_usbToBond[u] : -1;
-	if (slot < 0) { // fallback (e.g. map not built): first free slot
-		for (int s = 0; s < NSLOT; s++)
-			if (!g_xiSlot[s].inUse) {
-				slot = s;
-				break;
-			}
-	}
-	if (slot < 0 || slot >= NSLOT || g_xiSlot[slot].inUse)
+	static const uint16_t starts[] = { 0, 40, 104, 129, 144 };
+	uint8_t number = itf->bInterfaceNumber;
+	uint16_t start = starts[number];
+	uint16_t length = starts[number + 1] - start;
+	if (max_len < length || (g_xi.claimedInterfaces & (1u << number)))
 		return 0;
-	XiSlot &S = g_xiSlot[slot];
-	S.itf = itf->bInterfaceNumber;
-	uint8_t const *p = (uint8_t const *)itf;
-	uint8_t const *end = p + max_len;
-	uint16_t used = itf->bLength;
-	p += itf->bLength;
-	uint8_t opened = 0;
-	while (p < end && opened < itf->bNumEndpoints) {
-		uint8_t blen = p[0], btype = p[1];
-		if (btype == TUSB_DESC_ENDPOINT) {
-			tusb_desc_endpoint_t const *ep =
-				(tusb_desc_endpoint_t const *)p;
-			usbd_edpt_open(rhport, ep);
-			if (tu_edpt_dir(ep->bEndpointAddress) == TUSB_DIR_IN)
-				S.epIn = ep->bEndpointAddress;
-			else
-				S.epOut = ep->bEndpointAddress;
-			opened++;
+
+	const uint8_t *body = (const uint8_t *)itf;
+	const tusb_desc_endpoint_t *epIn = nullptr, *epOut = nullptr;
+	uint16_t offset = 0;
+	while (offset < length) {
+		if (length - offset < 2)
+			return 0;
+		uint8_t size = body[offset], type = body[offset + 1];
+		if (size < 2 || size > length - offset ||
+		    size != XINPUT_CONFIG_BODY[start + offset])
+			return 0;
+		// The fixed personality needs exact interface/endpoint numbers and
+		// vendor blobs. Only the security string is allocated by Adafruit.
+		for (uint16_t i = offset; i < offset + size; i++) {
+			if (start + i != XINPUT_SECURITY_STRING_OFFSET &&
+			    body[i] != XINPUT_CONFIG_BODY[start + i])
+				return 0;
 		}
-		used += blen;
-		p += blen;
+		if (type == TUSB_DESC_ENDPOINT && number == 0) {
+			const tusb_desc_endpoint_t *ep =
+				(const tusb_desc_endpoint_t *)(body + offset);
+			if (ep->bEndpointAddress == 0x81)
+				epIn = ep;
+			else if (ep->bEndpointAddress == 0x02)
+				epOut = ep;
+		}
+		offset += size;
 	}
-	S.inUse = true;
-	// arm OUT (rumble/LED)
-	if (S.epOut)
-		usbd_edpt_xfer(rhport, S.epOut, S.outBuf, sizeof S.outBuf);
-	return used;
+
+	// The accessory interfaces identify the genuine pad layout, but no
+	// headset or chatpad is present. Do not open or feed their endpoints;
+	// input's reserved bytes stay zero (no accessory-presence flags).
+	// Claim separately: older TinyUSB versions bind only the first interface
+	// of a returned descriptor span when there is no IAD.
+	if (number != 0) {
+		g_xi.claimedInterfaces |= 1u << number;
+		return length;
+	}
+	if (!epIn || !epOut)
+		return 0;
+	if (!usbd_edpt_open(rhport, epIn))
+		return 0;
+	if (!usbd_edpt_open(rhport, epOut)) {
+		usbd_edpt_close(rhport, 0x81);
+		return 0;
+	}
+	g_xi.claimedInterfaces |= 1u << number;
+	g_xi.rhport = rhport;
+	g_xi.inUse = true;
+	g_xi.neutralPending = true;
+	g_xi.outRearm =
+		!usbd_edpt_xfer(rhport, 0x02, g_xi.outBuf, sizeof g_xi.outBuf);
+	return length;
 }
+
 static bool xi_ctrl(uint8_t rhport, uint8_t stage,
-		    tusb_control_request_t const *req)
+		    tusb_control_request_t const *request)
 {
-	(void)rhport;
-	(void)req;
-	return stage != CONTROL_STAGE_SETUP;
+	return xinputAuthControl(rhport, stage, request);
 }
-// Route an endpoint xfer callback to the slot that owns that endpoint.
-static bool xi_xfer(uint8_t rhport, uint8_t ep, xfer_result_t res, uint32_t n)
+
+static bool xi_xfer(uint8_t rhport, uint8_t ep, xfer_result_t result,
+		    uint32_t length)
 {
-	(void)res;
-	for (int s = 0; s < NSLOT; s++) {
-		XiSlot &S = g_xiSlot[s];
-		if (!S.inUse)
-			continue;
-		if (ep == S.epOut) {
-			// XInput rumble packet: [00][08][00][bigMotor][smallMotor][00][00][00]; LED pkt is [01][03][led]
-			if (n >= 5 && S.outBuf[0] == 0x00 &&
-			    S.outBuf[1] == 0x08) {
-				uint8_t big = S.outBuf[3], sml = S.outBuf[4];
-				// skip tracking+relay when rumble is disabled for this type
-				if (g_rumble) {
-					uint16_t lo = (uint16_t)big * 257u;
-					uint16_t hi = (uint16_t)sml * 257u;
-					S.rumbleLow = lo;
-					S.rumbleHigh = hi;
-					S.rumbleMs = millis();
-					hapticSteamRumble(lo, hi, (uint8_t)s);
-				}
-			}
-			usbd_edpt_xfer(rhport, S.epOut, S.outBuf,
-				       sizeof S.outBuf);
-			return true;
+	if (!g_xi.inUse || rhport != g_xi.rhport)
+		return false;
+	if (ep == 0x81) {
+		if (result != XFER_RESULT_SUCCESS)
+			g_xi.neutralPending = true;
+		return true;
+	}
+	if (ep != 0x02)
+		return false;
+	if (result == XFER_RESULT_SUCCESS) {
+		const uint8_t *data = g_xi.outBuf;
+		if (length == 8 && data[0] == 0 && data[1] == 8 &&
+		    data[2] == 0 && data[5] == 0 && data[6] == 0 &&
+		    data[7] == 0) {
+			g_xi.rumbleLow = (uint16_t)data[3] * 257u;
+			g_xi.rumbleHigh = (uint16_t)data[4] * 257u;
+			g_xi.rumbleMs = millis();
+			g_xi.rumbleBond = g_xi.bond;
+			g_xi.rumblePending = true;
+		} else if (length == 3 && data[0] == 1 && data[1] == 3) {
+			// 2..5 blink then settle; 6..9 immediately select a player.
+			uint8_t led = data[2];
+			g_xi.player = led >= 2 && led <= 5 ? led - 1 :
+				      led >= 6 && led <= 9 ? led - 5 :
+							     0;
 		}
 	}
+	g_xi.outRearm =
+		!usbd_edpt_xfer(rhport, ep, g_xi.outBuf, sizeof g_xi.outBuf);
 	return true;
 }
+
 static const usbd_class_driver_t g_xiDriver = {
 #if CFG_TUSB_DEBUG >= 2
 	.name = "XINPUT",
@@ -190,6 +219,7 @@ static const usbd_class_driver_t g_xiDriver = {
 	.xfer_cb = xi_xfer,
 	.sof = NULL
 };
+
 const usbd_class_driver_t *xinputClassDriver(void)
 {
 	return &g_xiDriver;
@@ -197,98 +227,110 @@ const usbd_class_driver_t *xinputClassDriver(void)
 
 class Adafruit_USBD_XInput : public Adafruit_USBD_Interface {
     public:
-	uint16_t getInterfaceDescriptor(uint8_t, uint8_t *buf,
+	uint16_t getInterfaceDescriptor(uint8_t itfnum, uint8_t *buf,
 					uint16_t bufsize) override
 	{
 		if (!buf)
-			return XINPUT_DESC_LEN;
-		if (bufsize < XINPUT_DESC_LEN)
+			return sizeof XINPUT_CONFIG_BODY;
+		if (itfnum != 0 || bufsize < sizeof XINPUT_CONFIG_BODY)
 			return 0;
-		uint8_t itfnum = TinyUSBDevice.allocInterface(1);
-		uint8_t epin = TinyUSBDevice.allocEndpoint(TUSB_DIR_IN),
-			epout = TinyUSBDevice.allocEndpoint(TUSB_DIR_OUT);
-		const uint8_t t[XINPUT_DESC_LEN] = {
-			9, TUSB_DESC_INTERFACE, itfnum, 0x00, 0x02, 0xFF, 0x5D,
-			0x01, _strid, 0x11, 0x21, 0x00, 0x01, 0x01, 0x25, epin,
-			0x14, 0x00, 0x00, 0x00, 0x00, 0x13, epout, 0x08, 0x00,
-			0x00, 7, TUSB_DESC_ENDPOINT, epin, TUSB_XFER_INTERRUPT,
-			U16_TO_U8S_LE(0x20),
-
-			// bInterval 1ms (1000Hz) so the RF rate is the only limit
-			1, 7, TUSB_DESC_ENDPOINT, epout, TUSB_XFER_INTERRUPT,
-			U16_TO_U8S_LE(0x20), 8
-		};
-		memcpy(buf, t, XINPUT_DESC_LEN);
-		return XINPUT_DESC_LEN;
+		TinyUSBDevice.allocInterface(4);
+		// Reserve through endpoint 6 in each direction, including holes.
+		// No other USB interfaces may be added to this personality.
+		for (uint8_t ep = 1; ep <= 6; ep++) {
+			TinyUSBDevice.allocEndpoint(TUSB_DIR_IN);
+			TinyUSBDevice.allocEndpoint(TUSB_DIR_OUT);
+		}
+		memcpy(buf, XINPUT_CONFIG_BODY, sizeof XINPUT_CONFIG_BODY);
+		buf[XINPUT_SECURITY_STRING_OFFSET] = _strid;
+		return sizeof XINPUT_CONFIG_BODY;
 	}
 	bool begin()
 	{
+		setStringDescriptor(XINPUT_SECURITY_STRING);
 		return TinyUSBDevice.addInterface(*this);
 	}
 };
-// NSLOT instances: each registers its own XInput interface (own itfnum + IN/OUT ep pair) during begin().
-// begin() in XboxController::begin() runs in order 0..NSLOT-1, so xi_open's first-free assignment lines up.
-static Adafruit_USBD_XInput g_xinput[NSLOT];
-static void xinputSend(uint8_t slot, uint16_t buttons, uint8_t lt, uint8_t rt,
-		       int16_t lx, int16_t ly, int16_t rx, int16_t ry)
+
+static Adafruit_USBD_XInput g_xinput;
+
+static void xinputSend(uint8_t slot, uint32_t generation, uint16_t buttons,
+		       uint8_t lt, uint8_t rt, int16_t lx, int16_t ly,
+		       int16_t rx, int16_t ry)
 {
-	if (slot >= NSLOT || !g_xiSlot[slot].inUse)
-		return;
-	XiSlot &S = g_xiSlot[slot];
-	// Only refill inBuf when the IN endpoint is idle: while a transfer is in flight (busy) the DMA is still
-	// reading inBuf, so leave it untouched (this also coalesces -- newest state wins, like a real pad).
-	if (!tud_mounted() || S.epIn == 0 || usbd_edpt_busy(0, S.epIn))
-		return;
-	uint8_t *r = S.inBuf;
-	r[0] = 0x00;
-	r[1] = 0x14;
-	r[2] = buttons & 0xFF;
-	r[3] = buttons >> 8;
-	r[4] = lt;
-	r[5] = rt;
-	r[6] = lx & 0xFF;
-	r[7] = lx >> 8;
-	r[8] = ly & 0xFF;
-	r[9] = ly >> 8;
-	r[10] = rx & 0xFF;
-	r[11] = rx >> 8;
-	r[12] = ry & 0xFF;
-	r[13] = ry >> 8;
-	memset(r + 14, 0, 6);
-	// Hand off to the usbd task: the xfer is issued from xiSofDrain() (SOF), not here, so loop() never
-	// calls into the dcd transfer path (which can block on the device event queue under load).
-	S.txPending = true;
+	uint8_t report[20] = { 0, 20 };
+	report[2] = buttons & 0xFF;
+	report[3] = buttons >> 8;
+	report[4] = lt;
+	report[5] = rt;
+	report[6] = lx & 0xFF;
+	report[7] = lx >> 8;
+	report[8] = ly & 0xFF;
+	report[9] = ly >> 8;
+	report[10] = rx & 0xFF;
+	report[11] = rx >> 8;
+	report[12] = ry & 0xFF;
+	report[13] = ry >> 8;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	if (g_xiGeneration == generation && g_xi.bond == slot) {
+		memcpy(g_xi.latest, report, sizeof report);
+		g_xi.txPending = true;
+	}
+	__set_PRIMASK(pm);
 }
 
-// usbd-task drain (registered with usbTxRegisterDrain, called from tud_sof_cb). Issues the deferred XInput IN
-// transfers. Runs at higher priority than loop(), so the claim->xfer is atomic w.r.t. xinputSend() refilling
-// inBuf -- no torn DMA.
-static void xiSofDrain(void)
+// usbTxPump calls this from the loop with the USB priority-inversion guard.
+static void xiTxDrain(void)
 {
-	if (!tud_mounted())
+	if (!tud_mounted() || !g_xi.inUse)
 		return;
-	for (int s = 0; s < NSLOT; s++) {
-		XiSlot &S = g_xiSlot[s];
-		if (!S.inUse || !S.txPending || S.epIn == 0)
-			continue;
-		if (usbd_edpt_busy(0, S.epIn))
-			continue;
-		if (usbd_edpt_claim(0, S.epIn)) {
-			if (usbd_edpt_xfer(0, S.epIn, S.inBuf, 20))
-				S.txPending = false;
-			else
-				usbd_edpt_release(0, S.epIn);
+	uint32_t generation = g_xiGeneration;
+	uint8_t rhport = g_xi.rhport;
+	if (g_xi.outRearm && !usbd_edpt_busy(rhport, 0x02) &&
+	    usbd_edpt_claim(rhport, 0x02)) {
+		g_xi.outRearm = false;
+		if (!usbd_edpt_xfer(rhport, 0x02, g_xi.outBuf,
+				    sizeof g_xi.outBuf)) {
+			if (generation == g_xiGeneration)
+				g_xi.outRearm = true;
+			usbd_edpt_release(rhport, 0x02);
 		}
+	}
+	if (generation != g_xiGeneration || !g_xi.inUse ||
+	    (!g_xi.txPending && !g_xi.neutralPending) ||
+	    usbd_edpt_busy(rhport, 0x81) || !usbd_edpt_claim(rhport, 0x81))
+		return;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	if (generation != g_xiGeneration) {
+		__set_PRIMASK(pm);
+		usbd_edpt_release(rhport, 0x81);
+		return;
+	}
+	bool neutral = g_xi.neutralPending;
+	if (neutral) {
+		xiNeutral(g_xi.inBuf);
+		g_xi.neutralPending = false;
+	} else {
+		memcpy(g_xi.inBuf, g_xi.latest, sizeof g_xi.latest);
+		g_xi.txPending = false;
+	}
+	__set_PRIMASK(pm);
+	if (!usbd_edpt_xfer(rhport, 0x81, g_xi.inBuf, 20)) {
+		pm = __get_PRIMASK();
+		__disable_irq();
+		if (generation == g_xiGeneration) {
+			if (neutral)
+				g_xi.neutralPending = true;
+			else
+				g_xi.txPending = true;
+		}
+		__set_PRIMASK(pm);
+		usbd_edpt_release(rhport, 0x81);
 	}
 }
 
-// ===================== right-pad mouse interface =====================
-static const uint8_t MOUSE_HID_DESC[] = { TUD_HID_REPORT_DESC_MOUSE() };
-static Adafruit_USBD_HID
-	g_mouse; // Xbox-mode mouse interface (right trackpad, slot 0 only)
-
-// ===================== report 0x45 -> XInput + mouse =====================
-// button code (g_back[], g_abSwap targets) -> legacy XInput bit. 0=none 1=A 2=B 3=X 4=Y 5=LB 6=RB 7=L3 8=R3 9=Back 10=Start 11=Guide 12=Dup 13=Ddown 14=Dleft 15=Dright
 static uint16_t codeToXB(uint8_t c)
 {
 	switch (c) {
@@ -326,7 +368,8 @@ static uint16_t codeToXB(uint8_t c)
 		return 0;
 	}
 }
-static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
+
+static void rfXboxGamepad(uint8_t slot, uint32_t generation, const uint8_t *r)
 {
 	uint32_t b = btnsOf(r);
 	if (g_qamMap && (b & TB_QAM)) {
@@ -342,6 +385,7 @@ static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 		btn |= XB_DLEFT;
 	if (b & TB_DRT)
 		btn |= XB_DRIGHT;
+	// TB_VIEW is the physical Menu/Start side; see triton.h.
 	if (b & TB_VIEW)
 		btn |= XB_START;
 	if (b & TB_MENU)
@@ -356,7 +400,6 @@ static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 		btn |= XB_L3;
 	if (b & TB_R3)
 		btn |= XB_R3;
-	// face buttons, with optional A/B + X/Y swap (Nintendo layout)
 	uint16_t fA = g_abSwap ? XB_B : XB_A, fB = g_abSwap ? XB_A : XB_B,
 		 fX = g_abSwap ? XB_Y : XB_X, fY = g_abSwap ? XB_X : XB_Y;
 	if (b & TB_A)
@@ -367,7 +410,6 @@ static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 		btn |= fX;
 	if (b & TB_Y)
 		btn |= fY;
-	// back paddles -> configurable mapping (default L4->LB, R4->RB, L5->L3, R5->R3)
 	if (b & TB_L4)
 		btn |= codeToXB(g_back[0]);
 	if (b & TB_R4)
@@ -376,12 +418,8 @@ static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 		btn |= codeToXB(g_back[2]);
 	if (b & TB_R5)
 		btn |= codeToXB(g_back[3]);
-	uint8_t lt = trigU8(u16off(r, 4)),
-		rt = trigU8(u16off(
-			r, 6)); // triggers u16 (half-scale) -> full-range u8
-	// Trigger remaps (codes 19=LT, 20=RT): XInput triggers are analog bytes, not buttons, so a back paddle /
-	// QAM mapped to a trigger pulls it full. QAM arrives as TB_L2/TB_R2 (folded into b via tritonFromCode);
-	// back paddles are matched by their configured code.
+	uint8_t lt = trigU8(u16off(r, 4)), rt = trigU8(u16off(r, 6));
+	// Remapped triggers pull the analog byte full; they have no button bit.
 	if (b & TB_L2)
 		lt = 0xFF;
 	if (b & TB_R2)
@@ -396,148 +434,118 @@ static void rfXboxGamepad(uint8_t slot, const uint8_t *r)
 		else if (bc[i] == 20)
 			rt = 0xFF;
 	}
-	// Raw-report offsets, not slotSticks(): this mode already decodes 0x45 in place and never
-	// touches g_in. 16/18 = left pad X/Y, 22/24 = right pad X/Y (same pair rfXboxMouse reads).
 	int16_t lx = (int16_t)s16off(r, 8), ly = (int16_t)s16off(r, 10),
 		rx = (int16_t)s16off(r, 12), ry = (int16_t)s16off(r, 14);
 	padStickBlend(b, (int16_t)s16off(r, 16), (int16_t)s16off(r, 18),
 		      (int16_t)s16off(r, 22), (int16_t)s16off(r, 24), &lx, &ly,
 		      &rx, &ry);
-	xinputSend(slot, btn, lt, rt, lx, ly, rx, ry);
-}
-// Right pad -> mouse on a second HID-mouse interface alongside the XInput gamepad. Same glide model as Lizard's
-// right pad; RPad click = left button, LPad click = right. SINGLE shared mouse: the desktop can only consume
-// one mouse. Slot 0's right-pad drives it; other slots' right-pad input is intentionally ignored here.
-static void rfXboxMouse(const uint8_t *r)
-{
-	uint32_t b = btnsOf(r);
-	static int prx = 0, pry = 0;
-	static bool prt = false;
-	static float vx = 0, vy = 0, rmx = 0, rmy = 0;
-	static uint8_t pmb = 0;
-	// The right pad drives a stick now, so it must not also glide the mouse -- treat it as untouched and let
-	// the residual velocity decay away instead of stopping dead.
-	bool rtouch = (g_padStick[1] == PS_OFF) && (b & TB_RPADT);
-	int rx = s16off(r, 22), ry = s16off(r, 24);
-	if (rtouch) {
-		if (prt) {
-			vx += (rx - prx);
-			vy += (ry - pry);
-		}
-		prx = rx;
-		pry = ry;
-	}
-	prt = rtouch;
-	float mxf = vx / (float)(g_mDiv * 10) + rmx,
-	      myf = -(vy / (float)(g_mDiv * 10)) +
-		    rmy; // Y inverted for screen coords
-	int dx = (int)mxf, dy = (int)myf;
-	rmx = mxf - dx;
-	rmy = myf - dy; // sub-pixel carry
-	if (dx > 127)
-		dx = 127;
-	if (dx < -127)
-		dx = -127;
-	if (dy > 127)
-		dy = 127;
-	if (dy < -127)
-		dy = -127;
-	float f = g_mFric / 100.0f;
-	vx *= f;
-	vy *= f;
-	if (vx > -1 && vx < 1)
-		vx = 0;
-	if (vy > -1 && vy < 1)
-		vy = 0; // friction = glide/decay
-	uint8_t mb = ((b & TB_RPADC) ? 1 : 0) |
-		     ((b & TB_LPADC) ?
-			      2 :
-			      0); // RPad click = left, LPad click = right
-	if (dx || dy || mb != pmb) {
-		pmb = mb;
-		hid_mouse_report_t m;
-		m.buttons = mb;
-		m.x = (int8_t)dx;
-		m.y = (int8_t)dy;
-		m.wheel = 0;
-		m.pan = 0;
-		if (g_mouse.ready())
-			usbTxHid(&g_mouse, 0, &m, sizeof m);
-	}
+	xinputSend(slot, generation, btn, lt, rt, lx, ly, rx, ry);
 }
 
-// ===================== IController =====================
-// Dynamic-mount mode: begin() is unused (setup() calls beginPool()+usbReenumerate instead).
-void XboxController::begin()
+static bool xiBondAlive(int slot, unsigned long now)
 {
+	return slot >= 0 && slot < NSLOT && g_slot[slot].used &&
+	       g_connReplyMs[slot] &&
+	       now - g_connReplyMs[slot] <= XINPUT_CONN_MS;
 }
-// XInput slot interfaces are a custom (non-HID) class, so they don't draw on the CFG_TUD_HID budget (only the
-// wake mouse + right-pad mouse do). Slots are limited by NSLOT / USB endpoints, not HID instances.
-uint8_t XboxController::maxSlots() const
+
+static void xiDisconnect(unsigned long now)
 {
-	return (uint8_t)NSLOT;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	int slot = g_xi.bond;
+	if (slot >= 0 && !xiBondAlive(slot, now)) {
+		g_stopBonds |= 1u << slot;
+		g_xi.bond = g_xi.rumbleBond = -1;
+		g_xi.rumbleLow = g_xi.rumbleHigh = 0;
+		g_xi.rumbleMs = 0;
+		g_xi.rumblePending = false;
+		g_xi.txPending = false;
+		g_xi.neutralPending = true;
+		xiNeutral(g_xi.latest);
+	}
+	__set_PRIMASK(pm);
 }
+
 void XboxController::usbIdentity()
 {
-	// 045E:028E -> Windows xusb / SDL / Linux xpad all bind it
 	USBDevice.setID(0x045E, 0x028E);
 	USBDevice.setVersion(0x0200);
-	USBDevice.setDeviceVersion(0x0120);
-	USBDevice.setManufacturerDescriptor("Microsoft");
+	USBDevice.setDeviceVersion(0x0114);
+	USBDevice.setManufacturerDescriptor("\xc2\xa9Microsoft Corporation");
 	USBDevice.setProductDescriptor("Controller");
+	USBDevice.setSerialDescriptor(xinputAuthSerial());
+	USBDevice.setConfigurationAttribute(0xA0);
+	USBDevice.setConfigurationMaxPower(500);
+	// Adafruit exposes no class setter; its callback returns mutable backing
+	// storage. Identity is set only while detached, before enumeration.
+	tusb_desc_device_t *device =
+		(tusb_desc_device_t *)tud_descriptor_device_cb();
+	device->bDeviceClass = 0xFF;
+	device->bDeviceSubClass = 0xFF;
+	device->bDeviceProtocol = 0xFF;
 }
-void XboxController::beginPool()
+
+void XboxController::begin()
 {
-	// Lock the right-pad mouse HID instance (wake mouse was begun first by setup -> this is HID instance 1).
-	g_mouse.setStringDescriptor("OpenPuck Mouse");
-	g_mouse.setBootProtocol(HID_ITF_PROTOCOL_MOUSE);
-	g_mouse.setReportDescriptor(MOUSE_HID_DESC, sizeof MOUSE_HID_DESC);
-	g_mouse.setPollInterval(1);
-	g_mouse.begin();
-	for (int s = 0; s < NSLOT; s++)
-		g_xinput[s].setStringDescriptor("Controller");
-	// Drain the deferred XInput IN transfers from the usbd task every SOF (only registered in this mode).
-	usbTxRegisterDrain(xiSofDrain);
+	xiClear();
+	xinputAuthPrepare();
+	usbIdentity();
+	g_xinput.begin();
+	usbTxRegisterDrain(xiTxDrain);
 }
-void XboxController::mountSlots(uint8_t k)
-{
-	// Right-pad mouse first (fixed HID), then one XInput interface per connected controller (claimed in
-	// order by xi_open). The wake mouse + WebUSB are added around this by usbReenumerate.
-	USBDevice.addInterface(g_mouse);
-	for (uint8_t u = 0; u < k; u++)
-		USBDevice.addInterface(g_xinput[u]);
-}
+
 void XboxController::onReport45(int slot, const uint8_t *rep, bool fresh,
 				uint8_t bodyTlen)
 {
-	(void)fresh;
-	(void)bodyTlen;
-	if (slot < 0 || slot >= NSLOT)
+	if (slot < 0 || slot >= NSLOT || !rep || bodyTlen < 26 ||
+	    (rep[0] != 0x45 && rep[0] != 0x42))
 		return;
-	// rfXboxGamepad/rfXboxMouse read report 0x45 field offsets. The new-firmware report 0x42 is VERIFIED
-	// byte-identical over [0..45] (buttons/triggers/sticks/pads/IMU at the same offsets; it only appends 8
-	// trailing bytes and sets always-on status bits 28/29 that no TB_ mask reads -- see the rf_link decode
-	// note), so both ids decode here. Anything else must not be decoded as gamepad input.
-	if (rep[0] != 0x45 && rep[0] != 0x42)
-		return;
-	rfXboxGamepad((uint8_t)slot, rep);
-	// Shared desktop mouse: slot 0's right-pad only. Other slots' right-pad is still part of the
-	// per-slot XInput (TB_RPADT in the gamepad report is unused today but kept for forward-compat).
-	if (slot == 0)
-		rfXboxMouse(rep);
+	unsigned long now = millis();
+	xiDisconnect(now);
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	// rf_link also injects a synthetic neutral after 300ms of silence; it
+	// may release input, but must never acquire an inactive RF destination.
+	if (g_xi.inUse && g_xi.bond < 0 && fresh && xiBondAlive(slot, now) &&
+	    now - g_connReplyMs[slot] < 300u) {
+		g_xi.bond = slot;
+		g_xi.rumblePending = false;
+		g_xi.rumbleBond = -1;
+		g_xi.rumbleLow = g_xi.rumbleHigh = 0;
+	}
+	bool selected = g_xi.bond == slot;
+	uint32_t generation = g_xiGeneration;
+	__set_PRIMASK(pm);
+	if (selected)
+		rfXboxGamepad((uint8_t)slot, generation, rep);
 }
-// Lost-stop watchdog per slot: Steam/Triton rumble is latched, so force a zero report if the host stops
-// refreshing on a particular XInput. The haptics.cpp global watchdog fires too, but it skips while the slot
-// is in the post-reconnect block -- this catches a host that kept streaming while we were blocked.
+
 void XboxController::task()
 {
-	for (int s = 0; s < NSLOT; s++) {
-		if (!g_xiSlot[s].inUse)
-			continue;
-		if ((g_xiSlot[s].rumbleLow || g_xiSlot[s].rumbleHigh) &&
-		    millis() - g_xiSlot[s].rumbleMs > RUMBLE_STUCK_MS) {
-			g_xiSlot[s].rumbleLow = g_xiSlot[s].rumbleHigh = 0;
-			hapticSteamRumble(0, 0, (uint8_t)s);
-		}
+	unsigned long now = millis();
+	xiDisconnect(now);
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
+	uint8_t stops = g_stopBonds;
+	g_stopBonds = 0;
+	int slot = g_xi.bond;
+	bool pending = g_xi.rumblePending && g_xi.rumbleBond == slot;
+	uint16_t low = g_xi.rumbleLow, high = g_xi.rumbleHigh;
+	if (!g_rumble || now - g_xi.rumbleMs > RUMBLE_STUCK_MS) {
+		pending |= low || high;
+		low = high = 0;
+		g_xi.rumbleLow = g_xi.rumbleHigh = 0;
 	}
+	g_xi.rumblePending = false;
+	uint32_t generation = g_xiGeneration;
+	__set_PRIMASK(pm);
+	for (uint8_t s = 0; s < NSLOT; s++) {
+		if (stops & (1u << s))
+			hapticSteamRumble(0, 0, s);
+	}
+	if (pending && xiBondAlive(slot, now) && g_xiGeneration == generation &&
+	    g_xi.bond == slot)
+		hapticSteamRumble(low, high, (uint8_t)slot);
+	xinputAuthYield();
 }

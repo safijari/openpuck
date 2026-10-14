@@ -7,6 +7,8 @@
 #pragma once
 #include <stdint.h>
 
+#define OPK_TRITON_REPORT_STATE_TIMESTAMP 0x47u
+
 // ---- Triton button masks (the 32-bit field at rep[2..5]) ----
 #define TB_A 0x1u
 #define TB_B 0x2u
@@ -79,6 +81,10 @@ static inline uint32_t btnsOf(const uint8_t *r)
 // report 0x45 IMU offsets (PROTOCOL.md §8): accel @0x22, gyro @0x28 from report start.
 void imuFrom45(const uint8_t *r, int16_t *ax, int16_t *ay, int16_t *az,
 	       int16_t *gx, int16_t *gy, int16_t *gz);
+// Convert Triton report 0x47's wrapping 16-bit 32-us IMU clock to the
+// same monotonic microsecond domain used by PuckInput::imuTimestampUs.
+uint32_t tritonTimestamp47Us(uint8_t slot, uint16_t timestamp32us);
+void tritonTimestamp47Reset(uint8_t slot);
 
 // ---- shared decoded input (filled by rf_link.cpp once per fresh report 0x45, read by every mode) ----
 // One PuckInput per bond slot: each controller in a multi-slot puck has its own decoded input. The stream
@@ -92,6 +98,9 @@ struct PuckInput {
 	int16_t lpx, lpy, rpx, rpy; // left / right trackpad coords (int16)
 	int16_t ax, ay, az; // accelerometer
 	int16_t gx, gy, gz; // gyroscope
+
+	// Triton 0x42/0x45 IMU source clock, microseconds
+	uint32_t imuTimestampUs;
 };
 #include "bonds.h" // NSLOT
 extern PuckInput g_in[NSLOT];

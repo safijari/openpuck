@@ -305,10 +305,11 @@ static void ds3Build(uint8_t slot, uint8_t out[48])
 	out[23] = crs ? 0xFF : 0;
 	out[24] = sqr ? 0xFF : 0;
 
-	// out[28..29] (rd[29..30]): connection/charge status. Battery "full"; cosmetic on the PS3 over USB
-	// (the console knows it's wired from enumeration, not this byte).
-	out[28] = 0x00;
-	out[29] = 0x05; // battery level: full
+	// out[28..30] (rd[29..31]): genuine DS3 link/power state.
+	// 0x02 = plugged, 0x05 = full power, 0x10 = wired + rumble capable.
+	out[28] = 0x02;
+	out[29] = 0x05;
+	out[30] = 0x10;
 
 	// out[40..47] (rd[41..48]): accel X, accel Z, accel Y, gyro Z -- each 10-bit LE, center 511.
 	ds3Imu(out + 40, g_in[slot].ax);
@@ -323,7 +324,10 @@ static void ds3Neutral(uint8_t out[48])
 {
 	memset(out, 0, 48);
 	out[5] = out[6] = out[7] = out[8] = 0x80; // sticks centered
-	out[29] = 0x05; // battery full
+	// Keep neutral reports semantically identical to an attached wired DS3.
+	out[28] = 0x02; // plugged
+	out[29] = 0x05; // full power
+	out[30] = 0x10; // wired + rumble capable
 	ds3Imu(out + 40, 0);
 	ds3Imu(out + 42, 0);
 	ds3Imu(out + 44, 0);

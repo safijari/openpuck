@@ -2,6 +2,7 @@
 #include "lizard_map.h"
 #include "triton.h"
 #include "config.h"
+#include "usb_tx.h"
 #include <string.h>
 
 // Evaluate the binding table for ONE controller's button word, merging its keyboard/mouse-button/
@@ -218,6 +219,10 @@ void rfLizard(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev, uint8_t mrid,
 	}
 
 	// ---- mouse report ----
+	// Mouse, consumer and keyboard share ONE endpoint (hid[0]) that stays busy
+	// until the host next polls. Sending directly under ready() dropped every
+	// report after the first in a cycle while the shadow state still advanced,
+	// losing key edges whenever the cursor moved; usbTxHid queues them in order.
 	if (dx || dy || dw || outMBtn != pmbtn) {
 		pmbtn = outMBtn;
 		hid_mouse_report_t m;
@@ -226,15 +231,13 @@ void rfLizard(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev, uint8_t mrid,
 		m.y = (int8_t)dy;
 		m.wheel = (int8_t)dw;
 		m.pan = 0;
-		if (mdev->ready())
-			mdev->sendReport(mrid, &m, sizeof m);
+		usbTxHid(mdev, mrid, &m, sizeof m);
 	}
 
 	// ---- consumer control (edge-triggered) ----
 	if (g_usbMode == MODE_LIZARD) {
 		if (consumerBits != prevCC) {
-			if (mdev->ready())
-				mdev->sendReport(0x03, &consumerBits, 1);
+			usbTxHid(mdev, 0x03, &consumerBits, 1);
 			prevCC = consumerBits;
 		}
 	}
@@ -251,8 +254,7 @@ void rfLizard(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev, uint8_t mrid,
 		uint8_t krep[8] = { outMod,	0,	    outKeys[0],
 				    outKeys[1], outKeys[2], outKeys[3],
 				    outKeys[4], outKeys[5] };
-		if (kdev->ready())
-			kdev->sendReport(krid, krep, 8);
+		usbTxHid(kdev, krid, krep, 8);
 	}
 }
 
@@ -262,20 +264,17 @@ void rfLizard(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev, uint8_t mrid,
 // keyboard key / mouse button / consumer key that was DOWN at that instant would otherwise stay latched on
 // the desktop until a reconnect or power-cycle (the reported "stuck input after switching modes"). Sends the
 // neutral reports unconditionally (not change-gated) because the whole point is to override a stale held
-// state that the dedup would suppress. Same direct-sendReport path rfLizard uses.
+// state that the dedup would suppress. Same usbTxHid path rfLizard uses.
 void rfLizardRelease(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev,
 		     uint8_t mrid, uint8_t krid)
 {
 	uint8_t krep[8] = { 0, 0, 0, 0, 0, 0, 0, 0 }; // all keys + modifiers up
-	if (kdev->ready())
-		kdev->sendReport(krid, krep, 8);
+	usbTxHid(kdev, krid, krep, 8);
 	hid_mouse_report_t m = { 0, 0, 0, 0, 0 }; // no buttons, no motion/wheel
-	if (mdev->ready())
-		mdev->sendReport(mrid, &m, sizeof m);
+	usbTxHid(mdev, mrid, &m, sizeof m);
 	if (g_usbMode == MODE_LIZARD) {
 		uint8_t cc = 0; // release any held consumer-control key
-		if (mdev->ready())
-			mdev->sendReport(0x03, &cc, 1);
+		usbTxHid(mdev, 0x03, &cc, 1);
 	}
 	// Zero the integrators + last-sent shadows so re-entry starts clean (no cursor fling from stale
 	// velocity, and held keys/buttons re-send correctly on the next rfLizard pass).

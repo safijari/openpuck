@@ -1,5 +1,6 @@
 #include "radio.h"
 #include "bonds.h" // g_slot[]
+#include "config.h"
 
 // Pairing rendezvous bytes from IBEX rodata. The 0x91A2A793 key preceding "ibex" is a DIFFERENT key,
 // NOT the discovery address.
@@ -10,6 +11,7 @@ uint8_t g_rfBase[4] = { 0x69, 0x62, 0x65, 0x78 }; // "ibex"
 // ch18: clean channel in the real puck's active hop set {18,2,80}; bad channels collide with trackpad
 // data bursts -> reply-rate crash. Tunable 'C'.
 uint8_t g_sessCh = 18;
+uint8_t g_rfStartupLastGoodChannel = 0;
 
 // Safe defaults; rfGenSessionAddr(slot) overwrites each used slot at boot. Discovery base "ibex" as a
 // degenerate starting point means an UN-bonded slot (and a not-yet-initialized one) won't accidentally
@@ -73,6 +75,30 @@ void rfGenSessionAddr(int slot)
 	    g_sessBase[slot][2] == g_rfBase[2] &&
 	    g_sessBase[slot][3] == g_rfBase[3])
 		g_sessBase[slot][0] ^= 0x80;
+}
+
+void rfApplyStartupLastGoodChannel()
+{
+	const uint8_t saved = cfgExtRead(0u);
+	g_rfStartupLastGoodChannel = (saved > 0u && saved <= 100u) ? saved : 0u;
+	cfgExtWrite(1u, 1u);
+	cfgExtWrite(2u, 1u);
+	if (g_rfStartupLastGoodChannel)
+		g_sessCh = g_rfStartupLastGoodChannel;
+}
+
+bool saveRfStartupLastGoodChannel(uint8_t channel)
+{
+	if (channel == 0u || channel > 100u)
+		return false;
+	if (g_rfStartupLastGoodChannel == channel)
+		return true;
+	g_rfStartupLastGoodChannel = channel;
+	cfgExtWrite(0u, channel);
+	cfgExtWrite(1u, 1u);
+	cfgExtWrite(2u, 1u);
+	saveCfg();
+	return true;
 }
 
 uint8_t rfrx[100], rftx[100];
