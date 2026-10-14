@@ -75,11 +75,11 @@ void serialConsolePoll()
 					(unsigned)SUSPEND_OFF_MS,
 					g_suspendOff ? "ON" : "off");
 			} else if (!strcmp(line, "HR")) {
-				// A/B: disable the puck->controller haptic relay (Steam 0x80-0x86 rumble/pad feedback)
+				// A/B: disable the puck->controller haptic relay (Steam 0x80-0x89 rumble/pad feedback)
 				// to isolate whether relaying Steam's trackpad texture haptics degrades drag smoothness.
 				g_hapticRelay = !g_hapticRelay;
 				Serial.printf(
-					"# haptic relay (Steam 0x80-0x86) %s\n",
+					"# haptic relay (Steam 0x80-0x89) %s\n",
 					g_hapticRelay ? "ON" : "off");
 			} else if (!strcmp(line, "TR")) {
 				// fire one test buzz at the current style/strength

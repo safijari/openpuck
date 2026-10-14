@@ -37,9 +37,9 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | back-4 + A | Steam | Steam Controller Mode |
 | back-4 + B | Lizard | Lizard mode, even if Steam is open |
 | back-4 + X | Xbox | One wired Xbox 360 pad; stock-console support experimental, untested |
-| back-4 + Y | Switch Pro | Switch Controller + Gyro + Haptics |
+| back-4 + Y | Switch Pro | Switch Controller + Gyro + HD Rumble |
 | WebUSB panel → mode 4 | Hori Pad | Switch mode with no gyro or haptics |
-| WebUSB panel → mode 5 | DualSense + Gyro + Trackpad | PC only |
+| WebUSB panel → mode 5 | DualSense + Gyro + Trackpad + Audio Haptics | PC (UAC1 4-channel audio sink for voice-coil haptics) |
 | WebUSB panel → mode 6 | DS4/HIDGYRO + Gyro + Trackpad | PC only |
 | WebUSB panel → mode 9 | PS3 DualShock 3 / Sixaxis | Enumerates on a real PS3 (+ gyro/haptics) |
 | WebUSB panel → mode 10 | Original Xbox Controller S | Enumerates on a real Original Xbox |
@@ -69,11 +69,27 @@ battery level are all reported natively and simultaneously, with rumble coming b
 SDL build that ships the SInput driver (SDL 3.4+ / a current Steam client); older hosts fall back to seeing a
 plain HID gamepad.
 
-**Rumble tuning.** In the translated modes (Xbox, Switch, PlayStation) the puck decodes the host's rumble packet itself, so the WebUSB panel's **Rumble** card can reshape it before it reaches the controller. *Strength* scales the amplitude the game asked for (200% is the default and matches previous firmware). *Style* picks how the two motors are driven: mono runs both at the stronger value, heavy and light mute one motor each, punchy softens weak effects while leaving strong ones alone, and soft lifts weak ones so subtle rumble is felt. A **Test rumble** button buzzes the controller with the current settings so you can compare without launching a game. Steam mode relays Steam's own haptics untouched, so these settings don't apply there.
+**Rumble tuning.** In the translated modes (Xbox, Switch, PlayStation) the puck decodes the host's rumble packet itself, so the WebUSB panel's **Rumble** card can reshape it before it reaches the controller. *Style* picks how the two motors are driven: mono runs both at the stronger value, heavy and light mute one motor each, punchy softens weak effects while leaving strong ones alone, and soft lifts weak ones so subtle rumble is felt. Each controller's tab has its own **Rumble strength**, which scales the amplitude the game asked for (200% is the default and matches previous firmware; the Switch starts at 100% for HD rumble). A **Test rumble** button buzzes the controller with the current settings so you can compare without launching a game. Steam mode relays Steam's own haptics untouched, so these settings don't apply there.
+
+**HD rumble in Switch Pro mode.** Switch Pro mode plays the game's HD rumble: by default each grip streams both of its side's bands as PCM at the game's frequencies (the Switch tab's **Haptics style** also offers tone, which plays the stronger band as a tone, split and rumble; the grip strength starts at 100%), and each trackpad plays the high band as tones (at the **HD trackpad strength**). Effects keep their texture, closer to a real Pro Controller than motor-style rumble. In the Eden emulator, enable "Direct Pro Controller driver (experimental)" to get the game's real HD rumble data. **HD Rumble** (Switch tab) turns it off, playing the console's rumble as plain motor rumble instead. **Grip limiter** (85% by default) rounds off strong grip vibration instead of letting it clip into a pop, and **Soft boost** (up to 1.5× by default) raises quiet haptics such as footsteps so you can feel them; the Switch and DS5 tabs each keep their own, and both apply to the wave style.
 
 I'm also adding various QOL items as I go as well. For example having to hold the Steam button for like 6 seconds feels like an eternity. If Steam is open you can do Steam + Y for a shutdown. I'm adding Steam + Y for 2 seconds as a shutdown chort in ALL modes now.
 
 Note: to use the Switch mode on a real Switch you'll need to [enable the pro controller wired communication option](https://www.nintendo.com/en-gb/Support/Troubleshooting/How-to-Enable-Disable-Pro-Controller-Wired-Communication-1516284.html).
+
+### DualSense Mode & Audio Haptics on Linux / Proton
+DualSense mode presents the same USB audio function as a real DualSense (4-channel output, silent 2-channel mic). Channels 3 & 4 (the haptic tracks) are turned into Steam Controller haptic commands in real time and sent over the RF link. The default **wave** style streams the haptic waveform itself to the grip actuators as PCM; rumble, tone and split (low frequencies as rumble, the rest as tones) remain as options in the DualSense tab. Full notes, measurements and known issues: [docs/DUALSENSE_HAPTICS.md](docs/DUALSENSE_HAPTICS.md).
+
+1. **PipeWire:** no WirePlumber config is needed. The stock DualSense profile gives a 4-channel `...DualSense_Wireless_Controller-00.Direct__Direct__sink`. Set its haptic channels to 100% once (WirePlumber starts new outputs at about 6% signal):
+   ```sh
+   pactl set-sink-volume alsa_output.usb-Sony_Interactive_Entertainment_DualSense_Wireless_Controller-00.Direct__Direct__sink 40% 40% 100% 100%
+   ```
+   Optional: `make install-wireplumber` installs a hook that does this automatically for a new output.
+2. **Proton:** games that find the audio endpoint by a name containing "Wireless Controller" (e.g. *Hi-Fi Rush*) work on any Proton. Sony PC ports using libScePad (e.g. *Stellar Blade*) need GE-Proton 11-6 or newer and Steam Input turned off for the game. Don't set `PROTON_SONY_DUALSENSE_AS_DUALSHOCK4`, which hides the DualSense. Proton-Wineland before `wineland-11.0-20261005` loses DualSense haptics through its PipeWire audio driver: update it, or add `PROTON_USE_PIPEWIRE=0 %command%` on an older build.
+3. ***Final Fantasy XIV*:** input and haptics work through its DualSense mode (USB, "PlayStation controller support" on). On Wine 11 builds (GE-Proton 11.x) an older prefix can leave the game with no buttons; see section 9 of the haptics notes for the repair.
+4. **In-game:** enable the controller haptics / controller sound effects option where the game has one.
+
+**Steam mode** now relays the controller's PCM haptic streams (OUTPUT `0x87`-`0x89`) at full rate, so audio-to-haptics apps such as Fancy Haptics play through OpenPuck.
 
 ### A note on the Lizard mode:
 The Lizard mode behaves similarly to how the controller behaves when Steam is closed, but this will work even when Steam is open. This has a few advantages

@@ -50,6 +50,8 @@ static volatile bool g_blobRequest = false;
 // browser can save them to a file and restore them onto a second puck. Like the status blob, the actual send
 // is deferred to the usbd task (webusbSofDrain) so usb_web.write()/flush() never block loop().
 static volatile bool g_bondExportRequest = false;
+// Grip PCM stream counters (op 0x35 -> one 0xB1 frame), a debug read
+static volatile bool g_pcmDiagRequest = false;
 // Firmware-update ack ([0xAB][5][status][nextOff u32 LE]). Like the blob it is written from the usbd task
 // (webusbSofDrain), but unlike the blob it is NEVER dropped -- the panel's transfer flow-control is strict
 // ping-pong on these acks, so an unsent ack just stays pending until the FIFO has room (the panel is
@@ -105,7 +107,15 @@ static bool boardCommand(uint8_t op)
 //                [v21: p[53] rumble strength as PERCENT/2 (field 22, revived); p[195] rumble style
 //                 (field 39, RUMBLE_STYLE_* in haptics.h)]
 //                [v22: p[196] RF recovery status/journal transport capability marker (0x52)]
-#define WB_PAYLEN 195
+//                [v23: p[197] audioHapticGain (field 30); p[198] audioHaptics (field 31, DualSense audio-driven
+//                 haptics: 0=off, 1=on); p[199] audioHapticStyle (field 88, AUDIO_STYLE_* in config.h); p[200] grip
+//                 PCM soft-limit knee percent (field 115); p[201] Switch Pro HD trackpad strength as PERCENT/2
+//                 (field 141); p[202..205] grip limiter knee per type (fields 120..123), p[206..209] haptic style
+//                 per type (fields 124..127); p[199] / p[200] stay the DualSense's style and the active type's
+//                 knee for older panels; p[210] Switch Pro HD rumble on/off (field 128); p[211..214] grip rumble
+//                 strength per type as PERCENT/2 (fields 108..111; the Switch's is the one for its HD rumble
+//                 setting), p[53] stays the active type's; p[215..218] soft boost per type (fields 144..147)]
+#define WB_PAYLEN 217
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -132,9 +142,13 @@ static void webusbSendBlob()
 
 	// clang-format off
 	// protocol version
-	// (21 = +rumble style (field 39, blob p[195]) and the REVIVED rumble-strength field 22 at blob p[53], 
-	// now carrying percent/2; 
+	// (24 = DualSense haptic gain (field 30, blob p[197]) runs 0-100% of each style's strongest, was 10-500%;
+	// 23 = +DualSense audio haptics (fields 30/31, blob p[197..198]), haptic style (field 88, p[199]), grip
+	// limiter knee (field 115, p[200]), HD trackpad strength (field 141, p[201]) and the per-type haptics
+	// block p[202..218];
 	// 22 = +RF recovery capability marker at blob p[196];
+	// 21 = +rumble style (field 39, blob p[195]) and the REVIVED rumble-strength field 22 at blob p[53], 
+	// now carrying percent/2; 
 	// 20 = +per-type trackpad->stick mapping (fields 80..87, blob p[187..194]); 
 	// 19 = +Switch Pro legacy-gyro select (field 38, blob p[186]); the Switch report-rate and
 	// gyro-scale settings (fields 23/24, blob p[54..55]) are GONE -- those bytes read 0; 
@@ -154,7 +168,7 @@ static void webusbSendBlob()
 	// 7 = +raw accel; 
 	// 6 = +swPro120/gyroScale)
 	// clang-format on
-	p[2] = 22;
+	p[2] = 24;
 	p[3] = g_usbMode;
 	p[4] = (uint8_t)g_mDiv;
 	p[5] = (uint8_t)g_mFric;
@@ -340,6 +354,21 @@ static void webusbSendBlob()
 	// v22: append-only RF recovery transport capability. p[181] remains the
 	// upstream Steam Machine toggle; older RF builds used that byte for 0x52.
 	p[196] = 0x52;
+	// DualSense haptic gain, 0-100% of the style's strongest (v24; percent/2 of 10-500% before); 0 = auto
+	p[197] = (uint8_t)g_audioHapticGain;
+	p[198] = g_audioHaptics;
+	p[199] = g_audioHapticStyle;
+	p[200] = g_hapticLimitKnee;
+	p[201] = (uint8_t)(g_hdPadScale / 2);
+	for (uint8_t et = 0; et < ET_COUNT; et++) {
+		p[202 + et] = g_typeLimitKnee[et];
+		p[206 + et] = g_typeHapticStyle[et];
+	}
+	p[210] = g_switchHd;
+	for (uint8_t et = 0; et < ET_COUNT; et++) {
+		p[211 + et] = (uint8_t)(rumbleScaleOf(et) / 2);
+		p[215 + et] = g_typeHapticLift[et];
+	}
 	// CRITICAL: usb_web.write() SPINS (`while (remain && _connected) yield();`) until the IN FIFO drains or the
 	// panel disconnects. If the panel holds the WebUSB interface open but stops reading its IN endpoint -- a
 	// backgrounded tab, or the host briefly not servicing transferIn under load -- the FIFO never empties and
@@ -570,6 +599,64 @@ static bool webusbSendRfStatus()
 	return true;
 }
 
+// 0x35: grip PCM stream counters since boot (g_pcmDiag), written from the usbd task like the blob:
+//   [0xB1][200][ver=1][made sent acked requeued lost evicted: u32 LE][0x44 events 0..15: u16 LE]
+//   [polls/s: u16 LE][relays/s: u16 LE][Switch HD wave rate, kHz: 4][reply delay buckets 0..15: u16 LE]
+//   [corrupt replies: u16 LE][outcome[attempt 0..2][reply 0..4]: u16 LE, see PcmDiag]
+//   [audio packets u32][audio alt u8][DualSense stream slots u8][left haptic level u16]
+//   [queue delay buckets 0..7: u16][made-gap buckets 0..7: u16][ran dry: end, mid-stream, at start: u16]
+static void webusbSendPcmDiag()
+{
+	static uint8_t f[2 + 200];
+	uint8_t *p = f + 3;
+	auto put = [&](uint32_t v, uint8_t n) {
+		for (uint8_t i = 0; i < n; i++)
+			*p++ = (uint8_t)(v >> (8 * i));
+	};
+	f[0] = 0xB1;
+	f[1] = 200;
+	f[2] = 1;
+	const PcmDiag d = g_pcmDiag;
+	const uint32_t c[6] = { d.made,	    d.sent, d.acked,
+				d.requeued, d.lost, d.evicted };
+	for (uint8_t i = 0; i < 6; i++)
+		put(c[i], 4);
+	for (uint8_t i = 0; i < 16; i++)
+		put(d.events[i], 2);
+	put(g_pollsps, 2);
+	put(g_relayps, 2);
+	put(4, 1);
+	for (uint8_t i = 0; i < 16; i++)
+		put(d.replyUs[i], 2);
+	put(d.crcBad, 2);
+	for (uint8_t a = 0; a < 3; a++)
+		for (uint8_t o = 0; o < 5; o++)
+			put(d.outcome[a][o], 2);
+	put(d.audioPkts, 4);
+	put(d.audioAlt, 1);
+	put(d.waveMask, 1);
+	put(d.audioEnvL, 2);
+	for (uint8_t i = 0; i < 8; i++)
+		put(d.queueDelay[i], 2);
+	for (uint8_t i = 0; i < 8; i++)
+		put(d.madeGap[i], 2);
+	put(d.dryEnd, 2);
+	put(d.dryMid, 2);
+	put(d.dryStart, 2);
+	put((uint32_t)d.lateMin, 4);
+	put((uint32_t)d.lateMax, 4);
+	put((uint32_t)d.lateLast, 4);
+	put((uint32_t)d.lateAtDry, 4);
+	put(d.otherRelays, 4);
+	put(d.flushSkip, 4);
+	put(g_connPoll, 2);
+	put(d.isoRecover, 2);
+	if (tud_vendor_write_available() >= sizeof f) {
+		usb_web.write(f, sizeof f);
+		usb_web.flush();
+	}
+}
+
 static void webusbSofDrain(void)
 {
 	// If loop() has stopped beating, it's wedged -- keep pushing the blob (which carries the live stuck stage)
@@ -598,6 +685,10 @@ static void webusbSofDrain(void)
 	if (g_bondExportRequest) {
 		g_bondExportRequest = false;
 		webusbSendBondExport();
+	}
+	if (g_pcmDiagRequest) {
+		g_pcmDiagRequest = false;
+		webusbSendPcmDiag();
 	}
 	if (g_rfStatusRequest && webusbSendRfStatus())
 		g_rfStatusRequest = false;
@@ -808,10 +899,11 @@ void webusbPoll()
 			if (n == 0)
 				break;
 			uint8_t op = buf[0];
-			// 0x16 = test rumble (v21); extend this range whenever a new opcode is added, or the
-			// parser drops it as garbage and the handler below never runs.
+			// 0x16 = test rumble (v21), 0x35 = PCM counters, 0x36 = HD pan test; extend these ranges whenever
+			// a new opcode is added, or the parser drops it as garbage and the handler below never runs.
 			if ((op < 0x01 || op > 0x1A) &&
-			    (op < 0x20 || op > 0x25)) { // resync: drop one byte
+			    (op < 0x20 || op > 0x25) && op != 0x35 &&
+			    op != 0x36) { // resync: drop one byte
 				memmove(buf, buf + 1, --n);
 				continue;
 			}
@@ -891,6 +983,10 @@ void webusbPoll()
 			// rumble test buzz: exercises the current style/strength (protocol v21)
 			else if (op == 0x16) {
 				hapticTestRumble();
+			} else if (op == 0x35) {
+				g_pcmDiagRequest = true;
+			} else if (op == 0x36) {
+				hapticTestHdPan();
 			}
 
 			// trigger controller power-off (same path Steam 0x9F / host-suspend use)
@@ -1080,6 +1176,7 @@ void webusbPoll()
 				// 0x23: plain clean reboot. After a committed 0x22 the boot path applies the staged
 				// image; unarmed it is just a normal restart.
 			} else if (op == 0x23) {
+				cfgSaveFlush();
 				usb_web.flush();
 				delay(40);
 				faultDiagArmIntentionalReset();
@@ -1124,7 +1221,7 @@ void webusbPoll()
 						if (et == g_etype)
 							applyActiveType();
 					}
-					saveCfg();
+					saveCfgSoon();
 					g_blobRequest = true;
 					memmove(buf, buf + need, n - need);
 					n -= need;
@@ -1257,6 +1354,7 @@ void webusbPoll()
 					else if (pct > RUMBLE_SCALE_MAX)
 						pct = RUMBLE_SCALE_MAX;
 					g_rumbleScale = pct;
+					rumbleStoreActive();
 					break;
 				}
 
@@ -1276,6 +1374,102 @@ void webusbPoll()
 					persist = false;
 					break;
 
+				// Switch Pro HD rumble toggle (0 = plain rumble, 1 = HD). Protocol v22.
+				case 128:
+					g_switchHd = v ? 1 : 0;
+					// the strength follows: HD and plain rumble keep their own
+					applyActiveType();
+					break;
+
+				// DualSense audio-driven haptics toggle (0 = off, 1 = on)
+				case 31:
+					g_audioHaptics = v ? 1 : 0;
+					break;
+
+				// DualSense audio-driven haptics style (AUDIO_STYLE_*). Protocol v22. Past
+				// the per-type cfg range (40..75) and the pad->stick fields (80..87). Since the style
+				// became per type this edits the DualSense's (see 124..127).
+				case 88:
+					g_typeHapticStyle[ET_DS5] =
+						v > AUDIO_STYLE_WAVE ?
+							AUDIO_STYLE_WAVE :
+							v;
+					applyActiveType();
+					break;
+
+				// Grip PCM soft-limit knee, percent (50..100; 100 = off). Protocol v22. It was one setting
+				// for both types; an older panel still writes it that way, so it sets both.
+				case 115:
+					if (v >= 50 && v <= 100) {
+						g_typeLimitKnee[ET_SWITCH] =
+							g_typeLimitKnee[ET_DS5] =
+								v;
+						applyActiveType();
+					}
+					break;
+
+				// Per-type grip rumble strength (108 + et, percent/2). Protocol v22; 22 still edits the
+				// active type.
+				case 108:
+				case 109:
+				case 110:
+				case 111:
+					rumbleScaleSet((uint8_t)(f - 108),
+						       (uint16_t)v * 2);
+					break;
+
+				// Per-type grip limiter knee (120 + et) and haptic style (124 + et, AUDIO_STYLE_*), only
+				// for the types that have them: Switch and DualSense.
+				case 120:
+				case 121:
+				case 122:
+				case 123: {
+					uint8_t et = (uint8_t)(f - 120);
+					if (hapticTypeHasStyle(et) && v >= 50 &&
+					    v <= 100) {
+						g_typeLimitKnee[et] = v;
+						applyActiveType();
+					}
+					break;
+				}
+				case 124:
+				case 125:
+				case 126:
+				case 127: {
+					uint8_t et = (uint8_t)(f - 124);
+					if (hapticTypeHasStyle(et) &&
+					    v <= AUDIO_STYLE_WAVE) {
+						g_typeHapticStyle[et] = v;
+						applyActiveType();
+					}
+					break;
+				}
+
+				// Per-type soft boost (144 + et, 0..HAPTIC_LIFT_MAX): Switch and DualSense only
+				case 144:
+				case 145:
+				case 146:
+				case 147: {
+					uint8_t et = (uint8_t)(f - 144);
+					if (hapticTypeHasStyle(et) &&
+					    v <= HAPTIC_LIFT_MAX) {
+						g_typeHapticLift[et] = v;
+						applyActiveType();
+					}
+					break;
+				}
+
+				// Switch Pro HD rumble trackpad strength (percent / 2, 0-500%). Protocol v23; the
+				// same field upstream PR #303 uses.
+				case 141:
+					g_hdPadScale =
+						v > 250 ? 500 : (uint16_t)v * 2;
+					break;
+
+				// DualSense haptic gain: 1-100% of the style's strongest, 0 = Auto
+				case 30:
+					g_audioHapticGain = v > 100 ? 100 : v;
+					break;
 					// (fields 23/24, Switch Pro report rate + gyro scale, removed -- rate is
 					//  fixed at full and the gyro mapping is now field 38)
 					// (field 25, poll RX window, removed -- g_rxWin is now FIXED/not configurable)
@@ -1328,7 +1522,7 @@ void webusbPoll()
 					break;
 				}
 				if (persist)
-					saveCfg();
+					saveCfgSoon();
 				if (!rfStatusOnly)
 					g_blobRequest = true;
 			} else if (op == 0x03) {

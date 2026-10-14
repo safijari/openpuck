@@ -144,7 +144,7 @@ static ds4_setcb_t const DS4_SETCB[NSLOT] = { hidGyroSet0, hidGyroSet1,
 static void hidGyroBuild(uint8_t usbSlot, uint8_t slot, uint8_t out[63])
 {
 	uint32_t b = psButtonsFromSteam(g_in[slot].buttons);
-	psPadClickEdge(slot, (b & (TB_LPADC | TB_RPADC)) != 0);
+	psPadClickEdge(slot, b & (TB_LPADC | TB_RPADC));
 	// A pad mapped to a stick must NOT also report as a touchpad contact -- the host would read the same
 	// finger twice (stick deflection AND a cursor drag).
 	bool lTouch = g_padStick[0] == PS_OFF &&

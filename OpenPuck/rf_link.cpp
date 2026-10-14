@@ -3324,6 +3324,8 @@ bool rfRecoveryRequestHop(uint8_t channel)
 // no reply, so they don't burn a full ~1.2ms window of dead air per haptic. Per-slot: the connected poll runs
 // on this slot's UNIQUE session address (one address per bonded controller); replies are demuxed by which
 // address the controller answers on (each controller only hears its own).
+uint16_t g_rfReplyUs = 0;
+bool g_rfReplyCrcOk = false;
 uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		 uint16_t rxWinUs)
 {
@@ -3339,28 +3341,46 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 	int slot = (g_curSlot >= 0 && g_curSlot < NSLOT) ? g_curSlot : 0;
 	rfSetAddr(g_sessBase[slot], g_sessPrefix[slot]);
 	NRF_RADIO->PACKETPTR = (uint32_t)rftx;
+	NRF_RADIO->EVENTS_ADDRESS = 0;
+	NRF_RADIO->EVENTS_END = 0;
+	NRF_RADIO->EVENTS_DISABLED = 0;
+	NRF_RADIO->EVENTS_CRCOK = 0;
+	NRF_RADIO->EVENTS_CRCERROR = 0;
+	// The radio turns around into RX by itself (DISABLED->RXEN): the controller's ACK follows ~130 us after the
+	// frame, and a task that preempted the loop between TX end and a software RXEN (the DualSense mode's USB
+	// audio processing) made it miss most replies. PACKETPTR is read at START, so rfrx goes in once TX has
+	// started; interrupts are off only for the ramp-up, preamble and address (~70 us).
 	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
-			    RADIO_SHORTS_END_DISABLE_Msk;
-	NRF_RADIO->EVENTS_DISABLED = 0;
+			    RADIO_SHORTS_END_DISABLE_Msk |
+			    RADIO_SHORTS_DISABLED_RXEN_Msk;
+	uint32_t pm = __get_PRIMASK();
+	__disable_irq();
 	NRF_RADIO->TASKS_TXEN = 1;
-	RWAIT_DISABLED();
-	NRF_RADIO->EVENTS_DISABLED = 0;
+	for (uint32_t i = 0; !NRF_RADIO->EVENTS_ADDRESS && i < 20000; i++) {
+	}
 	NRF_RADIO->PACKETPTR = (uint32_t)rfrx;
 	rfrx[0] = 0;
-	// RXEN->READY->START; catch the reply. ADDRESS->RSSISTART samples the reply's signal strength (read from
-	// RSSISAMPLE below, surfaced to Steam via report 0x7B); DISABLED->RSSISTOP closes the measurement.
+	__set_PRIMASK(pm);
+	RWAIT_DISABLED();
+	// Receiving now. The reply then stays in RXIDLE for the disable below; ADDRESS->RSSISTART samples its
+	// signal strength (read from RSSISAMPLE below, surfaced to Steam via report 0x7B) and DISABLED->RSSISTOP
+	// closes the measurement. Only a received packet raises CRCOK/CRCERROR, so the frame's own END can't pass
+	// for a reply.
 	NRF_RADIO->SHORTS = RADIO_SHORTS_READY_START_Msk |
 			    RADIO_SHORTS_ADDRESS_RSSISTART_Msk |
 			    RADIO_SHORTS_DISABLED_RSSISTOP_Msk;
-	NRF_RADIO->EVENTS_END = 0;
-	NRF_RADIO->TASKS_RXEN = 1;
+	NRF_RADIO->EVENTS_DISABLED = 0;
 	uint32_t t0 = micros();
-	while (!NRF_RADIO->EVENTS_END && (micros() - t0) < win) {
+	while (!NRF_RADIO->EVENTS_CRCOK && !NRF_RADIO->EVENTS_CRCERROR &&
+	       (micros() - t0) < win) {
 	} // RX window (tunable 'r'; or relay override)
 	uint8_t rxlen = 0;
-	if (NRF_RADIO->EVENTS_END) {
+	g_rfReplyUs = 0;
+	if (NRF_RADIO->EVENTS_CRCOK || NRF_RADIO->EVENTS_CRCERROR) {
 		NRF_RADIO->EVENTS_END = 0;
 		bool crcok = NRF_RADIO->CRCSTATUS & 1;
+		g_rfReplyUs = (uint16_t)(micros() - t0) | 1;
+		g_rfReplyCrcOk = crcok;
 		rxlen = rfrx[0];
 		// reply arrived but CRC failed -> RF quality (channel/interference)
 		if (!crcok) {
@@ -3792,6 +3812,10 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 							g_battery[g_curSlot] =
 								rep[2];
 						}
+						// 0x44 [channel][event]: PCM stream events (PROTOCOL.md section 9.1)
+						if (rep[0] == 0x44 && tlen >= 3)
+							pcmDiagEvent(g_curSlot,
+								     rep[2]);
 						if (g_active)
 							g_active->onAuxReport(
 								g_curSlot,
@@ -4062,6 +4086,14 @@ static void rfConnStep()
 
 	unsigned long nowMs = millis();
 
+	// Prioritize telemetry over haptics: if the previous poll cycle for this slot did
+	// not get a reply (packet drop / contention), skip the relay flush and go straight
+	// to the E3 GET poll so telemetry (especially gyro) never starves under RF load.
+	// An empty ACK counts as a reply: the controller often packs its input into the
+	// relay's ACK just before, leaving the poll nothing to send. Counting that as a drop
+	// skips about a third of relay turns and holds wave frames back a cycle.
+	static bool lastPollReplied[NSLOT] = { true, true, true, true };
+
 	// Inline poll helper; emits E7 re-assert (every 32 polls, bounded reply window so a
 	// missed F3 doesn't burn the whole slot budget), queues haptics, flushes relay, sends E3 GET.
 	auto doPoll = [&](int k) {
@@ -4072,12 +4104,22 @@ static void rfConnStep()
 			uint8_t pa[3] = { 0xE7, 0x00, g_e7b };
 			rfConnTx(ch, 0x01, pa, 3, 600);
 		}
-		rfConnQueueHapticRelay();
-		{
+		if (lastPollReplied[k]) {
+			rfConnQueueHapticRelay();
 			uint8_t rs1 =
 				(uint8_t)((((g_relayPid[k]++) & 3) << 1) | 1);
-			if (rfConnFlushRelay(ch, rs1))
+			bool requeued = false;
+			if (rfConnFlushRelay(ch, rs1, &requeued))
 				g_stRelay[k]++;
+			// Backlog: a second frame this cycle. A wireless PCM stream (0x88, 8 kHz) needs ~258/s,
+			// above the 250 Hz cycle rate, so one per cycle starves it and the ring evicts samples.
+			// Not after a requeue: that frame just failed twice, and the airtime belongs to the poll.
+			if (!requeued && relayPending()) {
+				rs1 = (uint8_t)((((g_relayPid[k]++) & 3) << 1) |
+						1);
+				if (rfConnFlushRelay(ch, rs1))
+					g_stRelay[k]++;
+			}
 		}
 		// per-slot PID cycle so each bonded controller's polls stay distinct
 		uint8_t pidv = g_pollPid[k]++;
@@ -4103,6 +4145,9 @@ static void rfConnStep()
 				    (uint32_t)g_pollUs)
 				rx = rfConnTx(ch, s1, p, 1);
 		}
+		if (!lastPollReplied[k] && relayPending())
+			g_pcmDiag.flushSkip++;
+		lastPollReplied[k] = rx > 0 || (g_rfReplyUs && g_rfReplyCrcOk);
 		if (rx)
 			g_chF1[0]++;
 		g_stPoll[k]++; // one true poll cycle for this slot
@@ -4350,11 +4395,12 @@ void rfLinkTask()
 		// was the confirmed diagnostic-induced hang: the capture ended truncated mid-"# stat".)
 		if (Serial.availableForWrite() > 130)
 			Serial.printf(
-				"# stat polls=%lu/s F1=%lu/s new=%lu/s F3=%lu/s(v%d) e7b=%u crcfail=%lu noRx=%lu slot=%d\n",
+				"# stat polls=%lu/s F1=%lu/s new=%lu/s F3=%lu/s(v%d) e7b=%u crcfail=%lu noRx=%lu slot=%d relay=%lu/s drop=%u\n",
 				(unsigned long)tPoll, (unsigned long)tF1,
 				(unsigned long)tNew, (unsigned long)g_stF3,
 				(int8_t)g_connF3v, g_e7b, (unsigned long)tCrc,
-				(unsigned long)tNoRx, g_curSlot);
+				(unsigned long)tNoRx, g_curSlot,
+				(unsigned long)tRelay, (unsigned)g_relayDrops);
 		g_stF3 = 0;
 		g_chF1[0] = g_chF1[1] = g_chF1[2] = 0;
 		g_stMs = millis();

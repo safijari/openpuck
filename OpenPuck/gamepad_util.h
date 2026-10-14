@@ -32,7 +32,7 @@ struct PsImuFrame {
 	int16_t ax, ay, az;
 };
 PsImuFrame psImuFromSteam(const PuckInput &in);
-void psPadClickEdge(uint8_t slot, bool pressed);
+void psPadClickEdge(uint8_t slot, uint32_t clicks);
 
 // Steam trackpad s16 coords -> absolute touch surface. TOUCH_PAD_W is split into left/right halves so both
 // pads can co-exist as two contacts on a single DualSense/DS4 touchpad.
