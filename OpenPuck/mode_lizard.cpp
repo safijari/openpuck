@@ -7,10 +7,10 @@
 
 // Evaluate the binding table for ONE controller's button word, merging its keyboard/mouse-button/
 // consumer outputs into the shared accumulators. Pulled out of rfLizard so every bonded controller can
-// feed the same outputs. doRpadMouse/doLpadScroll are map-level (set if such a binding exists at all).
+// feed the same outputs. mouseSrc/doLpadScroll are map-level (set if such a binding exists at all).
 static void lizardEvalSlot(uint64_t buttons, uint8_t &outMod,
 			   uint8_t outKeys[6], uint8_t &nKeys, uint8_t &outMBtn,
-			   uint8_t &consumerBits, bool &doRpadMouse,
+			   uint8_t &consumerBits, uint8_t &mouseSrc,
 			   bool &doLpadScroll)
 {
 	// kbdConsumed (per controller): trig bits claimed by a hold-modifier binding so simpler
@@ -22,9 +22,9 @@ static void lizardEvalSlot(uint64_t buttons, uint8_t &outMod,
 			continue;
 
 		if (b.outType == LZ_OUT_MOUSE_AXIS) {
-			if (b.outData[0] == LZ_MSRC_RPAD)
-				doRpadMouse = true;
-			// LZ_MSRC_LSTICK and LZ_MSRC_GYRO could be added later
+			// bit per LZ_MSRC_* source; gyro is not driven here
+			if (b.outData[0] < 8)
+				mouseSrc |= (uint8_t)(1u << b.outData[0]);
 			continue;
 		}
 		if (b.outType == LZ_OUT_SCROLL) {
@@ -102,12 +102,34 @@ static uint64_t lizardButtons(const PuckInput &in)
 // function-local statics) so rfLizardRelease() can reset them on a lizard->Steam handoff: without that reset
 // a key/mouse-button that was DOWN the instant Steam takes over is never released (the change-dedup below
 // thinks it is still "down") and sticks on the desktop until a reconnect/power-cycle.
-static int prx[NSLOT] = { 0 }, pry[NSLOT] = { 0 };
-static bool prt[NSLOT] = { false };
-static float vx[NSLOT] = { 0 }, vy[NSLOT] = { 0 }, rmx = 0, rmy = 0;
+// Stick deflection -> -1..1 with a deadzone and a squared response.
+#define STICK_MOUSE_DEADZONE 3500
+#define STICK_MOUSE_PX_PER_S 1100.0f
+static float stickAxis(int v)
+{
+	int a = v < 0 ? -v : v;
+	if (a <= STICK_MOUSE_DEADZONE)
+		return 0;
+	float n = (float)(a - STICK_MOUSE_DEADZONE) /
+		  (float)(32767 - STICK_MOUSE_DEADZONE);
+	if (n > 1.0f)
+		n = 1.0f;
+	n *= n;
+	return v < 0 ? -n : n;
+}
+
+struct PadMouse {
+	int px, py; // last touched position
+	bool touching;
+	float vx, vy; // glide velocity
+};
+enum { PM_RIGHT, PM_LEFT, PM_N };
+static PadMouse g_pm[PM_N][NSLOT];
+static float rmx = 0, rmy = 0;
 static int ply[NSLOT] = { 0 };
 static bool plt[NSLOT] = { false };
 static float sacc = 0;
+static uint32_t g_stickLastUs = 0;
 static uint8_t pmbtn = 0; // last-sent mouse buttons
 static uint8_t prevCC = 0; // last-sent consumer bits
 static uint8_t pmod = 0, pkc[6] = {
@@ -122,56 +144,103 @@ void rfLizard(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev, uint8_t mrid,
 	uint8_t outKeys[6] = { 0, 0, 0, 0, 0, 0 };
 	uint8_t nKeys = 0;
 	uint8_t outMBtn = 0;
-	bool doRpadMouse = false, doLpadScroll = false;
+	uint8_t mouseSrc = 0;
+	bool doLpadScroll = false;
 	uint8_t consumerBits = 0;
 
 	for (int s = 0; s < NSLOT; s++) {
 		if (!g_slot[s].used)
 			continue;
 		lizardEvalSlot(lizardButtons(g_in[s]), outMod, outKeys, nKeys,
-			       outMBtn, consumerBits, doRpadMouse,
-			       doLpadScroll);
+			       outMBtn, consumerBits, mouseSrc, doLpadScroll);
 	}
 
-	// ---- right pad -> mouse motion with glide ----
-	// Per-slot velocity/last-position so each controller's pad integrates independently; the resulting
-	// deltas are SUMMED into one cursor (sub-pixel carry rmx/rmy is shared -- one mouse). State is
-	// file-scope (see the block above rfLizard) so rfLizardRelease() can zero it on a handoff.
+	// ---- pads + sticks -> mouse motion ----
+	// Every bound source feeds ONE cursor. Pads integrate touch deltas per slot and then glide with friction
+	// (state file-scope so rfLizardRelease() can zero it on a handoff); the deltas are SUMMED across
+	// controllers and sources, with the sub-pixel carry rmx/rmy shared.
 	int dx = 0, dy = 0;
-	if (doRpadMouse) {
+	{
 		float sumx = 0, sumy = 0;
 		float f = g_mFric / 100.0f;
-		for (int s = 0; s < NSLOT; s++) {
-			if (!g_slot[s].used) {
-				vx[s] = vy[s] = 0;
-				prt[s] = false;
-				continue;
+		for (int p = 0; p < PM_N; p++) {
+			const uint8_t src = (p == PM_RIGHT) ?
+						    LZ_MSRC_RPAD :
+						    LZ_MSRC_LPAD_MOUSE;
+			const bool bound = mouseSrc & (1u << src);
+			for (int s = 0; s < NSLOT; s++) {
+				PadMouse &pm = g_pm[p][s];
+				if (!bound || !g_slot[s].used) {
+					pm.vx = pm.vy = 0;
+					pm.touching = false;
+					continue;
+				}
+				const PuckInput &in = g_in[s];
+				bool touch = (in.buttons &
+					      (p == PM_RIGHT ? TB_RPADT :
+							       TB_LPADT)) != 0;
+				int x = (p == PM_RIGHT) ? in.rpx : in.lpx;
+				int y = (p == PM_RIGHT) ? in.rpy : in.lpy;
+				if (touch && pm.touching) {
+					pm.vx += (x - pm.px);
+					pm.vy += (y - pm.py);
+				}
+				if (touch) {
+					pm.px = x;
+					pm.py = y;
+				}
+				pm.touching = touch;
+				sumx += pm.vx;
+				sumy += pm.vy;
+				// friction = glide/decay (per slot)
+				pm.vx *= f;
+				pm.vy *= f;
+				if (pm.vx > -1 && pm.vx < 1)
+					pm.vx = 0;
+				if (pm.vy > -1 && pm.vy < 1)
+					pm.vy = 0;
 			}
-			const PuckInput &in = g_in[s];
-			bool rtouch = (in.buttons & TB_RPADT) != 0;
-			int rx = in.rpx, ry = in.rpy;
-			if (rtouch && prt[s]) {
-				vx[s] += (rx - prx[s]);
-				vy[s] += (ry - pry[s]);
-			}
-			if (rtouch) {
-				prx[s] = rx;
-				pry[s] = ry;
-			}
-			prt[s] = rtouch;
-			sumx += vx[s];
-			sumy += vy[s];
-			// friction = glide/decay (per slot)
-			vx[s] *= f;
-			vy[s] *= f;
-			if (vx[s] > -1 && vx[s] < 1)
-				vx[s] = 0;
-			if (vy[s] > -1 && vy[s] < 1)
-				vy[s] = 0;
 		}
 		// Y inverted; *10 = desktop cursor sensitivity (g_mDiv 64 -> eff 640)
-		float mxf = sumx / (float)(g_mDiv * 10) + rmx,
-		      myf = -(sumy / (float)(g_mDiv * 10)) + rmy;
+		float mxf = sumx / (float)(g_mDiv * 10);
+		float myf = -(sumy / (float)(g_mDiv * 10));
+
+		// Sticks are rate controls, not position deltas: scale by elapsed time so the speed is the same
+		// whatever the report rate, and square the deflection for fine control near the deadzone.
+		if (mouseSrc &
+		    ((1u << LZ_MSRC_LSTICK) | (1u << LZ_MSRC_RSTICK))) {
+			uint32_t nowUs = micros();
+			float dt = g_stickLastUs ?
+					   (uint32_t)(nowUs - g_stickLastUs) *
+						   1e-6f :
+					   0;
+			g_stickLastUs = nowUs;
+			// a stalled or first report must not fling the cursor
+			if (dt > 0.05f)
+				dt = 0;
+			for (int s = 0; s < NSLOT; s++) {
+				if (!g_slot[s].used)
+					continue;
+				const PuckInput &in = g_in[s];
+				float ax = 0, ay = 0;
+				if (mouseSrc & (1u << LZ_MSRC_LSTICK)) {
+					ax += stickAxis(in.lx);
+					ay += stickAxis(in.ly);
+				}
+				if (mouseSrc & (1u << LZ_MSRC_RSTICK)) {
+					ax += stickAxis(in.rx);
+					ay += stickAxis(in.ry);
+				}
+				float speed = STICK_MOUSE_PX_PER_S * 64.0f /
+					      (float)g_mDiv;
+				mxf += ax * speed * dt;
+				myf -= ay * speed * dt;
+			}
+		} else
+			g_stickLastUs = 0;
+
+		mxf += rmx;
+		myf += rmy;
 		dx = (int)mxf;
 		dy = (int)myf;
 		rmx = mxf - dx;
@@ -278,13 +347,12 @@ void rfLizardRelease(Adafruit_USBD_HID *mdev, Adafruit_USBD_HID *kdev,
 	}
 	// Zero the integrators + last-sent shadows so re-entry starts clean (no cursor fling from stale
 	// velocity, and held keys/buttons re-send correctly on the next rfLizard pass).
+	memset(g_pm, 0, sizeof g_pm);
 	for (int s = 0; s < NSLOT; s++) {
-		prx[s] = pry[s] = 0;
-		prt[s] = false;
-		vx[s] = vy[s] = 0;
 		ply[s] = 0;
 		plt[s] = false;
 	}
+	g_stickLastUs = 0;
 	rmx = rmy = sacc = 0;
 	pmbtn = 0;
 	prevCC = 0;

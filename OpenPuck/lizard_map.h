@@ -18,6 +18,7 @@
 // Mouse button: outData[0]=button bitmask (bit0=left, bit1=right, bit2=middle).
 #define LZ_OUT_MOUSE_BTN 2u
 // Mouse axis: outData[0]=source (LZ_MSRC_*), outData[1]=gyro activation (LZ_GYRO_*).
+// Pads and sticks all drive the one shared cursor; several sources may be bound at once.
 #define LZ_OUT_MOUSE_AXIS 3u
 // Scroll wheel from an analog source: outData[0]=source (LZ_MSRC_*).
 #define LZ_OUT_SCROLL 4u
@@ -30,6 +31,8 @@
 #define LZ_MSRC_GYRO \
 	2u // gyroscope (MOUSE_AXIS; activation-gated, see LZ_GYRO_*)
 #define LZ_MSRC_LPAD 0u // left trackpad (SCROLL; touch-gated by TB_LPADT)
+#define LZ_MSRC_LPAD_MOUSE 3u // left trackpad (MOUSE_AXIS; touch-gated)
+#define LZ_MSRC_RSTICK 4u // right analog stick (MOUSE_AXIS)
 
 // ---- gyro activation condition (outData[1] when src=LZ_MSRC_GYRO) ----
 #define LZ_GYRO_ALWAYS 0u // gyro always drives mouse
