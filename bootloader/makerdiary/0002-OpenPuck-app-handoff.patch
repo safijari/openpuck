@@ -1,0 +1,15 @@
+--- a/src/main.c
++++ b/src/main.c
+@@ -222,6 +222,12 @@ int main(void)
+     // clear in case we kept DFU_DBL_RESET_APP there
+     (*dbl_reset_mem) = 0;
+
++    // Leave the application free to establish its configured LF clock source.
++    // The bootloader runs LFCLK from RC, while OpenPuck expects its own clock
++    // policy to take effect after handoff.
++    NRF_CLOCK->TASKS_LFCLKSTOP = 1UL;
++    while (NRF_CLOCK->LFCLKSTAT & CLOCK_LFCLKSTAT_STATE_Msk) { }
++
+     // start application
+     bootloader_app_start();
+   }

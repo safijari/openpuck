@@ -753,6 +753,18 @@ void clockDiagBoot()
 
 void clockDiagTick()
 {
+#if defined(OPK_BOARD_MDK_USB_DONGLE)
+	// MDK can begin on LFRC while its application clock policy settles. Refresh
+	// the diagnostic source fields without changing either clock's state.
+	{
+		uint32_t lf = NRF_CLOCK->LFCLKSTAT;
+		uint32_t hf = NRF_CLOCK->HFCLKSTAT;
+		bool lfrun = (lf & CLOCK_LFCLKSTAT_STATE_Msk) != 0;
+		uint8_t lfsrc = (uint8_t)(lf & CLOCK_LFCLKSTAT_SRC_Msk);
+		g_clkLf = lfrun ? (uint8_t)(lfsrc + 1) : 0;
+		g_clkHf = (hf & CLOCK_HFCLKSTAT_SRC_Msk) ? 2 : 0;
+	}
+#endif
 	// Cross-check the two time bases: count micros() (HFCLK-derived) elapsed over a ~1s millis() (LFCLK/RTC)
 	// window. usPerMs = micros-delta / millis-delta; 1000 = the clocks agree. A clone whose HFCLK runs fast vs
 	// its LFCLK reads >1000 here -- the exact signature behind "poll rate too high, delivered too low".

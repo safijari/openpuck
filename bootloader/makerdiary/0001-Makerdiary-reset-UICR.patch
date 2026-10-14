@@ -1,0 +1,75 @@
+diff --git a/Makefile b/Makefile
+--- a/Makefile
++++ b/Makefile
+@@ -303,9 +303,11 @@ ifeq (,$(findstring unrecognized,$(shell $(CC) $(CFLAGS) -fno-ipa-modref 2>&1)))
+ CFLAGS += -fno-ipa-modref
+ endif
+
+ # Defined Symbol (MACROS)
+ CFLAGS += -D__HEAP_SIZE=0
+-CFLAGS += -DCONFIG_GPIO_AS_PINRESET
++ifneq ($(CONFIG_GPIO_AS_PINRESET),no)
++  CFLAGS += -DCONFIG_GPIO_AS_PINRESET
++endif
+
+ # Skip defining CONFIG_NFCT_PINS_AS_GPIOS if the device uses the NFCT.
+ ifneq ($(USE_NFCT),yes)
+diff --git a/src/boards/mdk_nrf52840_dongle/board.mk b/src/boards/mdk_nrf52840_dongle/board.mk
+--- a/src/boards/mdk_nrf52840_dongle/board.mk
++++ b/src/boards/mdk_nrf52840_dongle/board.mk
+@@ -1 +1,4 @@
+ MCU_SUB_VARIANT = nrf52840
++
++# P0.18 is configured conservatively by the OpenPuck board-specific hook.
++CONFIG_GPIO_AS_PINRESET = no
+diff --git a/src/boards/mdk_nrf52840_dongle/pinconfig.c b/src/boards/mdk_nrf52840_dongle/pinconfig.c
+--- a/src/boards/mdk_nrf52840_dongle/pinconfig.c
++++ b/src/boards/mdk_nrf52840_dongle/pinconfig.c
+@@ -1,5 +1,47 @@
+ #include "boards.h"
+ #include "uf2/configkeys.h"
++
++#define OPENPUCK_RESET_PIN 18U
++#define OPENPUCK_UICR_ERASED 0xFFFFFFFFUL
++
++static void nvmc_wait_ready(void)
++{
++  while (NRF_NVMC->READY == NVMC_READY_READY_Busy)
++  {
++  }
++}
++
++static void ensure_reset_pin_configured(void)
++{
++  uint32_t const reset0 = NRF_UICR->PSELRESET[0];
++  uint32_t const reset1 = NRF_UICR->PSELRESET[1];
++
++  if ((reset0 == OPENPUCK_RESET_PIN) && (reset1 == OPENPUCK_RESET_PIN))
++  {
++    return;
++  }
++
++  if ((reset0 != OPENPUCK_UICR_ERASED) || (reset1 != OPENPUCK_UICR_ERASED))
++  {
++    return;
++  }
++
++  NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Wen << NVMC_CONFIG_WEN_Pos;
++  nvmc_wait_ready();
++  NRF_UICR->PSELRESET[0] = OPENPUCK_RESET_PIN;
++  nvmc_wait_ready();
++  NRF_UICR->PSELRESET[1] = OPENPUCK_RESET_PIN;
++  nvmc_wait_ready();
++  NRF_NVMC->CONFIG = NVMC_CONFIG_WEN_Ren << NVMC_CONFIG_WEN_Pos;
++  nvmc_wait_ready();
++
++  NVIC_SystemReset();
++}
++
++void board_init2(void)
++{
++  ensure_reset_pin_configured();
++}
+
+ __attribute__((used, section(".bootloaderConfig")))
+ const uint32_t bootloaderConfig[] =
