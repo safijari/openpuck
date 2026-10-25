@@ -65,6 +65,60 @@ static int slotForKey(const char *key)
 	return -1;
 }
 
+// Exact-slot key for pairing tools: "rp/bond/0" .. "rp/bond/7" -> 0..7, else -1. Unlike Steam's
+// esb/bond[_2] writes (find-or-alloc by uuid), a write to one of these lands in exactly that slot.
+static int rpSlotForKey(const char *key)
+{
+	if (strncmp(key, "rp/bond/", 8) != 0 || key[8] < '0' || key[9] != 0)
+		return -1;
+	int slot = key[8] - '0';
+	return slot < NBOND ? slot : -1;
+}
+
+// Read-back slot for 0xED / 0xF0: an exact rp/bond/N key, or Steam's esb/bond (0) / esb/bond_2 (1).
+static int anySlotForKey(const char *key)
+{
+	int slot = rpSlotForKey(key);
+	return slot >= 0 ? slot : slotForKey(key);
+}
+
+// Identity marker read via 0xED "rp/info": ['R']['P'][protocol version][bond slot count]. A real
+// controller answers an unknown key with an empty value, so this tells the two apart.
+#define RP_INFO_VERSION 1
+
+// Copy the NUL-terminated settings key at the start of a 0xED/0xEE/0xF0 payload into key[24].
+// Returns the key length (the record, if any, starts after the NUL at pl[len]).
+static uint16_t readKey(const uint8_t *pl, uint16_t pln, char *key)
+{
+	uint16_t k = 0;
+	while (k < pln && k < 23 && pl[k] != 0)
+		key[k] = (char)pl[k], k++;
+	key[k] = 0;
+	return k;
+}
+
+// 0xED reply [0xED][len][value] for the key in pl: a bond record, the rp/info marker, or len 0 when the
+// slot is empty or the key unknown (as a real controller answers). out must hold >= 26. Returns length.
+static uint8_t settingResp(const uint8_t *pl, uint16_t pln, uint8_t *out)
+{
+	char key[24];
+	readKey(pl, pln, key);
+	int sk = anySlotForKey(key);
+	out[0] = 0xED;
+	out[1] = 0;
+	if (sk >= 0 && g_bond[sk].used) {
+		out[1] = 24;
+		memcpy(out + 2, g_bond[sk].rec, 24);
+	} else if (strcmp(key, "rp/info") == 0) {
+		out[1] = 4;
+		out[2] = 'R';
+		out[3] = 'P';
+		out[4] = RP_INFO_VERSION;
+		out[5] = NBOND;
+	}
+	return (uint8_t)(2 + out[1]);
+}
+
 static void writeBond(int slot, const uint8_t *rec24)
 {
 	if (slot < 0 || slot >= NBOND)
@@ -177,19 +231,31 @@ static void handleSet(uint8_t rid, hid_report_type_t type, uint8_t const *b,
 		g_resp[2] = ctrlLinkUp() ? 0x02 : 0x01;
 		g_resp_len = 63;
 		break;
+	case 0xED: // keyed value read: ["key"\0] -> [0xED][len][value], len 0 when empty/unknown
+		settingResp(pl, pln, g_resp);
+		g_resp_len = 63;
+		break;
+	case 0xF0: { // keyed value delete: ["key"\0] -> clear that bond slot
+		char key[24];
+		readKey(pl, pln, key);
+		ctrlBondClear(anySlotForKey(key));
+		g_resp[0] = 0xF0;
+		g_resp_len = 63;
+		break;
+	}
 	case 0xEE: { // keyed bond write: ["key"\0][r1 4][r2 4][puck_serial 16]
 		char key[24];
-		uint16_t k = 0;
-		while (k < pln && k < sizeof(key) - 1 && pl[k] != 0)
-			key[k] = (char)pl[k], k++;
-		key[k] = 0;
+		uint16_t k = readKey(pl, pln, key);
 		const uint8_t *rec = pl + k + 1; // skip the NUL
 		uint16_t reclen =
 			(pln > (uint16_t)(k + 1)) ? (uint16_t)(pln - k - 1) : 0;
-		// Find-or-allocate by the record's uuid key rather than the Zephyr settings key, so we can
-		// bond an arbitrary number of pucks (not just the two legacy esb/bond[_2] keys).
-		int sk = (reclen >= 24) ? ctrlBondFindOrAlloc(rec) :
-					  slotForKey(key);
+		// rp/bond/N writes exactly slot N. Steam's keys find-or-allocate by the record's uuid key
+		// rather than the Zephyr settings key, so we can bond an arbitrary number of pucks (not just
+		// the two legacy esb/bond[_2] keys).
+		int sk = rpSlotForKey(key);
+		if (sk < 0)
+			sk = (reclen >= 24) ? ctrlBondFindOrAlloc(rec) :
+					      slotForKey(key);
 		if (reclen >= 24)
 			writeBond(sk, rec);
 		if (Serial.availableForWrite() > 40)

@@ -5,6 +5,10 @@
 // 0xB4 wireless state) and ACCEPT the steamless pairing writes that target the controller:
 //   0xEE  keyed value write   payload ["esb/bond"\0 or "esb/bond_2"\0][r1 4][r2 4][puck_serial 16]
 //   0xEF  keyed value commit  payload ["esb/bond"\0]
+//   0xED  keyed value read    ["esb/bond"\0, "esb/bond_2"\0 or "rp/bond/N"\0] -> [0xED][24][rec]
+//                             (len 0 when empty); "rp/info"\0 -> [0xED][4]['R']['P'][ver][NBOND]
+//   0xF0  keyed value delete  same keys -> clear that slot
+//   0xEE / 0xEF with "rp/bond/N" (N = 0..NBOND-1) write exactly slot N instead of find-or-alloc
 //   0xA2  direct 24-byte bond write to slot 0 (PairTUI/Steam fallback shape)
 //   0x95  reboot into wireless mode  (magic 0xA427AF52) -> NVIC_SystemReset after the flash flush
 // See protocol/USB_COMMANDS.md for the full steamless flow.
