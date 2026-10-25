@@ -7,8 +7,8 @@ TWO sources:
   EP 0x83. We **detach the kernel driver from interfaces 0/1/2 and claim them** -> the controller
   vanishes from the kernel/Steam (true USB-level detach, so Steam stops eating Steam/QAM), and we read
   EP 0x83 ourselves and decode the raw report (trackpads, sticks, triggers, gyro, ALL buttons incl.
-  Steam/QAM). Release + reattach hands it back to Steam. Needs access to the usbfs node (see setup.sh:
-  `chmod` the /dev/bus/usb node, or run as root).
+  Steam/QAM). Release + reattach hands it back to Steam. Needs access to the usbfs node: SteamOS grants
+  it to the logged-in user (Steam's 28DE uaccess udev rule); elsewhere see setup.sh, or run as root.
 
 * **EvdevSource (fallback, --evdev)** -- pure-stdlib evdev. Works without libusb but the Deck exposes
   trackpads as sticks/dpad and can't see Steam/QAM, hence the original mapping problems.
@@ -192,6 +192,7 @@ class DeckSource:
         self._USBError = usb.core.USBError
         self._last_rumble = None      # last (int,left,right,lg,rg) we sent -> dedupe
         self._last_rumble_t = 0.0     # throttle clock
+        self._pulse_t = [0.0, 0.0]    # last pulse per pad (throttle)
 
     @property
     def name(self):
@@ -200,6 +201,7 @@ class DeckSource:
     def grab(self):
         if self._claimed:
             return
+        err = None
         for i in self.IFACES:
             try:
                 if self.dev.is_kernel_driver_active(i):
@@ -208,13 +210,21 @@ class DeckSource:
                 pass
             try:
                 self._usbutil.claim_interface(self.dev, i)
-            except Exception:
-                pass
+            except Exception as ex:
+                if i == self.IFACE_READ:
+                    err = ex
         self._claimed = True
+        if err is not None:
+            # without the DeckState interface we'd "forward" a dead neutral pad -- hand everything back
+            self.ungrab()
+            raise RuntimeError("couldn't take the Deck controls (%s)" % err)
+        self._lizard_off()
 
     def ungrab(self):
         if not self._claimed:
             return
+        if self._rumble_on:
+            self.rumble(0, 0, 0)  # never hand the pad back mid-buzz
         for i in self.IFACES:
             try:
                 self._usbutil.release_interface(self.dev, i)
@@ -234,29 +244,70 @@ class DeckSource:
             except self._USBError:
                 break  # timeout / no data
             decode_deck(bytes(rpt), self.state)
+        now = self._time.monotonic()
+        if now - self._lizard_off_t >= self._LIZARD_OFF_EVERY:
+            self._lizard_off()
+        # a relayed click arrives as a bare "on" with no matching "off", so end it ourselves once the
+        # clicks stop (streamed rumble keeps refreshing well inside the hold)
+        if self._rumble_on and now - self._rumble_req_t >= self._RUMBLE_HOLD:
+            self.rumble(0, 0, 0)
         return self.state
 
+    # The Deck pad has a watchdog that turns lizard mode (trackpad mouse, with its own haptic ticks) back on
+    # a few seconds after the host stops talking to it -- and once we detach it from the kernel nothing
+    # else does. Re-send what hid-steam's heartbeat sends (clear digital mappings + both trackpads to
+    # TRACKPAD_NONE) on grab and then every couple of seconds; hid-steam uses 5 s.
+    _LIZARD_OFF_EVERY = 2.0
+    _lizard_off_t = 0.0
+
+    def _lizard_off(self):
+        self._lizard_off_t = self._time.monotonic()
+        try:
+            self._feature(bytes([0x81, 0x00]))  # CLEAR_DIGITAL_MAPPINGS
+            # SET_SETTINGS_VALUES [reg u8][value u16]: LEFT/RIGHT_TRACKPAD_MODE (7/8) = TRACKPAD_NONE (7)
+            self._feature(bytes([0x87, 0x06, 0x07, 0x07, 0x00, 0x08, 0x07, 0x00]))
+        except Exception:
+            pass  # a busy endpoint just means we try again next round
+
+    def _feature(self, payload):
+        """SET_REPORT(Feature), report id 0, on the DeckState control interface (iface 2). Short timeout:
+        never block the input/UI loop if the endpoint is busy. Raises on failure."""
+        buf = bytearray(64)
+        buf[:len(payload)] = payload
+        self.dev.ctrl_transfer(0x21, 0x09, 0x0300, self.IFACE_READ, bytes(buf), timeout=20)
+
     # don't issue rumble feature-reports faster than this -- protects the Deck pad's control endpoint
-    # (hammering it at the poll rate is what wedged the pad). A repeated identical state is also dropped.
+    # (hammering it at the poll rate is what wedged the pad). A repeated identical "on" is only re-sent
+    # after _RUMBLE_REPEAT: relayed trackpad clicks all arrive as the SAME fixed buzz, so dropping repeats
+    # outright (as before) played the first click and silently swallowed every later one.
     _RUMBLE_MIN_DT = 0.015
+    _RUMBLE_REPEAT = 0.04
+    # an "on" not refreshed for this long is switched off (see pump)
+    _RUMBLE_HOLD = 0.06
+    _rumble_on = False
+    _rumble_req_t = 0.0
 
     def rumble(self, intensity, left, right, lgain=0, rgain=0):
         """Play a rumble on the Deck's haptics via the 0xEB feature report (hid-steam SET_REPORT).
         intensity/left/right are the SC2 rumble u16s relayed back from Steam; 0 stops it. Rate-limited
-        + deduped + short-timeout so a rumble burst can never flood or block the input loop."""
+        + short-timeout so a rumble burst can never flood or block the input loop."""
         if not self._claimed:
             return
         cur = (intensity & 0xFFFF, left & 0xFFFF, right & 0xFFFF, lgain & 0xFF, rgain & 0xFF)
         now = self._time.monotonic()
-        # always let an OFF (all-zero) through promptly; otherwise dedupe + throttle
-        if cur != (0, 0, 0, 0, 0):
-            if cur == self._last_rumble:
+        on = cur != (0, 0, 0, 0, 0)
+        if on:
+            self._rumble_req_t = now
+            dt = now - self._last_rumble_t
+            if dt < self._RUMBLE_MIN_DT or (cur == self._last_rumble and dt < self._RUMBLE_REPEAT):
                 return
-            if now - self._last_rumble_t < self._RUMBLE_MIN_DT:
-                return
+        elif not self._rumble_on and cur == self._last_rumble:
+            return  # already off
+        # always let an OFF (all-zero) through promptly
         self._last_rumble = cur
         self._last_rumble_t = now
-        buf = bytearray(64)
+        self._rumble_on = on
+        buf = bytearray(11)
         buf[0] = 0xEB          # CMD_TRIGGER_HAPTIC_RUMBLE
         buf[1] = 0x09          # payload length
         buf[2] = 0x00          # reserved
@@ -264,9 +315,26 @@ class DeckSource:
         buf[9] = cur[3]
         buf[10] = cur[4]
         try:
-            # SET_REPORT(Feature), report id 0, on the DeckState control interface (iface 2). Short
-            # timeout: never block the input/UI loop if the endpoint is busy.
-            self.dev.ctrl_transfer(0x21, 0x09, 0x0300, self.IFACE_READ, bytes(buf), timeout=20)
+            self._feature(buf)
+        except Exception:
+            pass
+
+    # per-pad floor between pulses: Steam relays a click every ~20 ms while a finger moves
+    _PULSE_MIN_DT = 0.008
+
+    def pulse(self, side, on_us, off_us, repeat):
+        """Play a trackpad haptic pulse via the 0x8F feature report [side][on_us][off_us][repeat] -- the
+        Deck renders these on the pad actuators (it ignores the 0xEB rumble entirely). side is 0 or 1."""
+        if not self._claimed:
+            return
+        side &= 1
+        now = self._time.monotonic()
+        if now - self._pulse_t[side] < self._PULSE_MIN_DT:
+            return
+        self._pulse_t[side] = now
+        try:
+            self._feature(struct.pack("<BBBHHH", 0x8F, 7, side, on_us & 0xFFFF, off_us & 0xFFFF,
+                                      repeat & 0xFFFF))
         except Exception:
             pass
 
@@ -399,6 +467,9 @@ class EvdevSource:
         # evdev fallback has no haptic path (FF could be added, but the libusb source is the real one)
         pass
 
+    def pulse(self, side, on_us, off_us, repeat):
+        pass
+
     def pump(self):
         s = self.state
         for typ, code, val in self.dev.read_events():
@@ -420,6 +491,26 @@ class EvdevSource:
                 elif code == ABS_RZ:
                     s["rt"] = max(0, min(255, val))
         return s
+
+
+def reattach_deck():
+    """Give the Deck pad back to the kernel/Steam if a previous run died while holding it. A crash (or
+    SIGKILL) releases our usbfs claims but never re-binds the HID driver, which leaves the Deck with no
+    controls until a reboot. Safe to call any time we aren't forwarding; returns the interfaces fixed."""
+    try:
+        import usb.core
+        dev = usb.core.find(idVendor=DECK_VID, idProduct=DECK_PID)
+    except Exception:
+        return []
+    fixed = []
+    for i in DeckSource.IFACES:
+        try:
+            if not dev.is_kernel_driver_active(i):
+                dev.attach_kernel_driver(i)
+                fixed.append(i)
+        except Exception:
+            pass  # e.g. another process holds it (EBUSY), or no such interface
+    return fixed
 
 
 def open_source(prefer_evdev=False, path=None):

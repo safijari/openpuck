@@ -19,6 +19,8 @@ T_STATUS = 0x10
 T_TEXT = 0x1F
 # nRF -> Deck haptic: [intensity u16][left u16][right u16][lgain u8][rgain u8] (Deck rumble cmd 0xEB)
 T_HAPTIC = 0x11
+# nRF -> Deck trackpad haptic pulse: [side u8][on_us u16][off_us u16][repeat u16] (Deck pulse cmd 0x8F)
+T_PULSE = 0x12
 
 # INPUT payload: buttons u32, lx ly rx ry s16, lt rt u8, lpx lpy rpx rpy s16, lpp rpp u16, axyz/gxyz s16.
 # 4 + 8 + 2 + 8 + 4 + 12 = 38 bytes, little-endian. Matches applyInput() in deck_input.cpp.
@@ -61,6 +63,14 @@ def parse_haptic(payload):
     lgain, rgain = payload[6], payload[7]
     return {"intensity": intensity, "left": left, "right": right,
             "lgain": lgain, "rgain": rgain}
+
+
+def parse_pulse(payload):
+    """Decode a T_PULSE payload -> dict for the Deck haptic pulse cmd. Mirrors deck_input.cpp."""
+    if len(payload) < 7:
+        return None
+    side, on_us, off_us, repeat = struct.unpack_from("<BHHH", payload, 0)
+    return {"side": side, "on_us": on_us, "off_us": off_us, "repeat": repeat}
 
 
 def build_set_forwarding(on):

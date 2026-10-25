@@ -17,6 +17,7 @@ Deps: pyserial + pygame (UI) + pyusb (input/USB detach). See README.md / the ./R
 """
 import argparse
 import os
+import signal
 import sys
 import threading
 import time
@@ -28,6 +29,8 @@ import input_source as isrc
 VID = 0x28DE
 PID = 0x1302  # the ReversePuck emulated controller (nRF "dongle")
 PUCK_PID = 0x1304  # a puck's own CDC -- never grab this as the dongle
+# the Deck's built-in controller has its own CDC (/dev/ttyACM0 on SteamOS) -- never grab that either
+NOT_DONGLE_PIDS = (PUCK_PID, isrc.DECK_PID)
 INPUT_HZ = 250.0
 
 
@@ -39,9 +42,9 @@ def find_port():
     for p in list_ports.comports():
         if (p.vid, p.pid) == (VID, PID):
             return p.device
-    # fall back: any Valve CDC except a puck's (so a puck docked on the Deck isn't mistaken for it)
+    # fall back: any Valve CDC except a puck's or the Deck pad's (so neither is mistaken for it)
     for p in list_ports.comports():
-        if p.vid == VID and p.pid != PUCK_PID:
+        if p.vid == VID and p.pid not in NOT_DONGLE_PIDS:
             return p.device
     return None
 
@@ -164,6 +167,15 @@ class App:
             elif typ == frame.T_HAPTIC:
                 # coalesce a burst to the newest state -- replaying every frame is what lagged the rumble
                 last_haptic = frame.parse_haptic(payload)
+            elif typ == frame.T_PULSE:
+                # trackpad clicks are discrete -- play each one, don't coalesce
+                pulse = frame.parse_pulse(payload)
+                if pulse and self.forwarding and self.input:
+                    try:
+                        self.input.pulse(pulse["side"], pulse["on_us"], pulse["off_us"],
+                                         pulse["repeat"])
+                    except Exception:
+                        pass
             elif typ == frame.T_TEXT:
                 line = payload.decode("latin1", "replace").rstrip()
                 if line:
@@ -356,6 +368,10 @@ class App:
             self._io_thread.join(timeout=1.0)
 
 
+def _exit_on_signal(signum, _frame):
+    raise SystemExit(128 + signum)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Steam Deck forwarder for ReversePuck")
     ap.add_argument("--port", help="CDC port (default: autodetect Valve 28DE:1302)")
@@ -367,7 +383,15 @@ def main():
     ap.add_argument("--logfile", default="openctrl.log",
                     help="append firmware log + app events here (default: openctrl.log in this dir)")
     args = ap.parse_args()
+    # Steam ends a game ("Exit game") with SIGTERM, and closing a terminal sends SIGHUP; by
+    # default both kill Python without running the finally below, leaving the Deck pad detached.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, _exit_on_signal)
     app = App(args)
+    if not args.evdev:
+        fixed = isrc.reattach_deck()
+        if fixed:
+            app._flog("reattached Deck pad interfaces %s left detached by a previous run" % fixed)
     try:
         if args.debug:
             app.run_debug()

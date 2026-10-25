@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=ReversePuck
+GenericName=Steam Deck as a Steam Controller
+Comment=Use the Steam Deck's controls as a Steam Controller on another machine
+Exec=reversepuck
+Icon=reversepuck
+Categories=Game;Utility;
+Keywords=steam;deck;controller;puck;openpuck;
+Terminal=false

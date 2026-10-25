@@ -11,8 +11,9 @@
 # the system libusb-1.0.so). uv also provisions its own Python, so nothing touches the read-only rootfs.
 #
 # USB-level detach (DeckSource) needs access to the controller's usbfs node, and the CDC link needs
-# /dev/ttyACM*. Run `sudo ./setup.sh` once per boot to open both (see README). Without it, fall back to
-# `./ReversePuck --evdev` (no USB detach; Steam/QAM won't forward, trackpads are lower fidelity).
+# /dev/ttyACM*. On SteamOS, Steam's udev rule already grants both to the logged-in user. Elsewhere,
+# run `sudo ./setup.sh` once per boot (see README), or fall back to `./ReversePuck --evdev` (no USB
+# detach; Steam/QAM won't forward, trackpads are lower fidelity).
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
