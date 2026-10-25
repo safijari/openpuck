@@ -349,13 +349,18 @@ static uint8_t rxOnce(const uint8_t *base, uint8_t prefix, uint8_t ch,
 						    rfrx[5] == 0xAE)) {
 						// only 0x83/0xAE get a feature TLV (matches the real controller,
 						// sniff1.json); 0x87 / bare / 0x45 -> plain input below.
+						// The puck relays Steam's feature report verbatim, [cmd][len][payload],
+						// so the parameters start AFTER the length byte at rfrx[6]. Reading from
+						// rfrx[6] answered 0xAE for string index <len> (0x15 -> "NA") instead of
+						// the requested serial, so Steam re-asked forever and never enumerated us
+						// as a Steam Controller (it fell back to a generic Xbox pad).
 						uint8_t plen =
-							(rxlen >= 5) ?
+							(rxlen >= 6) ?
 								(uint8_t)(rxlen -
-									  4) :
+									  5) :
 								0;
 						buildFeatureF1(rfrx[5],
-							       &rfrx[6], plen);
+							       &rfrx[7], plen);
 						// dump the GET poll + our response once per reqid (verify framing)
 						uint8_t rq = rfrx[5];
 						if (!(g_seenReq[rq >> 3] &
