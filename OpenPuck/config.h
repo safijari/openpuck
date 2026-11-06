@@ -171,7 +171,9 @@ extern TypeCfg g_type[ET_COUNT];
 #define PS_OFF 0
 #define PS_LEFT 1
 #define PS_RIGHT 2
-#define PS_MAX 2
+// Clicking the pad presses D-pad directions (pad_dpad.h). Older firmware reads this as "off".
+#define PS_DPAD 3
+#define PS_MAX 3
 extern uint8_t g_padStickCfg[ET_COUNT][2];
 extern uint8_t
 	g_etype; // etypeForMode(g_usbMode), resolved at boot (ET_NONE for puck modes)
@@ -230,6 +232,13 @@ void cfgExtWrite(uint8_t index, uint8_t value);
 
 void loadCfg();
 void saveCfg();
+// Save once nobody is actively playing (input_idle.h): flash writes stall the radio, so saves that happen on
+// their own during play wait for a quiet moment, or at most CFG_SAVE_MAX_DEFER_MS. Panel/console edits keep
+// calling saveCfg() directly -- nobody is mid-game while editing settings on a computer.
+#define CFG_SAVE_MAX_DEFER_MS 600000u
+void requestCfgSave();
+// loop context: performs a requested save when the moment is right
+void cfgSaveTask();
 // FULL factory wipe: reformat the internal LittleFS, erasing cfg.bin (modes/tunables/chords) AND bonds.bin
 // (paired controller). Irreversible; the caller reboots so the next boot comes up on clean defaults and the
 // controller must be re-paired. Gated behind explicit confirmation at every call site.
