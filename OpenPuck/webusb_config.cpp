@@ -111,7 +111,9 @@ static bool boardCommand(uint8_t op)
 // Lets the panel offer a feature only when this build answers its opcodes: an unanswered request would leave
 // the panel's read blocked on the shared IN pipe.
 #define WB_CAP_PROFILES 0x01 // 0x26/0x27/0x28 + 0xB4 frame
-#define WB_CAPS (WB_CAP_PROFILES)
+#define WB_CAP_PAD_DPAD 0x04 // trackpad map value PS_DPAD
+#define WB_CAP_FLIP 0x08 // paddles + Select layout flip
+#define WB_CAPS (WB_CAP_PROFILES | WB_CAP_PAD_DPAD | WB_CAP_FLIP)
 // The blob send is drop-on-full (never blocks loop), so the vendor TX FIFO MUST be able to hold a whole blob
 // -- otherwise tud_vendor_write_available() never reaches the frame size and EVERY frame is dropped (blank
 // panel / stale mappings). The Makefile sets -DCFG_TUD_VENDOR_TX_BUFSIZE=256; guard it here so a build without
@@ -1298,7 +1300,7 @@ void webusbPoll()
 					break;
 
 				// 80..87: per-type trackpad->stick mapping, field = 80 + et*2 + pad
-				// (pad 0 = left, 1 = right; value PS_OFF/PS_LEFT/PS_RIGHT).
+				// (pad 0 = left, 1 = right; value PS_OFF/PS_LEFT/PS_RIGHT/PS_DPAD).
 				// Must stay clear of the per-type cfg range 40..40+ET_COUNT*9-1
 				// (40..75), which is claimed before this switch runs.
 				case 80:

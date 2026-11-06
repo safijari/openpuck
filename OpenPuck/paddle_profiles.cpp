@@ -231,6 +231,20 @@ static void switchProfile(uint8_t slot, int dir)
 	feedback(slot, (uint8_t)(a + 1), FB_SHORT_MS);
 }
 
+// Nintendo <-> Xbox face-button layout for the active type. Paddles mapped to A/B/X/Y follow it, because a
+// paddle code means "acts like that physical button" and every mode builder applies the swap to both.
+// Shared by all of the type's profiles. 2 buzzes = Nintendo layout on, 1 = off.
+static void flipLayout(uint8_t slot)
+{
+	uint8_t et = g_etype;
+	if (et >= ET_COUNT)
+		return;
+	g_type[et].abSwap = g_type[et].abSwap ? 0 : 1;
+	applyActiveType();
+	requestCfgSave();
+	feedback(slot, g_type[et].abSwap ? 2 : 1, FB_SHORT_MS);
+}
+
 static void assignPaddle(uint8_t paddle, uint8_t code)
 {
 	uint8_t et = g_etype;
@@ -320,6 +334,7 @@ static void repClear(uint8_t *rep, uint32_t mask)
 #define CMD_NEXT 1
 #define CMD_PREV 2
 #define CMD_LEARN 3
+#define CMD_FLIP 4
 #define GESTURE_STABLE_MS 40u
 
 static uint8_t s_cmd[NSLOT]; // chord currently held
@@ -406,6 +421,8 @@ void paddleProfilesOnInput(uint8_t slot, uint8_t *rep)
 			cmd = CMD_PREV;
 		else if (raw & TB_VIEW)
 			cmd = CMD_LEARN;
+		else if (raw & TB_MENU)
+			cmd = CMD_FLIP;
 	}
 	if (cmd != s_cmd[slot]) {
 		s_cmd[slot] = cmd;
@@ -420,6 +437,9 @@ void paddleProfilesOnInput(uint8_t slot, uint8_t *rep)
 				learnExit();
 			else
 				learnEnter(slot);
+		} else if (cmd == CMD_FLIP) {
+			if (s_learnSlot != slot)
+				flipLayout(slot);
 		} else if (s_learnSlot != slot) {
 			switchProfile(slot, cmd == CMD_NEXT ? 1 : -1);
 		}
@@ -458,8 +478,8 @@ void paddleProfilesOnInput(uint8_t slot, uint8_t *rep)
 
 	// ---- normal play: hide the gesture buttons while all four paddles are held ----
 	if (back4) {
-		in.buttons &= ~(uint32_t)(TB_LB | TB_RB | TB_VIEW);
-		repClear(rep, TB_LB | TB_RB | TB_VIEW);
+		in.buttons &= ~(uint32_t)(TB_LB | TB_RB | TB_VIEW | TB_MENU);
+		repClear(rep, TB_LB | TB_RB | TB_VIEW | TB_MENU);
 	}
 }
 

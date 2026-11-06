@@ -171,7 +171,9 @@ extern TypeCfg g_type[ET_COUNT];
 #define PS_OFF 0
 #define PS_LEFT 1
 #define PS_RIGHT 2
-#define PS_MAX 2
+// Clicking the pad presses D-pad directions (pad_dpad.h). Older firmware reads this as "off".
+#define PS_DPAD 3
+#define PS_MAX 3
 extern uint8_t g_padStickCfg[ET_COUNT][2];
 extern uint8_t
 	g_etype; // etypeForMode(g_usbMode), resolved at boot (ET_NONE for puck modes)

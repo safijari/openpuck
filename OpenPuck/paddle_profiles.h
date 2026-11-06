@@ -9,6 +9,7 @@
 //   all 4 back paddles + RB      -> next profile        (buzzes 1-4 times = the profile number)
 //   all 4 back paddles + LB      -> previous profile
 //   all 4 back paddles + Start   -> enter / leave paddle-assign mode (one long buzz)
+//   all 4 back paddles + Select  -> flip Nintendo / Xbox face-button layout (2 buzzes = Nintendo, 1 = Xbox)
 // In paddle-assign mode nothing reaches the console. Tap a paddle (1 buzz), then tap the button it should
 // act as (2 buzzes = saved). Tapping the same paddle twice turns that paddle off (3 buzzes). The mode also
 // closes by itself after PP_LEARN_TIMEOUT_MS without input.

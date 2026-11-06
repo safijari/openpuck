@@ -366,6 +366,7 @@
         <tr><td style="padding:3px 12px 3px 0;white-space:nowrap"><strong>Paddles + RB</strong></td><td>Next paddle profile. The controller buzzes 1–4 times for the profile number.</td></tr>
         <tr><td style="padding:3px 12px 3px 0;white-space:nowrap"><strong>Paddles + LB</strong></td><td>Previous paddle profile.</td></tr>
         <tr><td style="padding:3px 12px 3px 0;white-space:nowrap"><strong>Paddles + Start (+)</strong></td><td>Paddle-assign mode on/off (long buzz). Tap a paddle (1 buzz), then the button it should act as (2 buzzes). The same paddle twice turns it off (3 buzzes). Closes itself after 30 s idle.</td></tr>
+        <tr id="flipRow" class="hide"><td style="padding:3px 12px 3px 0;white-space:nowrap"><strong>Paddles + Select (−)</strong></td><td>Flip Nintendo / Xbox button layout. 2 buzzes = Nintendo, 1 = Xbox. Paddles mapped to face buttons flip with it.</td></tr>
         <tr><td style="padding:3px 12px 3px 0;white-space:nowrap"><strong>Paddles + A / B / X / Y / D-pad</strong></td><td>Switch USB mode (see "Back4 chords" above).</td></tr>
       </table>
     </div>
@@ -706,7 +707,7 @@ const typeEls = []; // one entry per TYPE_DEFS: {sec, tab, activeDot, back[], qa
 // (pad 0 = left trackpad, 1 = right). While mapped and touched the pad drives that stick; on release the
 // stick re-centers, and an untouched mapped pad leaves the physical stick in control.
 const PAD_STICK_FIELD0 = 80;
-const PAD_STICK_OPTS = [[0,"Off (touchpad)"],[1,"Left stick"],[2,"Right stick"]];
+const PAD_STICK_OPTS = [[0,"Off (touchpad)"],[1,"Left stick"],[2,"Right stick"],[3,"D-pad (click)"]];
 const PAD_STICK_LABELS = ["Left trackpad \u2192 stick","Right trackpad \u2192 stick"];
 function mkSelect(def, includeNone){
   const sel=document.createElement("select");
@@ -2201,7 +2202,7 @@ async function stopCapture(){
 // ===================== Paddle profiles =====================
 // Gated on the optional-feature byte (firmware p[197] -> JS p[195]): firmware without it never sees these
 // opcodes, because an unanswered request would block the shared IN pipe.
-const CAP_PROFILES=0x01;
+const CAP_PROFILES=0x01, CAP_PAD_DPAD=0x04, CAP_FLIP=0x08;
 let opkCaps=0, xBusy=false, pollTick=0, lastMode=-1;
 let profData=null, profEt=-1, profBuiltEt=-1, profCards=[];
 const PADDLE_POS=[["L4","upper left"],["R4","upper right"],["L5","lower left"],["R5","lower right"]];
@@ -2313,6 +2314,10 @@ function opkAfterBlob(p, mode){
   // the per-type paddle rows only ever edited the ACTIVE profile; with the profile editor they live there
   typeEls.forEach(rec=>{ rec.back.forEach(sel=>sel.parentNode.classList.toggle("hide",hasProf));
     if(rec.backHint) rec.backHint.classList.toggle("hide",!hasProf); });
+  $("#flipRow").classList.toggle("hide",!(opkCaps&CAP_FLIP));
+  // "D-pad (click)" only where the firmware understands it (older firmware rejects the value)
+  typeEls.forEach(rec=>rec.padStick.forEach(sel=>{ const o=sel.querySelector('option[value="3"]');
+    if(o){ o.hidden=o.disabled=!(opkCaps&CAP_PAD_DPAD); } }));
   if(profData) renderProfiles();
 }
 // Called inside refresh() (poll lock held) after the blob. Profiles also change from the controller itself
