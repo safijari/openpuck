@@ -11,6 +11,8 @@
 #include "status_led.h"
 #include "fault_diag.h"
 #include "usb_mount.h" // modeSwitchReboot()
+#include "hitch_policy.h"
+#include "link_stats.h"
 #include <Adafruit_TinyUSB.h>
 #include <Arduino.h>
 #include <string.h>
@@ -3983,6 +3985,119 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 	return rxlen;
 }
 
+// ---- hitch-aware channel moves (hitch_policy.h) ----
+// Adds moves driven by felt input hitches on top of the average-delivery recovery above, which stays as the
+// total-failure backstop (the policy's own backstop is off). Moves go through rfHopTo(): the same neutral-
+// gated, rolled-back-on-failure handoff automatic recovery uses. One link is judged at a time, so the policy
+// only runs while exactly one controller is connected; with several, the cohort recovery above decides alone.
+static HitchPolicy g_hitch;
+static bool g_hitchReady = false, g_hitchFeeding = false;
+static uint8_t g_hitchPending = 0, g_hitchFrom = 0;
+static unsigned long g_hitchLastTickMs = 0;
+static uint8_t g_statsCh = 0; // last channel the move log saw (link_stats.h)
+
+// The one connected controller's slot, or -1 if none or several. "Connected" spans a whole fade (the 2.5 s
+// quiet threshold below) so a long freeze is still counted as a hitch when replies resume.
+static int hitchSoleSlot(unsigned long now)
+{
+	int sole = -1;
+	for (int s = 0; s < NSLOT; s++) {
+		if (!g_slot[s].used || !g_connReplyMs[s] ||
+		    (uint32_t)(now - g_connReplyMs[s]) >= 2500u)
+			continue;
+		if (sole >= 0)
+			return -1;
+		sole = s;
+	}
+	return sole;
+}
+
+static void hitchNotePoll(int slot, bool replied, unsigned long now)
+{
+	const int sole = hitchSoleSlot(now);
+	// a periodic retry of another, absent bond says nothing about the live link
+	if (sole >= 0 && slot != sole)
+		return;
+	const bool feed = g_hitchReady && g_rfChHandoffState == RF_CH_IDLE &&
+			  !g_rfChGroupActive && sole == slot;
+	if (!feed) {
+		if (g_hitchFeeding)
+			g_hitch.suspend();
+		g_hitchFeeding = false;
+		return;
+	}
+	g_hitchFeeding = true;
+	const int8_t rssi = (replied && g_linkRssi[slot]) ?
+				    (int8_t) - (int)g_linkRssi[slot] :
+				    (int8_t)0;
+	g_hitch.notePoll((uint32_t)now, replied, rssi);
+}
+
+static void hitchTask()
+{
+	const unsigned long now = millis();
+	if (!g_hitchReady) {
+		g_hitch.begin(g_sessCh, (uint32_t)now);
+		g_hitch.setBackstop(false);
+		g_hitchReady = true;
+	}
+	if ((uint32_t)(now - g_hitchLastTickMs) < 100u)
+		return;
+	g_hitchLastTickMs = now;
+	linkStatsTick((uint32_t)now);
+	if (!g_statsCh)
+		g_statsCh = g_sessCh;
+
+	const bool idle = g_rfChHandoffState == RF_CH_IDLE &&
+			  !g_rfChGroupActive;
+	if (g_hitchPending && idle) {
+		// a move we asked for finished: landed on the target, or rolled back / aborted
+		const uint8_t t = g_hitchPending;
+		g_hitchPending = 0;
+		g_hitch.hopped(t, (uint32_t)now, g_sessCh == t);
+		linkStatsLogMove(g_hitchFrom, t, LS_CAUSE_HITCH, g_sessCh == t,
+				 (uint32_t)now);
+		g_statsCh = g_sessCh;
+	} else if (idle && g_sessCh != g_hitch.channel()) {
+		g_hitch.externalMove(g_sessCh, (uint32_t)now);
+	}
+	// any other settled change of channel (average-delivery recovery, manual hop, journal builder)
+	if (idle && g_sessCh != g_statsCh) {
+		linkStatsLogMove(g_statsCh, g_sessCh, LS_CAUSE_OTHER, true,
+				 (uint32_t)now);
+		g_statsCh = g_sessCh;
+	}
+	const bool canAct = idle && !g_hitchPending && g_qos &&
+			    g_hitchFeeding && !rfJournalBuilderActive() &&
+			    !g_ambientSurveyManual && !g_ambientSurveyRunning;
+	const uint8_t t = g_hitch.tick((uint32_t)now, canAct);
+	if (t && canAct && t != g_sessCh) {
+		const uint8_t from = g_sessCh;
+		rfHopTo(t);
+		if (g_rfChGroupActive) {
+			g_hitchPending = t;
+			g_hitchFrom = from;
+		} else if (g_sessCh != from) {
+			// moved without a group handoff (nothing to coordinate): it's ours, log it as such
+			linkStatsLogMove(from, g_sessCh, LS_CAUSE_HITCH, true,
+					 (uint32_t)now);
+			g_statsCh = g_sessCh;
+		}
+	}
+}
+
+void rfHitchPolicyState(LinkStatsPolicy *out)
+{
+	out->channel = g_sessCh;
+	out->flags = (uint8_t)((g_hitchFeeding ? LSP_JUDGING : 0) |
+			       (g_hitch.weakSignal() ? LSP_WEAK : 0) |
+			       (g_hitchPending ? LSP_PENDING : 0) |
+			       (g_qos ? LSP_AUTO : 0));
+	out->futile = g_hitch.futileHops();
+	const uint32_t r = g_hitch.recentHitches();
+	out->recentHitches = r > 0xFF ? 0xFF : (uint8_t)r;
+}
+
 // Throttle: bonded slots that haven't replied in SLOT_COLD_MS are polled at most every SLOT_COLD_RETRY_MS
 // instead of every cycle. This keeps the online controllers at full 250 Hz while barely touching offline ones.
 #define SLOT_COLD_MS 5000u
@@ -4105,6 +4220,8 @@ static void rfConnStep()
 		}
 		if (rx)
 			g_chF1[0]++;
+		hitchNotePoll(k, rx != 0, nowMs);
+		linkStatsPoll((uint8_t)k, rx != 0, (uint32_t)nowMs);
 		g_stPoll[k]++; // one true poll cycle for this slot
 		g_connPoll++;
 	};
@@ -4307,6 +4424,7 @@ void rfLinkTask()
 	}
 	// Evaluate the completed link-quality window and request recovery only through the policy gate.
 	rfLinkQualityTask();
+	hitchTask();
 	rfAmbientSurveyTask();
 	if (g_connOn && millis() - g_stMs >= 1000) {
 		// Per-slot snapshots first (blob v13 / per-controller panel stats), then the legacy aggregates as

@@ -14,8 +14,12 @@
 //               0x24                 firmware update: abort/disarm
 //               0x25 "WIPE"          FULL BOARD WIPE (debug): erase app+config+bond+bl-settings, reboot app-less
 //                                    -> mounts as UF2 every boot until re-flashed (see fwupArmFullWipe)
+//               0x29                 GET connection quality -> 0xB5
+//               0x2A                 reset connection-quality counters + move log -> 0xB5
 //   dev->host:  0xA5 <len> <payload>  status blob (mode/tunables/link state/rates)
 //               0xAB 5 <status> <nextOff u32>  firmware-update ack, one per 0x20/0x21/0x22/0x24 (fw_update.h)
+//               0xB5 <len> <payload>  connection quality (layout in webusb_config.cpp)
+// Blob byte p[197] lists optional features this build answers (WB_CAP_*); builds without it don't send it.
 // No setLandingPage() on purpose -- it would pop a Chrome "open <url>?" notification on every plug-in.
 #pragma once
 #include <Adafruit_TinyUSB.h>
