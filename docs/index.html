@@ -123,6 +123,29 @@
   #updFill.bad{background:var(--bad)}
   @keyframes updslide{to{background-position:34px 0}}
   @media(prefers-reduced-motion:reduce){#updFill.pulse{animation:none}}
+  /* ---- connection quality ---- */
+  #qualityCard .statgrid{grid-template-columns:repeat(auto-fit,minmax(128px,1fr))}
+  .stat .s{color:var(--mut);font-size:11.5px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .v.good{color:var(--acc)} .v.warn{color:var(--warn)} .v.bad{color:var(--bad)} .v.dim{color:var(--mut)}
+  input[type=text]{background:#0e1017;color:var(--fg);border:1px solid #313a4f;border-radius:8px;padding:8px 10px;font:inherit;flex:1;min-width:160px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 0}
+  .chip{font-size:12px;padding:3px 10px;border-radius:99px;background:#151925;border:1px solid #272d3d;color:var(--mut)}
+  .chip.ok{color:var(--acc);border-color:#1f4a37} .chip.warn{color:var(--warn);border-color:#5a4718}
+  .spark{display:flex;align-items:flex-end;gap:2px;height:58px;padding:6px 8px;background:#0e1017;border:1px solid #232a3a;border-radius:8px;margin-top:12px}
+  .spark i{flex:1;background:var(--acc2);border-radius:2px 2px 0 0;min-height:2px;opacity:.9}
+  .spark i.z{background:#232a3a}
+  .spark i.hi{background:var(--bad)}
+  .sparklbl{display:flex;justify-content:space-between;color:var(--mut);font-size:11px;margin-top:3px}
+  table.mv{width:100%;border-collapse:collapse;font-size:13px;margin-top:6px}
+  table.mv th{text-align:left;color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;padding:6px 10px 6px 0;border-bottom:1px solid #272d3d;white-space:nowrap}
+  table.mv td{padding:7px 10px 7px 0;border-bottom:1px solid #1f2433;font-variant-numeric:tabular-nums;white-space:nowrap}
+  table.mv td.empty{color:var(--mut);white-space:normal}
+  table.mv button{padding:2px 9px;font-size:12px}
+  .tblwrap{overflow-x:auto}
+  #toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,16px);opacity:0;background:#143626;color:var(--acc);border:1px solid #1f4a37;padding:7px 16px;border-radius:99px;font-size:13px;font-weight:600;pointer-events:none;transition:opacity .2s,transform .2s;z-index:120}
+  #toast.show{opacity:1;transform:translate(-50%,0)}
+  #toast.bad{background:#3a1822;color:var(--bad);border-color:#7a2233}
+  @media(prefers-reduced-motion:reduce){#toast{transition:none}}
 </style>
 </head>
 <body>
@@ -217,6 +240,42 @@
         </div>
       </div>
       <p id="dpadOld" class="note hide">This puck's firmware predates the D-pad chords — update it to configure them.</p>
+    </div>
+
+    <div class="card wide hide" id="qualityCard">
+      <h2>Connection quality</h2>
+      <p class="note" style="margin-top:0">How smooth the controller feels, in numbers. A <strong>stutter</strong> is a gap of 40 ms or more between fresh reports from the controller (a few frames of frozen input); a <strong>freeze</strong> is 100 ms or more. Rates count only the time a controller was connected, so different boards, rooms and sessions compare fairly.</p>
+      <div class="slot-tabs" id="lsSlotTabs" style="display:none"></div>
+      <div class="statgrid">
+        <div class="stat"><div class="k">Stutters / min</div><div class="v" id="lsRate">—</div><div class="s">last minute</div></div>
+        <div class="stat"><div class="k">Freezes / min</div><div class="v" id="lsFrz">—</div><div class="s">100 ms or longer</div></div>
+        <div class="stat"><div class="k">Longest gap</div><div class="v" id="lsWorst">—</div><div class="s">last minute</div></div>
+        <div class="stat"><div class="k">Reports delivered</div><div class="v" id="lsDeliv">—</div><div class="s">last minute</div></div>
+        <div class="stat"><div class="k">Signal</div><div class="v" id="lsSig">—</div><div class="s" id="lsSigS">&nbsp;</div></div>
+        <div class="stat"><div class="k">Channel</div><div class="v" id="lsCh">—</div><div class="s" id="lsChS">&nbsp;</div></div>
+      </div>
+      <div class="spark" id="lsSpark" role="img" aria-label="Stutters over the last 5 minutes"></div>
+      <div class="sparklbl"><span>5 min ago</span><span>stutters per 10 s</span><span>now</span></div>
+      <div class="colhead" style="margin-top:18px">Since reset</div>
+      <div class="statgrid" style="margin-top:6px">
+        <div class="stat"><div class="k">Average</div><div class="v" id="lsAvg">—</div><div class="s">per minute connected</div></div>
+        <div class="stat"><div class="k">Stutters</div><div class="v" id="lsTot">—</div><div class="s" id="lsTotS">&nbsp;</div></div>
+        <div class="stat"><div class="k">Connected</div><div class="v" id="lsConn">—</div><div class="s" id="lsConnS">&nbsp;</div></div>
+        <div class="stat"><div class="k">Longest gap</div><div class="v" id="lsWorstTot">—</div><div class="s">since reset</div></div>
+      </div>
+      <div class="chips" id="lsPolicy"></div>
+      <div class="colhead" style="margin-top:18px">Channel moves</div>
+      <div class="tblwrap"><table class="mv"><thead><tr><th>When</th><th>Move</th><th>Why</th><th>Result</th><th>Stutters/min before</th><th>After</th></tr></thead><tbody id="lsMoves"></tbody></table></div>
+      <p class="note"><strong>Stutter fix</strong> = a stutter-aware channel move; <strong>Recovery / manual</strong> = the average-delivery recovery, a manual hop, or a journal build. <em>After</em> fills in one minute after the move.</p>
+      <div class="colhead" style="margin-top:18px">Compare runs</div>
+      <div class="row" style="margin:8px 0 0;gap:8px">
+        <input type="text" id="lsLabel" maxlength="40" placeholder="Name this run, e.g. Pro Micro · couch" aria-label="Run name">
+        <button id="lsSave" class="primary">Save this run</button>
+        <button id="lsReset">Reset counters</button>
+      </div>
+      <div class="tblwrap"><table class="mv"><thead><tr><th>Run</th><th>Date</th><th>Connected</th><th>Stutters/min</th><th>Freezes/min</th><th>Longest gap</th><th>Moves</th><th></th></tr></thead><tbody id="lsRuns"></tbody></table></div>
+      <div class="row" style="margin:10px 0 0;gap:8px"><button id="lsCopy">Copy table</button>
+        <span class="note" style="flex:1;margin:0">To compare boards: reset, play 15+ minutes in your usual spot, save the run; swap boards and repeat. Saved runs stay in this browser.</span></div>
     </div>
 
     <div class="card wide">
@@ -1150,7 +1209,7 @@ async function manualSurveyRf(){
   }
 }
 async function refreshRfStatus(survey=false){
-  if(!dev||isDongle||!rfCapable||rfBusy) return;
+  if(!dev||isDongle||!rfCapable||rfBusy||lizardBusy||(typeof xBusy!=="undefined"&&xBusy)) return;
   rfBusy=true;
   try{
     await waitIdle(); if(!dev) return;
@@ -1242,6 +1301,7 @@ async function openDevice(d){
     // 0x11, and readLizard()'s blocking transferIn would then hang forever -- wedging the status poll the
     // firmware-update gate depends on. So we never send 0x11 until a status blob proves the puck speaks v16.
     lizardLoaded=false;
+    opkCaps=0; lsData=null; lsSlot=-1; lsHist=[]; lsPrev=null; pollTick=0;
     startPolling();
     // GitHub releases are PUCK firmware; skip the fetch for a dongle (it flashes via the local-file card).
     if(!isDongle) loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
@@ -1598,18 +1658,19 @@ function applyBlob(p){
   $("#dpadChords").classList.toggle("hide", !dpadCap);
   $("#dpadOld").classList.toggle("hide", dpadCap);
   if(dpadCap) for(const sel of document.querySelectorAll("select.chordD")){ if(document.activeElement!==sel) sel.value=chordD[+sel.dataset.i]; }
+  opkAfterBlob(p);
 }
 function fmtSlider(id,v){ return id==="hapBlockS" ? v+" s" : ""+v; }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
 
 let inflight=false;
 async function refresh(){
-  if(!dev||inflight||capturing||backupBusy||flightBusy||lizardBusy||rfBusy) return; inflight=true;
+  if(!dev||inflight||xBusy||capturing||backupBusy||flightBusy||lizardBusy||rfBusy) return; inflight=true;
   // try/finally: an exception anywhere in here (applyBlob included) must never leave inflight latched true --
   // that would silently kill all future polls and read as a fake "heartbeat lost".
   try{
     if(isDongle){ await send([0x01]); const p=await readFrame(0xAC, 3, 256); if(p) applyDongleStatus(p); }
-    else { await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
+    else { await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); await opkPollExtras(); }
   }
   catch(e){ log("refresh err: "+e.message); }
   finally{ inflight=false; }
@@ -2141,6 +2202,167 @@ async function stopCapture(){
   $("#capStart").disabled=false; $("#capStop").disabled=true;
   renderCap(); log(`capture stopped — ${capLines.length} entries`);
 }
+// ===================== Connection quality =====================
+// Gated on the optional-feature byte (firmware p[197] -> JS p[195]): firmware without it never sees these
+// opcodes, because an unanswered request would block the shared IN pipe.
+const CAP_STATS=0x02;
+let opkCaps=0, xBusy=false, pollTick=0;
+let lsData=null, lsSlot=-1, lsHist=[], lsPrev=null;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const u16=(p,o)=>p[o]|(p[o+1]<<8), u32=(p,o)=>(p[o]|(p[o+1]<<8)|(p[o+2]<<16)|(p[o+3]<<24))>>>0;
+function toast(msg,bad){
+  const t=$("#toast"); if(!t) return;
+  t.textContent=msg; t.classList.toggle("bad",!!bad); t.classList.add("show");
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"),1500);
+}
+function setV(id,text,cls){ const el=$("#"+id); if(!el) return; el.textContent=text; el.className="v"+(cls?" "+cls:""); }
+// One request/reply with the status poll paused: they share the bulk pipe, and a reply read by the wrong
+// reader would shift every later read by one frame.
+async function xchg(fn){
+  while(xBusy) await sleep(10);
+  xBusy=true;
+  try{
+    await waitIdle();
+    for(let i=0;i<300 && (lizardBusy||rfBusy);i++) await sleep(10);
+    if(!dev) return null; return await fn(); }
+  catch(e){ log("exchange err: "+e.message); return null; }
+  finally{ xBusy=false; }
+}
+// ---- connection quality (0x29 get, 0x2A reset; reply 0xB5) ----
+function parseStats(f){
+  if(!f || f[0]!==1 || f.length<110) return null;
+  const d={ch:f[1], flags:f[2], futile:f[3], recent:f[4], since:u32(f,5), slots:[], moves:[]};
+  for(let k=0;k<4;k++){ const b=9+k*25;
+    d.slots.push({bonded:!!(f[b]&1), up:!!(f[b]&2), rssi:f[b+1], conn60:f[b+2], st60:u16(f,b+3), fz60:u16(f,b+5),
+      worst60:u16(f,b+7), deliv:u16(f,b+9), totSt:u32(f,b+11), totFz:u32(f,b+15), totConn:u32(f,b+19), totWorst:u16(f,b+23)}); }
+  for(let i=0;i<f[109] && 110+i*11+11<=f.length;i++){ const b=110+i*11;
+    d.moves.push({age:u16(f,b), from:f[b+2], to:f[b+3], cause:f[b+4]&0x7f, ok:!!(f[b+4]&0x80),
+      before:u16(f,b+5), beforeConn:f[b+7], after:u16(f,b+8), afterConn:f[b+10]}); }
+  return d;
+}
+// per connected minute; null until there's enough connected time to mean anything
+const perMin=(n,sec)=>sec>=10 ? n*60/sec : null;
+const fmtRate=r=>r==null?"—":(r<10?r.toFixed(1):String(Math.round(r)));
+const rateCls=r=>r==null?"dim":r<1?"good":r<5?"warn":"bad";
+function fmtMins(sec){ if(sec<60) return sec+" s"; const m=Math.floor(sec/60); return m<60 ? m+" min" : Math.floor(m/60)+" h "+(m%60)+" min"; }
+function fmtAge(s){ return s<5?"just now": s<60? s+" s ago" : fmtMins(s)+" ago"; }
+function sigWord(dbm){ return dbm>-65?["strong","good"]:dbm>-75?["good","good"]:dbm>-82?["weak","warn"]:["very weak","bad"]; }
+function pickLsSlot(d){
+  const ok=k=>d.slots[k] && d.slots[k].bonded;
+  if(lsSlot>=0 && ok(lsSlot)) return lsSlot;
+  for(let k=0;k<4;k++) if(d.slots[k].up) return k;
+  for(let k=0;k<4;k++) if(ok(k)) return k;
+  return 0;
+}
+function applyStats(d){
+  lsData=d;
+  const k=pickLsSlot(d); 
+  if(k!==lsSlot){ lsSlot=k; lsHist=[]; lsPrev=null; }
+  const s=d.slots[k], now=Date.now();
+  // sparkline: stutters between samples, bucketed by wall-clock time
+  if(lsPrev && s.totSt>=lsPrev.totSt) lsHist.push({t:now, n:s.totSt-lsPrev.totSt});
+  else lsHist=[];
+  lsPrev={totSt:s.totSt};
+  lsHist=lsHist.filter(h=>now-h.t<300000);
+  // controller tabs when several are bonded
+  const bonded=[0,1,2,3].filter(i=>d.slots[i].bonded), tabs=$("#lsSlotTabs");
+  tabs.style.display = bonded.length>1 ? "flex" : "none";
+  if(bonded.length>1){
+    tabs.innerHTML="";
+    for(const i of bonded){ const b=document.createElement("button"); b.className="slot-tab"+(i===k?" active":"");
+      const dot=document.createElement("span"); dot.className="dot"+(d.slots[i].up?" up":""); b.append(dot,"Controller "+(i+1));
+      b.onclick=()=>{ lsSlot=i; lsHist=[]; lsPrev=null; applyStats(lsData); }; tabs.appendChild(b); }
+  }
+  const r60=perMin(s.st60,s.conn60), f60=perMin(s.fz60,s.conn60);
+  setV("lsRate", s.conn60>=10?fmtRate(r60):(s.up?"…":"—"), s.conn60>=10?rateCls(r60):"dim");
+  setV("lsFrz", s.conn60>=10?fmtRate(f60):"—", s.conn60>=10?rateCls(f60*3):"dim");
+  setV("lsWorst", s.worst60 ? s.worst60+" ms" : (s.conn60? "under 40 ms":"—"), s.worst60>=250?"bad":s.worst60>=100?"warn":s.conn60?"good":"dim");
+  setV("lsDeliv", s.deliv<=1000 ? (s.deliv/10).toFixed(1)+"%" : "—", s.deliv<=1000 ? (s.deliv>=980?"good":s.deliv>=900?"warn":"bad") : "dim");
+  if(s.up && s.rssi){ const w=sigWord(-s.rssi); setV("lsSig","-"+s.rssi+" dBm",w[1]); $("#lsSigS").textContent=w[0]; }
+  else { setV("lsSig","—","dim"); $("#lsSigS").textContent=s.bonded?"not connected":"no controller"; }
+  setV("lsCh", d.ch ? String(d.ch) : "—"); $("#lsChS").textContent = d.ch ? (2400+d.ch)+" MHz" : " ";
+  const avg=perMin(s.totSt,s.totConn);
+  setV("lsAvg", fmtRate(avg), rateCls(avg));
+  setV("lsTot", String(s.totSt)); $("#lsTotS").textContent = s.totFz+" freeze"+(s.totFz===1?"":"s")+" (100 ms+)";
+  setV("lsConn", fmtMins(s.totConn)); $("#lsConnS").textContent = "of "+fmtMins(d.since)+" since reset";
+  setV("lsWorstTot", s.totWorst ? s.totWorst+" ms" : "—", s.totWorst>=250?"bad":s.totWorst>=100?"warn":"");
+  // sparkline: 30 bars of 10 s
+  const B=30, sp=$("#lsSpark"), bars=new Array(B).fill(0);
+  for(const h of lsHist){ const i=B-1-Math.floor((now-h.t)/10000); if(i>=0&&i<B) bars[i]+=h.n; }
+  const mx=Math.max(3,...bars);
+  sp.innerHTML=bars.map(n=>'<i class="'+(n===0?"z":n>=5?"hi":"")+'" style="height:'+(n?Math.max(8,Math.round(n*100/mx)):4)+'%" title="'+n+' stutter'+(n===1?"":"s")+'"></i>').join("");
+  // policy chips
+  const chips=[];
+  chips.push((d.flags&8)?['ok',"Automatic channel moves on"]:['warn',"Automatic channel moves off"]);
+  if(d.flags&8) chips.push((d.flags&1)?['ok',"Stutter-aware moves: watching"]:['',"Stutter-aware moves paused (works with one controller connected)"]);
+  if(d.flags&2) chips.push(['warn',"Weak signal: moving channels won't help, so it stays put"]);
+  if(d.flags&4) chips.push(['warn',"Moving channel…"]);
+  if(d.futile) chips.push(['warn',"Backing off: last "+d.futile+" move"+(d.futile>1?"s":"")+" didn't help"]);
+  $("#lsPolicy").innerHTML=chips.map(c=>'<span class="chip '+c[0]+'">'+escHtml(c[1])+'</span>').join("");
+  // move log
+  const tb=$("#lsMoves");
+  tb.innerHTML = d.moves.length ? d.moves.map(m=>{
+    const before=fmtRate(perMin(m.before,m.beforeConn));
+    const after=m.after===0xFFFF?'<span style="color:var(--mut)">measuring…</span>':m.after===0xFFFE?"—":fmtRate(perMin(m.after,m.afterConn));
+    return '<tr><td>'+fmtAge(m.age)+'</td><td>'+m.from+' → '+m.to+' <span style="color:var(--mut);font-size:11px">'+(2400+m.to)+' MHz</span></td>'
+      +'<td>'+(m.cause===1?"Stutter fix":"Recovery / manual")+'</td>'
+      +'<td>'+(m.ok?'<span class="pill up">moved</span>':'<span class="pill dn">rolled back</span>')+'</td>'
+      +'<td>'+before+'</td><td>'+after+'</td></tr>';
+  }).join("") : '<tr><td class="empty" colspan="6">No channel moves since reset.</td></tr>';
+}
+async function resetStats(){
+  const f=await xchg(async()=>{ await send([0x2A]); return parseStats(await readFrame(0xB5,110)); });
+  if(f){ lsHist=[]; lsPrev=null; applyStats(f); toast("Counters reset"); } else toast("Reset failed — try again",true);
+}
+
+// ---- saved runs (this browser only) ----
+const RUNS_KEY="opk_ls_runs";
+function loadRuns(){ try{ return JSON.parse(localStorage.getItem(RUNS_KEY))||[]; }catch(e){ return []; } }
+function storeRuns(r){ try{ localStorage.setItem(RUNS_KEY, JSON.stringify(r.slice(0,30))); }catch(e){} }
+function runRow(r){ return [r.label, new Date(r.t).toLocaleDateString(), fmtMins(r.conn), fmtRate(perMin(r.st,r.conn)),
+  fmtRate(perMin(r.fz,r.conn)), r.worst?r.worst+" ms":"—", String(r.moves)]; }
+function renderRuns(){
+  const runs=loadRuns(), tb=$("#lsRuns");
+  tb.innerHTML = runs.length ? runs.map((r,i)=>'<tr>'+runRow(r).map((c,j)=>'<td'+(j===3?' style="color:var(--fg);font-weight:600"':'')+'>'+escHtml(c)+'</td>').join("")
+    +'<td><button data-del="'+i+'" title="Delete this run" aria-label="Delete run '+escHtml(r.label)+'">✕</button></td></tr>').join("")
+    : '<tr><td class="empty" colspan="8">No saved runs yet.</td></tr>';
+  tb.querySelectorAll("button[data-del]").forEach(b=>b.onclick=()=>{ const r=loadRuns(); r.splice(+b.dataset.del,1); storeRuns(r); renderRuns(); });
+}
+$("#lsSave").onclick=()=>{
+  if(!lsData) return;
+  const s=lsData.slots[lsSlot];
+  if(!s || s.totConn<60){ toast("Play at least a minute first",true); return; }
+  const label=($("#lsLabel").value.trim()) || ("Run "+(loadRuns().length+1));
+  const r=loadRuns();
+  r.unshift({label, t:Date.now(), conn:s.totConn, st:s.totSt, fz:s.totFz, worst:s.totWorst, moves:lsData.moves.length,
+    build:($("#stBuild")?$("#stBuild").textContent:"")});
+  storeRuns(r); renderRuns(); toast("Run saved");
+};
+$("#lsCopy").onclick=async()=>{
+  const runs=loadRuns(); if(!runs.length){ toast("No saved runs to copy",true); return; }
+  const head=["Run","Date","Connected","Stutters/min","Freezes/min","Longest gap","Moves","Build"];
+  const txt=[head.join("\t"), ...runs.map(r=>[...runRow(r), r.build||""].join("\t"))].join("\n");
+  try{ await navigator.clipboard.writeText(txt); toast("Copied — paste into a message or sheet"); }
+  catch(e){ log("copy failed — runs:\n"+txt); toast("Copy blocked — table written to the log",true); }
+};
+$("#lsReset").onclick=resetStats;
+try{ $("#lsLabel").value=localStorage.getItem("opk_ls_label")||""; }catch(e){}
+$("#lsLabel").addEventListener("change",e=>{ try{ localStorage.setItem("opk_ls_label", e.target.value); }catch(_){} });
+renderRuns();
+function opkAfterBlob(p){
+  opkCaps = p.length>195 ? p[195] : 0;
+  $("#qualityCard").classList.toggle("hide",!(opkCaps&CAP_STATS));
+}
+// Called inside refresh() (poll lock held) after the blob: every third poll, about every 2 s.
+async function opkPollExtras(){
+  pollTick++;
+  // applyBlob may have just started the lizard-map load or an RF status read; one reader at a time
+  if(lizardBusy||rfBusy) return;
+  if((opkCaps&CAP_STATS) && pollTick%3===0){
+    await send([0x29]); const d=parseStats(await readFrame(0xB5,110)); if(d) applyStats(d);
+  }
+}
+
 async function startPolling(){
   polling=true; await refresh();
   while(polling && dev){
@@ -2544,6 +2766,8 @@ async function runUpdate(title, confirmText, getImage){
   dfuBusy=true; updateUf2UI(); modalOpen(title);
   polling=false;        // the IN pipe belongs to the update acks now
   await dfuSleep(800);  // let an in-flight status poll finish its read first
+  // and any other reader (lizard-map load, RF status, panel exchange): a reader left pending takes acks
+  for(let i=0;i<500 && (inflight||lizardBusy||rfBusy||(typeof xBusy!=="undefined"&&xBusy));i++) await dfuSleep(10);
   const t0=Date.now(), oldBuild=blobBuildId(lastP);
   try{
     const image=await getImage();
@@ -3022,8 +3246,12 @@ async function lzV2ReadMap(op){
 	const recSize=lzPanelV2()?24:16;
 	let buf=[];
 	let expected=0;
+	const deadline=Date.now()+4000;
 	for(;;){
-		const r=await dev.transferIn(epIn,256);
+		const left=deadline-Date.now();
+		if(left<=0) throw new Error("no lizard-map reply");
+		const r=await Promise.race([dev.transferIn(epIn,256), new Promise(res=>setTimeout(()=>res(null),left))]);
+		if(r===null) throw new Error("no lizard-map reply");
 		if(r.status!=="ok") throw new Error("lizard-map read failed");
 		const d=new Uint8Array(r.data.buffer);
 		for(const x of d) buf.push(x);
@@ -3052,6 +3280,8 @@ async function lzV2Load(){
 	if(lizardBusy||!dev)return;
 	lizardBusy=true;
 	try{
+		// started from inside a status poll: let that poll finish its reads first (the pipe is shared)
+		await waitIdle(); if(!dev) return;
 		const ops=lzV2Ops();
 		lizardBindings=await lzV2ReadMap(lzPanelV2()?ops.dump:0x11);
 		lzV2Render();
@@ -3109,5 +3339,6 @@ function lzV2InstallHandlers(){
 }
 lzV2InstallHandlers();
 </script>
+<div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
