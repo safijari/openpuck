@@ -327,6 +327,7 @@ static uint32_t isqrt32(uint32_t v)
 	return r;
 }
 
+static bool rumbleRelay(uint16_t lowFreq, uint16_t highFreq, uint8_t slot);
 bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 {
 	if (slot >= NSLOT)
@@ -367,10 +368,22 @@ bool hapticSteamRumble(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
 		lowFreq = (l > 0xFFFF) ? 0xFFFF : (uint16_t)l;
 		highFreq = (h > 0xFFFF) ? 0xFFFF : (uint16_t)h;
 	}
-	bool on = lowFreq || highFreq;
 	// per-type rumble disable: drop ON commands; zero/stop still pass to clear any queued relay
-	if (on && !g_rumble)
+	if ((lowFreq || highFreq) && !g_rumble)
 		return false;
+	return rumbleRelay(lowFreq, highFreq, slot);
+}
+// Paddle-profile feedback buzz: a fixed mid-scale pulse that deliberately SKIPS the rumble style/strength
+// shaping and the per-type rumble disable -- it is a UI signal, so it must be felt even with game rumble off.
+bool hapticFeedback(uint8_t slot, bool on)
+{
+	if (slot >= NSLOT)
+		return false;
+	return on ? rumbleRelay(0x9000, 0x9000, slot) : rumbleRelay(0, 0, slot);
+}
+static bool rumbleRelay(uint16_t lowFreq, uint16_t highFreq, uint8_t slot)
+{
+	bool on = lowFreq || highFreq;
 	// Per-slot settle gate (the per-slot reconnect block + link-up check). 0x82 haptics in Steam mode use the
 	// same gate; for XInput, the host only sends a stream while a controller is connected, so this also doubles
 	// as "no controller here, no relay".

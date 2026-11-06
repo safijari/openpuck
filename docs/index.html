@@ -123,6 +123,20 @@
   #updFill.bad{background:var(--bad)}
   @keyframes updslide{to{background-position:34px 0}}
   @media(prefers-reduced-motion:reduce){#updFill.pulse{animation:none}}
+  /* ---- paddle profiles ---- */
+  .prof-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:12px}
+  .prof{background:#0e1017;border:1px solid #232a3a;border-radius:10px;padding:12px;transition:border-color .2s}
+  .prof.on{border-color:var(--acc);box-shadow:inset 0 0 0 1px rgba(91,214,160,.18)}
+  .prof-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px;min-height:28px}
+  .prof-head b{font-size:14px}
+  .prof-head button{padding:4px 11px;font-size:12px}
+  .pads{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
+  .pads label{display:block;color:var(--mut);font-size:11px;margin:0 0 3px;white-space:nowrap}
+  .pads select{width:100%;min-width:0;padding:5px 6px;font-size:13px}
+  #toast{position:fixed;left:50%;bottom:22px;transform:translate(-50%,16px);opacity:0;background:#143626;color:var(--acc);border:1px solid #1f4a37;padding:7px 16px;border-radius:99px;font-size:13px;font-weight:600;pointer-events:none;transition:opacity .2s,transform .2s;z-index:120}
+  #toast.show{opacity:1;transform:translate(-50%,0)}
+  #toast.bad{background:#3a1822;color:var(--bad);border-color:#7a2233}
+  @media(prefers-reduced-motion:reduce){#toast{transition:none}}
 </style>
 </head>
 <body>
@@ -331,10 +345,29 @@
       <p id="rumbleOld" class="note hide">This puck's firmware predates the rumble-shaping settings — update it to configure them.</p>
     </div>
 
-    <div class="card wide">
+    <div class="card wide" id="mappingCard">
       <h2>Button mapping</h2>
       <p class="note" style="margin-top:0">Separate mappings per emulated controller type — each only offers targets that exist on that controller. The type matching the current mode is highlighted. Steam &amp; Lizard are native puck modes (Steam does its own remapping) and aren't configured here.</p>
       <div id="typeCfgs"></div>
+    </div>
+
+    <div class="card wide hide" id="profilesCard">
+      <h2>Paddle profiles</h2>
+      <p class="note" style="margin-top:0">Four back-paddle layouts for each controller type, laid out like the paddles on the back of the controller. The green one is in use; switch from the controller with <strong>paddles + RB / LB</strong>, or press <em>Use this</em>. Changes save to the puck straight away.</p>
+      <div class="slot-tabs" id="profTabs"></div>
+      <div class="prof-grid" id="profGrid"></div>
+      <p class="note" id="profNote"></p>
+    </div>
+
+    <div class="card wide hide" id="shortcutsCard">
+      <h2>Controller shortcuts</h2>
+      <p class="note" style="margin-top:0">These work from the controller alone. Hold <strong>all four back paddles</strong>, then press the second button. Profile gestures apply to Xbox, Switch and PlayStation modes; Steam and Lizard modes ignore them.</p>
+      <table class="note" style="border-collapse:collapse;width:100%;margin:0">
+        <tr><td style="padding:3px 12px 3px 0;white-space:nowrap"><strong>Paddles + RB</strong></td><td>Next paddle profile. The controller buzzes 1–4 times for the profile number.</td></tr>
+        <tr><td style="padding:3px 12px 3px 0;white-space:nowrap"><strong>Paddles + LB</strong></td><td>Previous paddle profile.</td></tr>
+        <tr><td style="padding:3px 12px 3px 0;white-space:nowrap"><strong>Paddles + Start (+)</strong></td><td>Paddle-assign mode on/off (long buzz). Tap a paddle (1 buzz), then the button it should act as (2 buzzes). The same paddle twice turns it off (3 buzzes). Closes itself after 30 s idle.</td></tr>
+        <tr><td style="padding:3px 12px 3px 0;white-space:nowrap"><strong>Paddles + A / B / X / Y / D-pad</strong></td><td>Switch USB mode (see "Back4 chords" above).</td></tr>
+      </table>
     </div>
 
     <div class="card" id="lizardCard" style="display:none">
@@ -724,6 +757,9 @@ function setTab(et){
       sel.addEventListener("change",()=>setField(40+et*9+i, +sel.value));
       rec.back.push(sel);
     }
+    { const h=document.createElement("p"); h.className="note hide"; h.style.margin="4px 0 8px";
+      h.innerHTML='Back paddles are set per profile: see <a href="#profilesCard" style="color:var(--acc2)">Paddle profiles</a>.';
+      sec.appendChild(h); rec.backHint=h; }
     // QAM
     { const row=document.createElement("div"); row.className="row";
       const lab=document.createElement("label"); lab.textContent="QAM (3 dots)"; row.appendChild(lab);
@@ -1150,7 +1186,7 @@ async function manualSurveyRf(){
   }
 }
 async function refreshRfStatus(survey=false){
-  if(!dev||isDongle||!rfCapable||rfBusy) return;
+  if(!dev||isDongle||!rfCapable||rfBusy||lizardBusy||(typeof xBusy!=="undefined"&&xBusy)) return;
   rfBusy=true;
   try{
     await waitIdle(); if(!dev) return;
@@ -1242,6 +1278,7 @@ async function openDevice(d){
     // 0x11, and readLizard()'s blocking transferIn would then hang forever -- wedging the status poll the
     // firmware-update gate depends on. So we never send 0x11 until a status blob proves the puck speaks v16.
     lizardLoaded=false;
+    opkCaps=0; profData=null; profEt=-1; profBuiltEt=-1; pollTick=0;
     startPolling();
     // GitHub releases are PUCK firmware; skip the fetch for a dongle (it flashes via the local-file card).
     if(!isDongle) loadReleases(false); // background, cached: feeds the update-available notice + pre-warms the update tab
@@ -1598,18 +1635,19 @@ function applyBlob(p){
   $("#dpadChords").classList.toggle("hide", !dpadCap);
   $("#dpadOld").classList.toggle("hide", dpadCap);
   if(dpadCap) for(const sel of document.querySelectorAll("select.chordD")){ if(document.activeElement!==sel) sel.value=chordD[+sel.dataset.i]; }
+  opkAfterBlob(p, mode);
 }
 function fmtSlider(id,v){ return id==="hapBlockS" ? v+" s" : ""+v; }
 function setSlider(id,v){ const el=$("#"+id); if(document.activeElement!==el){ el.value=v; } $("#"+id+"V").textContent=fmtSlider(id,el.value); }
 
 let inflight=false;
 async function refresh(){
-  if(!dev||inflight||capturing||backupBusy||flightBusy||lizardBusy||rfBusy) return; inflight=true;
+  if(!dev||inflight||xBusy||capturing||backupBusy||flightBusy||lizardBusy||rfBusy) return; inflight=true;
   // try/finally: an exception anywhere in here (applyBlob included) must never leave inflight latched true --
   // that would silently kill all future polls and read as a fake "heartbeat lost".
   try{
     if(isDongle){ await send([0x01]); const p=await readFrame(0xAC, 3, 256); if(p) applyDongleStatus(p); }
-    else { await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); }
+    else { await send([0x01]); const p=await readBlob(); if(p) applyBlob(p); await opkPollExtras(); }
   }
   catch(e){ log("refresh err: "+e.message); }
   finally{ inflight=false; }
@@ -1684,7 +1722,7 @@ function applyDeviceProfile(){
 // normal 0x02 setters, then sends the 0x0D bond-import which writes the pairings, applies the mode and reboots.
 function hexEnc(arr){ return [...arr].map(x=>x.toString(16).padStart(2,"0")).join(""); }
 function hexDec(h){ const a=[]; if(!h) return a; for(let i=0;i+1<h.length;i+=2) a.push(parseInt(h.substr(i,2),16)); return a; }
-function buildBackup(p, bp){
+function buildBackup(p, bp, prof){
   const mask=bp[1], bonds=[];
   for(let s=0;s<4;s++){ const rec=bp.slice(2+s*24, 2+s*24+24);
     bonds.push({slot:s, used:!!((mask>>s)&1), rec:hexEnc(rec)}); }
@@ -1707,6 +1745,8 @@ function buildBackup(p, bp){
   // map snapshot would be empty, which would incorrectly clear bindings on restore.
   if(lizardLoaded && lizardCapable() && !lizardBusy)
     cfg.lizardMap=lizardBindings.map(b=>({outType:b.outType,od:b.od.slice(),trig:b.trig>>>0,hold:b.hold>>>0}));
+  // every paddle profile of every type, and which one each type has active
+  if(prof) cfg.profiles={active:prof.active.slice(), back:prof.back.map(t=>t.map(c=>c.slice()))};
   return { magic:"openpuck-backup", version:(cfg.lizardMap?2:1), bonds, config:cfg };
 }
 function downloadBackup(obj){
@@ -1728,10 +1768,12 @@ async function exportBackup(){
     let bp=null;
     for(let t=0; t<8 && !bp; t++) bp=await readFrame(0xA7, 2+4*24);
     if(!bp){ log("export: no bond data (firmware too old for 0x09 export — reflash)"); return; }
-    const backup=buildBackup(lastP, bp);
+    let prof=null;
+    if(opkCaps&CAP_PROFILES){ await send([0x26]); prof=await readProfiles(); if(!prof){ log("export: couldn't read the paddle profiles — retry"); return; } }
+    const backup=buildBackup(lastP, bp, prof);
     downloadBackup(backup);
     const n=backup.bonds.filter(b=>b.used).length;
-    log("exported backup — "+n+" bonded controller slot(s) + all settings");
+    log("exported backup — "+n+" bonded controller slot(s) + all settings"+(prof?" + all paddle profiles":""));
   } finally { backupBusy=false; }
 }
 async function importBackup(file){
@@ -1754,7 +1796,10 @@ async function importBackup(file){
   const lizardN=(Array.isArray(c.lizardMap) && lizardCapable())?Math.min(c.lizardMap.length,LZ_MAX):0;
   const baseN=6 + (Array.isArray(c.chordD)?4:0) + (c.swGyroLegacy!==undefined?1:0);
   const padStickN=Array.isArray(c.types)?c.types.slice(0,typeN).filter(t=>Array.isArray(t.padStick)).length*2:0;
-  const total=baseN + typeN*9 + padStickN + lizardN + 4 + 1;
+  const prof=c.profiles, profOK=!!(prof && Array.isArray(prof.back) && Array.isArray(prof.active) && (opkCaps&CAP_PROFILES));
+  const profEts=profOK?Math.min(prof.back.length,prof.active.length,TYPE_DEFS.length):0;
+  const profN=profOK?prof.back.slice(0,profEts).reduce((a,t)=>a+(Array.isArray(t)?Math.min(t.length,4):0),0)+profEts:0;
+  const total=baseN + typeN*9 + padStickN + profN + lizardN + 4 + 1;
   let step=0, stage="";
   const tick=()=>modalStage(stage, Math.min(99,Math.floor(step*100/total)));
   try{
@@ -1796,6 +1841,18 @@ async function importBackup(file){
         if(Array.isArray(t.padStick)){ await sf(PAD_STICK_FIELD0+et*2, t.padStick[0]); await sf(PAD_STICK_FIELD0+et*2+1, t.padStick[1]); } }
       log("settings replayed ("+(baseN+typeN*9)+" fields)");
     } else { log("settings replayed ("+baseN+" fields — no per-type config in this backup)"); }
+    // All paddle profiles + which is active per type. Runs after the per-type block (which set the then-active
+    // profile), so these land on top; each write answers with a 0xB4 frame, read to keep the pipe in step.
+    if(profOK){
+      stage="Restoring paddle profiles"; tick();
+      const wp=async(bytes)=>{ await send(bytes); await readProfiles(); step++; tick(); };
+      for(let et=0; et<profEts; et++){ const t=Array.isArray(prof.back[et])?prof.back[et]:[];
+        for(let pr=0; pr<Math.min(t.length,4); pr++){
+          const codes=(Array.isArray(t[pr])?t[pr]:[]).slice(0,4).map(x=>(x|0)&0xff);
+          if(codes.length===4 && codes.every(x=>x<=20)) await wp([0x27,et,pr,...codes]); else { step++; tick(); } } }
+      for(let et=0; et<profEts; et++) await wp([0x28,et,(prof.active[et]|0)&3]);
+      log("paddle profiles restored ("+profEts+" types × 4)");
+    } else if(prof){ log("this backup has paddle profiles, but the connected puck's firmware can't store them — restored the active layouts only"); }
     // restore the lizard map if the backup includes it (version 2+) and the puck speaks v16+.
     // pre-lizard-map backups simply lack c.lizardMap; skip silently so they still import cleanly.
     if(lizardN){
@@ -2141,6 +2198,134 @@ async function stopCapture(){
   $("#capStart").disabled=false; $("#capStop").disabled=true;
   renderCap(); log(`capture stopped — ${capLines.length} entries`);
 }
+// ===================== Paddle profiles =====================
+// Gated on the optional-feature byte (firmware p[197] -> JS p[195]): firmware without it never sees these
+// opcodes, because an unanswered request would block the shared IN pipe.
+const CAP_PROFILES=0x01;
+let opkCaps=0, xBusy=false, pollTick=0, lastMode=-1;
+let profData=null, profEt=-1, profBuiltEt=-1, profCards=[];
+const PADDLE_POS=[["L4","upper left"],["R4","upper right"],["L5","lower left"],["R5","lower right"]];
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function toast(msg,bad){
+  const t=$("#toast"); if(!t) return;
+  t.textContent=msg; t.classList.toggle("bad",!!bad); t.classList.add("show");
+  clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove("show"),1500);
+}
+// One request/reply with the status poll paused: they share the bulk pipe, and a reply read by the wrong
+// reader would shift every later read by one frame.
+async function xchg(fn){
+  while(xBusy) await sleep(10);
+  xBusy=true;
+  try{
+    await waitIdle();
+    for(let i=0;i<300 && (lizardBusy||rfBusy);i++) await sleep(10);
+    if(!dev) return null; return await fn(); }
+  catch(e){ log("exchange err: "+e.message); return null; }
+  finally{ xBusy=false; }
+}
+// 0xB4: [ver=1][profiles][types][active x types][codes: type-major, profile, paddle L4 R4 L5 R5]
+function parseProfiles(f){
+  if(!f || f[0]!==1) return null;
+  const n=f[1], ets=f[2];
+  if(n<1 || ets<1 || f.length<3+ets+ets*n*4) return null;
+  const active=[...f.slice(3,3+ets)], back=[];
+  for(let et=0;et<ets;et++){
+    const t=[]; for(let p=0;p<n;p++){ const q=3+ets+(et*n+p)*4; t.push([...f.slice(q,q+4)]); }
+    back.push(t);
+  }
+  return {n, active, back};
+}
+async function readProfiles(){ return parseProfiles(await readFrame(0xB4,7)); }
+async function profExchange(bytes, okMsg){
+  const d=await xchg(async()=>{ await send(bytes); return await readProfiles(); });
+  if(d){ profData=d; renderProfiles(); toast(okMsg); }
+  else { toast("Not saved — try again",true); }
+}
+const profSet=(et,p,codes)=>profExchange([0x27,et,p,...codes],"Saved");
+const profSelect=(et,p)=>profExchange([0x28,et,p],"Profile "+(p+1)+" in use");
+function renderProfiles(){
+  if(!profData) return;
+  const etNow=etypeForMode(lastMode);
+  if(profEt<0) profEt=etNow>=0?etNow:0;
+  const bar=$("#profTabs");
+  if(bar.childElementCount!==TYPE_DEFS.length){
+    bar.innerHTML="";
+    TYPE_DEFS.forEach((def,et)=>{ const b=document.createElement("button"); b.className="slot-tab";
+      b.onclick=()=>{ profEt=et; renderProfiles(); }; bar.appendChild(b); });
+  }
+  [...bar.children].forEach((b,et)=>{
+    b.classList.toggle("active",et===profEt);
+    b.innerHTML=TYPE_DEFS[et].name+(et===etNow?'<span style="color:var(--acc);font-size:11px"> ●</span>':'')
+      +'<span style="color:var(--mut);font-weight:400"> P'+((profData.active[et]|0)+1)+'</span>';
+  });
+  const grid=$("#profGrid"), def=TYPE_DEFS[profEt];
+  if(profBuiltEt!==profEt || profCards.length!==profData.n){
+    grid.innerHTML=""; profCards=[];
+    for(let p=0;p<profData.n;p++){
+      const card=document.createElement("div"); card.className="prof";
+      const head=document.createElement("div"); head.className="prof-head";
+      const name=document.createElement("b"); name.textContent="Profile "+(p+1);
+      const right=document.createElement("span");
+      head.append(name,right); card.appendChild(head);
+      const pads=document.createElement("div"); pads.className="pads";
+      const sels=[];
+      for(let i=0;i<4;i++){
+        const cell=document.createElement("div");
+        const lab=document.createElement("label"); lab.textContent=PADDLE_POS[i][0]+" · "+PADDLE_POS[i][1];
+        const sel=mkSelect(def,true); sel.options[0].textContent="Off";
+        // short names so they fit the half-width boxes
+        for(const o of sel.options) o.textContent=o.textContent.replace(/^D-pad Up$/,"D-pad ↑").replace(/^D-pad Down$/,"D-pad ↓")
+          .replace(/^D-pad Left$/,"D-pad ←").replace(/^D-pad Right$/,"D-pad →").replace(" / Screenshot","");
+        lab.htmlFor=sel.id="prof"+p+"_"+i;
+        sel.addEventListener("change",()=>{
+          const codes=profData.back[profEt][p].slice(); codes[i]=+sel.value;
+          profSet(profEt,p,codes);
+        });
+        cell.append(lab,sel); pads.appendChild(cell); sels.push(sel);
+      }
+      card.appendChild(pads); grid.appendChild(card);
+      profCards.push({card,right,sels,state:""});
+    }
+    profBuiltEt=profEt;
+  }
+  profCards.forEach((r,p)=>{
+    const on=(profData.active[profEt]===p), live=on && profEt===etNow;
+    r.card.classList.toggle("on",on);
+    const state=on?(live?"live":"on"):"off";
+    if(r.state!==state){
+      r.state=state; r.right.innerHTML="";
+      if(on){ const pill=document.createElement("span"); pill.className="pill up"; pill.textContent=live?"In use":"Active"; r.right.appendChild(pill); }
+      else { const b=document.createElement("button"); b.textContent="Use this"; b.onclick=()=>profSelect(profEt,p); r.right.appendChild(b); }
+    }
+    r.sels.forEach((s,i)=>{ if(document.activeElement!==s) s.value=profData.back[profEt][p][i]; });
+  });
+  $("#profNote").textContent = profEt===etNow ? "" :
+    ("These are the "+def.name+" profiles. "+(etNow>=0 ? ("The puck is in "+TYPE_DEFS[etNow].name+" mode right now, so they")
+      : "The current mode doesn't use paddle profiles (Steam, Lizard, DirectInput and SInput handle paddles themselves), so they")
+     +" take effect the next time you use a "+def.name+" mode.");
+}
+function opkAfterBlob(p, mode){
+  lastMode=mode;
+  opkCaps = p.length>195 ? p[195] : 0;
+  const hasProf=!!(opkCaps&CAP_PROFILES);
+  $("#profilesCard").classList.toggle("hide",!hasProf);
+  $("#shortcutsCard").classList.toggle("hide",!hasProf);
+  // the per-type paddle rows only ever edited the ACTIVE profile; with the profile editor they live there
+  typeEls.forEach(rec=>{ rec.back.forEach(sel=>sel.parentNode.classList.toggle("hide",hasProf));
+    if(rec.backHint) rec.backHint.classList.toggle("hide",!hasProf); });
+  if(profData) renderProfiles();
+}
+// Called inside refresh() (poll lock held) after the blob. Profiles also change from the controller itself
+// (paddles + RB / LB / Start), so they're re-read every few seconds.
+async function opkPollExtras(){
+  pollTick++;
+  // applyBlob may have just started the lizard-map load or an RF status read; one reader at a time
+  if(lizardBusy||rfBusy) return;
+  if((opkCaps&CAP_PROFILES) && (!profData || pollTick%8===4)){
+    await send([0x26]); const d=await readProfiles(); if(d){ profData=d; renderProfiles(); }
+  }
+}
+
 async function startPolling(){
   polling=true; await refresh();
   while(polling && dev){
@@ -2544,6 +2729,8 @@ async function runUpdate(title, confirmText, getImage){
   dfuBusy=true; updateUf2UI(); modalOpen(title);
   polling=false;        // the IN pipe belongs to the update acks now
   await dfuSleep(800);  // let an in-flight status poll finish its read first
+  // and any other reader (lizard-map load, RF status, panel exchange): a reader left pending takes acks
+  for(let i=0;i<500 && (inflight||lizardBusy||rfBusy||(typeof xBusy!=="undefined"&&xBusy));i++) await dfuSleep(10);
   const t0=Date.now(), oldBuild=blobBuildId(lastP);
   try{
     const image=await getImage();
@@ -3022,8 +3209,12 @@ async function lzV2ReadMap(op){
 	const recSize=lzPanelV2()?24:16;
 	let buf=[];
 	let expected=0;
+	const deadline=Date.now()+4000;
 	for(;;){
-		const r=await dev.transferIn(epIn,256);
+		const left=deadline-Date.now();
+		if(left<=0) throw new Error("no lizard-map reply");
+		const r=await Promise.race([dev.transferIn(epIn,256), new Promise(res=>setTimeout(()=>res(null),left))]);
+		if(r===null) throw new Error("no lizard-map reply");
 		if(r.status!=="ok") throw new Error("lizard-map read failed");
 		const d=new Uint8Array(r.data.buffer);
 		for(const x of d) buf.push(x);
@@ -3052,6 +3243,8 @@ async function lzV2Load(){
 	if(lizardBusy||!dev)return;
 	lizardBusy=true;
 	try{
+		// started from inside a status poll: let that poll finish its reads first (the pipe is shared)
+		await waitIdle(); if(!dev) return;
 		const ops=lzV2Ops();
 		lizardBindings=await lzV2ReadMap(lzPanelV2()?ops.dump:0x11);
 		lzV2Render();
@@ -3109,5 +3302,6 @@ function lzV2InstallHandlers(){
 }
 lzV2InstallHandlers();
 </script>
+<div id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
