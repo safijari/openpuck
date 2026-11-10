@@ -22,7 +22,7 @@
   .card{background:var(--card);border:1px solid #272d3d;border-radius:12px;padding:16px 18px;margin:0 0 16px}
   /* ReversePuck dongle: hide every puck-only Controller card, keep just the paired-pucks card (this leaves
      the debugonly/lizard inline visibility rules untouched, so switching back to a puck restores them). */
-  body.dongle #tabMain > .cards > .card:not(#pairedCard){display:none !important}
+  body.dongle #tabMain .card:not(#pairedCard){display:none !important}
   .cloneSub{font-size:13px;color:var(--fg);margin:16px 0 6px;padding-top:12px;border-top:1px solid #272d3d}
   #cloneHome .cloneSub{display:none}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:0 0 14px}
@@ -59,6 +59,83 @@
   .note{color:var(--mut);font-size:12px;margin-top:10px}
   #log{font:12px ui-monospace,Menlo,monospace;color:var(--mut);white-space:pre-wrap;margin-top:8px;max-height:140px;overflow:auto}
   .hide{display:none}
+
+  /* ---- optional tabbed layout (?tabs=true, topbar "Tabs" button; body.tabs) ----
+     No JS switching: the radio group in .ptab-strip is the state, :has() reads it, and the columns slide by
+     animating grid tracks between 1fr and 0fr. Inactive panels collapse (max-height 0 + visibility hidden) only
+     after the slide, so the row is sized by the active tab and hidden panels leave the focus order and the
+     accessibility tree. Without ?tabs=true (or on a ReversePuck dongle) the page is the plain stacked layout:
+     columns are display:contents and each card's --o puts it back in its original place. */
+  body.dongle #tabsBtn{display:none}
+  /* tabs off: original stacked layout */
+  .ptab-strip{display:none}
+  .ptab-body{display:flex;flex-direction:column}
+  .ptab-col,.ptab-in{display:contents}
+  .ptab-body .card{order:var(--o)}
+  body:is(.dongle,:not(.tabs)) #mainTabs [data-tab=tabDiag]{display:none}
+  /* tabs on */
+  body.tabs:not(.dongle) .ptab-strip{display:flex;gap:20px;position:relative;overflow-x:auto;scrollbar-width:thin;
+    padding:4px 4px 6px;margin:0 0 16px;border-bottom:1px solid #272d3d}
+  /* hidden but still focusable: arrow keys move between tabs (never display:none here) */
+  body.tabs:not(.dongle) .ptab-strip > input{position:absolute;opacity:0;pointer-events:none}
+  body.tabs:not(.dongle) .ptab-strip > label{position:relative;flex:0 0 auto;padding:2px 0;color:var(--mut);cursor:pointer;
+    font-size:13px;font-weight:600;transition:color .2s}
+  body.tabs:not(.dongle) .ptab-strip > input:checked + label{color:var(--fg)}
+  body.tabs:not(.dongle) .ptab-strip > input:focus-visible + label{outline:2px solid var(--acc2);outline-offset:3px;border-radius:4px}
+  body.tabs:not(.dongle) .ptab-strip > label::after{content:"";position:absolute;bottom:-2px;left:50%;right:50%;height:2px;
+    background:var(--acc2);transition:left .2s,right .2s}
+  body.tabs:not(.dongle) .ptab-strip > label:hover::after,
+  body.tabs:not(.dongle) .ptab-strip > input:checked + label::after{left:0;right:0}
+  /* drop the Desktop tab while its only card is hidden (desktop mapping outside lizard modes) */
+  body.tabs:not(.dongle):not(:has(#pcDesk .card:not(.hide):not([style*="display:none"]):not([style*="display: none"]))) label[for=ptDesk]{display:none}
+  body.tabs:not(.dongle) .ptab-body{display:grid;grid-template-columns:1fr 0fr 0fr 0fr 0fr 0fr;align-items:start;
+    container-type:inline-size;transition:grid-template-columns .25s ease}
+  body.tabs:not(.dongle) .ptab-col{display:block;overflow:hidden;min-width:0}
+  /* 100cqi = the body's width: a panel keeps its layout while its column slides, instead of rewrapping */
+  body.tabs:not(.dongle) .ptab-in{display:block;width:100cqi;max-height:0;visibility:hidden;transition:max-height 0s .25s,visibility 0s .25s}
+  body.tabs:not(.dongle) .ptab-strip:has(#ptModes:checked) ~ .ptab-body{grid-template-columns:0fr 1fr 0fr 0fr 0fr 0fr}
+  body.tabs:not(.dongle) .ptab-strip:has(#ptMap:checked) ~ .ptab-body{grid-template-columns:0fr 0fr 1fr 0fr 0fr 0fr}
+  body.tabs:not(.dongle) .ptab-strip:has(#ptFeel:checked) ~ .ptab-body{grid-template-columns:0fr 0fr 0fr 1fr 0fr 0fr}
+  body.tabs:not(.dongle) .ptab-strip:has(#ptDesk:checked) ~ .ptab-body{grid-template-columns:0fr 0fr 0fr 0fr 1fr 0fr}
+  body.tabs:not(.dongle) .ptab-strip:has(#ptLink:checked) ~ .ptab-body{grid-template-columns:0fr 0fr 0fr 0fr 0fr 1fr}
+  body.tabs:not(.dongle) .ptab-strip:has(#ptOver:checked) ~ .ptab-body > #pcOver > .ptab-in,
+  body.tabs:not(.dongle) .ptab-strip:has(#ptModes:checked) ~ .ptab-body > #pcModes > .ptab-in,
+  body.tabs:not(.dongle) .ptab-strip:has(#ptMap:checked) ~ .ptab-body > #pcMap > .ptab-in,
+  body.tabs:not(.dongle) .ptab-strip:has(#ptFeel:checked) ~ .ptab-body > #pcFeel > .ptab-in,
+  body.tabs:not(.dongle) .ptab-strip:has(#ptDesk:checked) ~ .ptab-body > #pcDesk > .ptab-in,
+  body.tabs:not(.dongle) .ptab-strip:has(#ptLink:checked) ~ .ptab-body > #pcLink > .ptab-in{max-height:100000px;visibility:visible;transition:none}
+  /* Desktop selected but hidden (left lizard mode, e.g. after the mode-switch reboot): show Overview instead */
+  body.tabs:not(.dongle):not(:has(#pcDesk .card:not(.hide):not([style*="display:none"]):not([style*="display: none"]))):has(#ptDesk:checked) .ptab-body{grid-template-columns:1fr 0fr 0fr 0fr 0fr 0fr}
+  body.tabs:not(.dongle):not(:has(#pcDesk .card:not(.hide):not([style*="display:none"]):not([style*="display: none"]))):has(#ptDesk:checked) #pcOver > .ptab-in{max-height:100000px;visibility:visible;transition:none}
+  body.tabs:not(.dongle):not(:has(#pcDesk .card:not(.hide):not([style*="display:none"]):not([style*="display: none"]))):has(#ptDesk:checked) label[for=ptOver]{color:var(--fg)}
+  body.tabs:not(.dongle):not(:has(#pcDesk .card:not(.hide):not([style*="display:none"]):not([style*="display: none"]))):has(#ptDesk:checked) label[for=ptOver]::after{left:0;right:0}
+  @media(prefers-reduced-motion:reduce){
+    .ptab-body,.ptab-in,.ptab-strip > label,.ptab-strip > label::after,
+    .mtab-body,.mtab-col > div,.rel-notes::details-content{transition:none !important}
+  }
+  /* Diagnostics top-level tab (tabs on): hidden on a dongle, and while every card in it is hidden (no ?debug=true, log off) */
+  body.dongle #tabDiag .card{display:none !important}
+  body:not(:has(#tabDiag .card:not(.hide):not([style*="display:none"]):not([style*="display: none"]))) #mainTabs [data-tab=tabDiag]{display:none}
+  /* The same slide for the top-level panes (JS keeps the switching -- beta gate, lazy release list -- and
+     marks the open pane in data-active / .hide). Tabs off: wrappers are display:contents and the JS's own
+     .hide toggling applies as before. */
+  .mtab-col{display:contents}
+  body:is(.dongle,:not(.tabs)) .mtab-col:has(> #tabMain:not(.hide)) ~ .mtab-col > #tabDiag{display:block}
+  body.tabs:not(.dongle) .mtab-body{display:grid;align-items:start;container-type:inline-size;
+    transition:grid-template-columns .25s ease}
+  body.tabs:not(.dongle) .mtab-body{grid-template-columns:1fr 0fr 0fr}
+  body.tabs:not(.dongle) .mtab-body[data-active=tabUpdate]{grid-template-columns:0fr 1fr 0fr}
+  body.tabs:not(.dongle) .mtab-body[data-active=tabDiag]{grid-template-columns:0fr 0fr 1fr}
+  body.tabs:not(.dongle) .mtab-col{display:block;overflow:hidden;min-width:0}
+  body.tabs:not(.dongle) .mtab-col > div{display:block !important;width:100cqi;max-height:0;visibility:hidden;
+    transition:max-height 0s .25s,visibility 0s .25s}
+  body.tabs:not(.dongle) .mtab-col > div:not(.hide){max-height:100000px;visibility:visible;transition:none}
+  /* release notes open and close with the row version of the same trick (Chromium ::details-content) */
+  /* the clip lives on ::details-content so .body keeps its own max-height + scrolling */
+  body.tabs:not(.dongle) .rel-notes::details-content{display:grid;grid-template-rows:0fr;overflow:hidden;
+    transition:grid-template-rows .25s ease,content-visibility .25s allow-discrete}
+  body.tabs:not(.dongle) .rel-notes[open]::details-content{grid-template-rows:1fr}
+  body.tabs:not(.dongle) .rel-notes .body{min-height:0}
 
   /* ---- controller slot tabs ---- */
   .slot-tabs{display:flex;gap:6px;margin:0 0 14px;flex-wrap:wrap}
@@ -132,6 +209,7 @@
   <button id="connectBtn" class="primary">Connect</button>
   <span id="updAvail" class="pill hide" title="A newer OpenPuck release is available — click to open the Firmware update tab">…</span>
   <span class="spacer"></span>
+  <button id="tabsBtn" class="beta" title="Group the controller settings into tabs instead of one long page (reloads the panel)">Tabs</button>
   <button id="betaBtn" class="beta" title="Show beta features warning and enable beta UI">Beta</button>
   <button id="debugCdc" title="Reboot ONCE with the CDC serial console enabled (WebUSB goes away for that boot); auto-reverts on the next boot">Debug CDC</button>
   <button id="dfuSerial" title="Reboot into serial DFU (adafruit-nrfutil), then replug">Serial DFU</button>
@@ -149,20 +227,27 @@
     <div class="slot-tabs" id="mainTabs">
       <span class="slot-tab active" data-tab="tabMain">Controller</span>
       <span class="slot-tab" data-tab="tabUpdate">Firmware update</span>
+      <span class="slot-tab" data-tab="tabDiag">Diagnostics</span>
     </div>
 
+    <div class="mtab-body" id="mtabBody" data-active="tabMain">
+    <div class="mtab-col">
     <div id="tabMain">
     <div class="cards">
-    <div class="card wide" id="pairedCard" style="display:none">
-      <h2>Paired pucks</h2>
-      <div class="row" style="gap:10px;align-items:center;margin-bottom:4px">
-        <span class="pill" id="pairedLink">—</span>
-        <span class="note" id="pairedFwd" style="flex:1">—</span>
-      </div>
-      <div id="pairedList"><p class="note">Reading paired pucks…</p></div>
-      <p class="note" style="margin-top:8px">This is a <strong>ReversePuck</strong> controller dongle (28DE:1302). It emulates a Steam Controller to whichever puck it's paired with. Pair new pucks with <code>scpair.py</code>; use the <em>Firmware update</em> tab to flash a new dongle build.</p>
+    <!-- Optional tabbed layout (?tabs=true, topbar "Tabs" button). Radios hold the active tab; the CSS reads them
+         with :has(). Without ?tabs=true, the strip is hidden, the columns drop out of layout (display:contents)
+         and each card's --o restores the original stacked order. -->
+    <div class="ptab-strip">
+      <input type="radio" name="ptab" id="ptOver" checked><label for="ptOver">Overview</label>
+      <input type="radio" name="ptab" id="ptModes"><label for="ptModes">Modes</label>
+      <input type="radio" name="ptab" id="ptMap"><label for="ptMap">Mapping</label>
+      <input type="radio" name="ptab" id="ptFeel"><label for="ptFeel">Feel</label>
+      <input type="radio" name="ptab" id="ptDesk"><label for="ptDesk">Desktop</label>
+      <input type="radio" name="ptab" id="ptLink"><label for="ptLink">Link</label>
     </div>
-    <div class="card">
+    <div class="ptab-body">
+    <div class="ptab-col" id="pcOver"><div class="ptab-in">
+    <div class="card" style="--o:2">
       <h2>Version</h2>
       <div class="statgrid">
         <div class="stat"><div class="k">Firmware build</div><div class="v" id="stVersionBuild">—</div></div>
@@ -171,8 +256,39 @@
       </div>
       <p class="note">This section reflects the connected puck. Reconnect after flashing or changing modes to verify what is currently running.</p>
     </div>
-
-    <div class="card">
+    <div class="card wide" id="pairedCard" style="--o:1;display:none">
+      <h2>Paired pucks</h2>
+      <div class="row" style="gap:10px;align-items:center;margin-bottom:4px">
+        <span class="pill" id="pairedLink">—</span>
+        <span class="note" id="pairedFwd" style="flex:1">—</span>
+      </div>
+      <div id="pairedList"><p class="note">Reading paired pucks…</p></div>
+      <p class="note" style="margin-top:8px">This is a <strong>ReversePuck</strong> controller dongle (28DE:1302). It emulates a Steam Controller to whichever puck it's paired with. Pair new pucks with <code>scpair.py</code>; use the <em>Firmware update</em> tab to flash a new dongle build.</p>
+    </div>
+    <div class="card" style="--o:12" id="backupCard">
+      <h2>Backup &amp; clone</h2>
+      <p class="note" style="margin-top:0">Save this puck's controller pairings <em>and</em> every setting to a file, then restore them onto another puck. The other puck becomes a clone — any controller paired to this one connects to it with <strong>no re-pairing</strong>. (Also a plain backup: re-import after a factory erase to get everything back.)</p>
+      <div class="row" style="margin:0;flex-wrap:wrap">
+        <button id="backupExport" class="primary">Export to file…</button>
+        <button id="backupImport">Import from file…</button>
+        <input type="file" id="backupFile" accept="application/json,.json" style="display:none">
+      </div>
+      <p class="note">Import <strong>overwrites</strong> all pairings and settings on the connected puck, then reboots it (~2 s — reconnect after). Tip: pair every controller to one puck, export once, then import onto each spare.</p>
+      <div id="cloneSec">
+        <h3 class="cloneSub">Clone from an official puck</h3>
+        <p class="note" style="margin-top:0">Copy the controller pairings off a Valve puck so those controllers connect to this OpenPuck with <strong>no re-pairing</strong>. Works with one USB port: <b>1.</b> plug in the official puck and read it, <b>2.</b> unplug it, plug in the OpenPuck, Connect, and write. With both plugged in, the browser lists two identical "Steam Controller Puck" entries in step 1 — pick either; if it's the OpenPuck, the panel says so and you pick the other. Existing pairings and settings on the OpenPuck are kept.</p>
+        <div class="row" style="margin:0;flex-wrap:wrap">
+          <button id="cloneRead">1. Read official puck…</button>
+          <button id="cloneWrite" class="primary" disabled>2. Write to this OpenPuck</button>
+          <button id="cloneForget" class="hide">Forget</button>
+        </div>
+        <p class="note" id="cloneStatus">—</p>
+        <p class="note"><b>macOS:</b> reading the official puck needs Chrome in <em>System Settings → Privacy &amp; Security → Input Monitoring</em> (restart Chrome after enabling it). The puck's interfaces include a keyboard, so macOS asks for this — the page can only reach the puck's vendor channel, never keystrokes. You can switch it off again afterwards.</p>
+      </div>
+    </div>
+    </div></div><!-- #pcOver -->
+    <div class="ptab-col" id="pcModes"><div class="ptab-in">
+    <div class="card" style="--o:3">
       <h2>USB mode</h2>
       <div class="modes" style="flex-wrap:wrap">
         <button data-mode="0" class="modebtn">Steam (puck)</button>
@@ -194,8 +310,7 @@
         <span class="note" style="flex:1">Off (default): every restart / fresh reconnect boots into Steam mode. On: remembers the last mode you selected.</span>
       </div>
     </div>
-
-    <div class="card">
+    <div class="card" style="--o:4">
       <h2>Back4 chords (face + D-pad)</h2>
       <p class="note" style="margin-top:0">Hold all four back paddles (L4+R4+L5+R5) plus a face button or D-pad direction to switch mode without the WebUI. <strong>A is always Steam</strong> — that is the way back out of any mode. B / X / Y and all four D-pad directions are configurable below (defaults: B=Lizard, X=Xbox, Y=Switch Pro).</p>
       <div class="chord-cols">
@@ -218,8 +333,62 @@
       </div>
       <p id="dpadOld" class="note hide">This puck's firmware predates the D-pad chords — update it to configure them.</p>
     </div>
-
-    <div class="card wide">
+    </div></div><!-- #pcModes -->
+    <div class="ptab-col" id="pcMap"><div class="ptab-in">
+    <div class="card wide" style="--o:10">
+      <h2>Button mapping</h2>
+      <p class="note" style="margin-top:0">Separate mappings per emulated controller type — each only offers targets that exist on that controller. The type matching the current mode is highlighted. Steam &amp; Lizard are native puck modes (Steam does its own remapping) and aren't configured here.</p>
+      <div id="typeCfgs"></div>
+    </div>
+    </div></div><!-- #pcMap -->
+    <div class="ptab-col" id="pcFeel"><div class="ptab-in">
+    <div class="card" style="--o:9">
+      <h2>Rumble</h2>
+      <!-- Host-rumble shaping (firmware >= v21). Applies to the translated modes (Xbox / Switch / PlayStation),
+           where the puck decodes the host's rumble packet itself. Steam mode relays Steam's own haptics
+           untouched, so these do nothing there. Older firmware hides the block. -->
+      <div id="rumbleBlock">
+        <div class="row"><label>Style</label><select id="rumbleStyle"></select></div>
+        <div class="row"><label>Strength</label><select id="rumbleScale"></select></div>
+        <div class="row" style="margin:10px 0 0"><button id="rumbleTest">Test rumble</button>
+          <span class="note" style="flex:1">Buzzes every connected controller for half a second at the settings above, so you can compare styles without launching a game.</span></div>
+        <p class="note">Strength is a percentage of the amplitude the game asked for; 200% is the shipped default, so leave it there for stock feel. Style reshapes the two motors before that scale: <strong>mono</strong> drives both at the stronger value, <strong>heavy</strong> and <strong>light</strong> mute one motor each, <strong>punchy</strong> softens weak effects while leaving strong ones alone, and <strong>soft</strong> lifts weak ones so subtle rumble is felt.</p>
+      </div>
+      <p id="rumbleOld" class="note hide">This puck's firmware predates the rumble-shaping settings — update it to configure them.</p>
+    </div>
+    <div class="card" style="--o:8">
+      <h2>Switch Pro motion</h2>
+      <!-- Gyro mapping (firmware >= v19). Older firmware always uses the corrected mapping and has no field
+           to set -> the whole block hides (see #swGyroMapBlock in applyBlob). -->
+      <div id="swGyroMapBlock">
+        <div class="row"><label>Gyro mapping</label><select id="swGyroMap"></select></div>
+        <p class="note">Corrected (default) trims the gyro so Switch Pro mode matches a genuine Pro Controller and Steam mode (roll ×0.8, pitch/yaw ×0.9). Legacy sends the raw axes untrimmed — the pre-fix behavior, if you preferred the faster feel or tuned your in-game sensitivity around it.</p>
+      </div>
+      <p id="swGyroOld" class="note hide">This puck's firmware predates the gyro-mapping setting — update it to configure it.</p>
+    </div>
+    <div class="card" style="--o:7" id="mouseCard">
+      <h2>Trackpad mouse (lizard + Xbox)</h2>
+      <div class="row"><label>Sensitivity</label><input type="range" id="mDiv" min="4" max="200" step="1"><span class="val" id="mDivV"></span></div>
+      <div class="row"><label>Glide / friction</label><input type="range" id="mFric" min="0" max="99" step="1"><span class="val" id="mFricV"></span></div>
+      <p class="note">Right-pad cursor in Steam-mode lizard (Steam closed) and in Xbox mode. Sensitivity is a divisor — lower = faster pointer. Glide = how long the cursor coasts after a flick.</p>
+    </div>
+    </div></div><!-- #pcFeel -->
+    <div class="ptab-col" id="pcDesk"><div class="ptab-in">
+    <div class="card" id="lizardCard" style="--o:11;display:none">
+      <h2>Lizard / desktop mapping</h2>
+      <p class="note" style="margin-top:0">Keyboard, mouse &amp; media bindings for <strong>Lizard (always)</strong> mode — each row maps a controller input to a desktop action. (Steam-mode seamless lizard, when Steam is closed, keeps the built-in default behavior and is not affected by this map.) Edits apply after <strong>Save to device</strong>.</p>
+      <div id="lizardList"></div>
+      <div class="row" style="margin:12px 0 0;flex-wrap:wrap;gap:8px">
+        <button id="lzAdd">+ Add binding</button>
+        <button id="lzSave" class="primary">Save to device</button>
+        <button id="lzReload">Reload</button>
+        <button id="lzReset" style="margin-left:auto">Reset to defaults</button>
+      </div>
+      <p class="note" id="lzStatus" style="margin-top:8px">—</p>
+    </div>
+    </div></div><!-- #pcDesk -->
+    <div class="ptab-col" id="pcLink"><div class="ptab-in">
+    <div class="card wide" style="--o:5">
       <h2>Link status</h2>
 
       <!-- Per-controller tabs: visible only when 2+ controllers are bonded -->
@@ -271,8 +440,7 @@
         <span class="note" style="flex:1">Buzzes the controllers every 10 s and times how long the puck stays up. On a reset it records the uptime and shows it by <em>Last reset</em>; it auto-resumes after the puck reconnects. The count is kept in this tab (a page refresh clears it).</span>
       </div>
     </div>
-
-    <div class="card wide hide" id="rfRecoveryCard">
+    <div class="card wide hide" style="--o:6" id="rfRecoveryCard">
       <h2>RF recovery &amp; channel journal</h2>
       <div class="statgrid">
         <div class="stat"><div class="k">Active channel</div><div class="v" id="rfActiveCh">—</div></div>
@@ -297,126 +465,12 @@
       </div>
       <div id="rfAmbientBars" style="display:flex;gap:4px;align-items:flex-end;height:76px;margin-top:12px;padding:8px;background:#151821;border:1px solid #272d3d;border-radius:6px"></div>
     </div>
-
-    <div class="card" id="mouseCard">
-      <h2>Trackpad mouse (lizard + Xbox)</h2>
-      <div class="row"><label>Sensitivity</label><input type="range" id="mDiv" min="4" max="200" step="1"><span class="val" id="mDivV"></span></div>
-      <div class="row"><label>Glide / friction</label><input type="range" id="mFric" min="0" max="99" step="1"><span class="val" id="mFricV"></span></div>
-      <p class="note">Right-pad cursor in Steam-mode lizard (Steam closed) and in Xbox mode. Sensitivity is a divisor — lower = faster pointer. Glide = how long the cursor coasts after a flick.</p>
-    </div>
-
-    <div class="card">
-      <h2>Switch Pro motion</h2>
-      <!-- Gyro mapping (firmware >= v19). Older firmware always uses the corrected mapping and has no field
-           to set -> the whole block hides (see #swGyroMapBlock in applyBlob). -->
-      <div id="swGyroMapBlock">
-        <div class="row"><label>Gyro mapping</label><select id="swGyroMap"></select></div>
-        <p class="note">Corrected (default) trims the gyro so Switch Pro mode matches a genuine Pro Controller and Steam mode (roll ×0.8, pitch/yaw ×0.9). Legacy sends the raw axes untrimmed — the pre-fix behavior, if you preferred the faster feel or tuned your in-game sensitivity around it.</p>
-      </div>
-      <p id="swGyroOld" class="note hide">This puck's firmware predates the gyro-mapping setting — update it to configure it.</p>
-    </div>
-
-    <div class="card">
-      <h2>Rumble</h2>
-      <!-- Host-rumble shaping (firmware >= v21). Applies to the translated modes (Xbox / Switch / PlayStation),
-           where the puck decodes the host's rumble packet itself. Steam mode relays Steam's own haptics
-           untouched, so these do nothing there. Older firmware hides the block. -->
-      <div id="rumbleBlock">
-        <div class="row"><label>Style</label><select id="rumbleStyle"></select></div>
-        <div class="row"><label>Strength</label><select id="rumbleScale"></select></div>
-        <div class="row" style="margin:10px 0 0"><button id="rumbleTest">Test rumble</button>
-          <span class="note" style="flex:1">Buzzes every connected controller for half a second at the settings above, so you can compare styles without launching a game.</span></div>
-        <p class="note">Strength is a percentage of the amplitude the game asked for; 200% is the shipped default, so leave it there for stock feel. Style reshapes the two motors before that scale: <strong>mono</strong> drives both at the stronger value, <strong>heavy</strong> and <strong>light</strong> mute one motor each, <strong>punchy</strong> softens weak effects while leaving strong ones alone, and <strong>soft</strong> lifts weak ones so subtle rumble is felt.</p>
-      </div>
-      <p id="rumbleOld" class="note hide">This puck's firmware predates the rumble-shaping settings — update it to configure them.</p>
-    </div>
-
-    <div class="card wide">
-      <h2>Button mapping</h2>
-      <p class="note" style="margin-top:0">Separate mappings per emulated controller type — each only offers targets that exist on that controller. The type matching the current mode is highlighted. Steam &amp; Lizard are native puck modes (Steam does its own remapping) and aren't configured here.</p>
-      <div id="typeCfgs"></div>
-    </div>
-
-    <div class="card" id="lizardCard" style="display:none">
-      <h2>Lizard / desktop mapping</h2>
-      <p class="note" style="margin-top:0">Keyboard, mouse &amp; media bindings for <strong>Lizard (always)</strong> mode — each row maps a controller input to a desktop action. (Steam-mode seamless lizard, when Steam is closed, keeps the built-in default behavior and is not affected by this map.) Edits apply after <strong>Save to device</strong>.</p>
-      <div id="lizardList"></div>
-      <div class="row" style="margin:12px 0 0;flex-wrap:wrap;gap:8px">
-        <button id="lzAdd">+ Add binding</button>
-        <button id="lzSave" class="primary">Save to device</button>
-        <button id="lzReload">Reload</button>
-        <button id="lzReset" style="margin-left:auto">Reset to defaults</button>
-      </div>
-      <p class="note" id="lzStatus" style="margin-top:8px">—</p>
-    </div>
-
-    <div class="card" id="backupCard">
-      <h2>Backup &amp; clone</h2>
-      <p class="note" style="margin-top:0">Save this puck's controller pairings <em>and</em> every setting to a file, then restore them onto another puck. The other puck becomes a clone — any controller paired to this one connects to it with <strong>no re-pairing</strong>. (Also a plain backup: re-import after a factory erase to get everything back.)</p>
-      <div class="row" style="margin:0;flex-wrap:wrap">
-        <button id="backupExport" class="primary">Export to file…</button>
-        <button id="backupImport">Import from file…</button>
-        <input type="file" id="backupFile" accept="application/json,.json" style="display:none">
-      </div>
-      <p class="note">Import <strong>overwrites</strong> all pairings and settings on the connected puck, then reboots it (~2 s — reconnect after). Tip: pair every controller to one puck, export once, then import onto each spare.</p>
-      <div id="cloneSec">
-        <h3 class="cloneSub">Clone from an official puck</h3>
-        <p class="note" style="margin-top:0">Copy the controller pairings off a Valve puck so those controllers connect to this OpenPuck with <strong>no re-pairing</strong>. Works with one USB port: <b>1.</b> plug in the official puck and read it, <b>2.</b> unplug it, plug in the OpenPuck, Connect, and write. With both plugged in, the browser lists two identical "Steam Controller Puck" entries in step 1 — pick either; if it's the OpenPuck, the panel says so and you pick the other. Existing pairings and settings on the OpenPuck are kept.</p>
-        <div class="row" style="margin:0;flex-wrap:wrap">
-          <button id="cloneRead">1. Read official puck…</button>
-          <button id="cloneWrite" class="primary" disabled>2. Write to this OpenPuck</button>
-          <button id="cloneForget" class="hide">Forget</button>
-        </div>
-        <p class="note" id="cloneStatus">—</p>
-        <p class="note"><b>macOS:</b> reading the official puck needs Chrome in <em>System Settings → Privacy &amp; Security → Input Monitoring</em> (restart Chrome after enabling it). The puck's interfaces include a keyboard, so macOS asks for this — the page can only reach the puck's vendor channel, never keystrokes. You can switch it off again afterwards.</p>
-      </div>
-    </div>
-
-    <div class="card wide debugonly">
-      <h2>Hang log</h2>
-      <p class="note" style="margin-top:0">One row per reset: uptime before it, reason, the stuck loop stage and captured PC (when the watchdog ISR could run), and usbd stack free. Accumulates across resets in this tab — a page refresh clears it. Pair with <em>Test stability</em> above for unattended runs.</p>
-      <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
-        <span class="v" id="hangSummary" style="flex:1">no resets logged yet</span>
-        <button id="hangCsv">Download CSV</button>
-        <button id="hangClear">Clear</button>
-      </div>
-      <pre id="hangOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin:0;max-height:260px;overflow:auto;white-space:pre"></pre>
-    </div>
-
-    <div class="card wide debugonly">
-      <h2>Loop-state trail</h2>
-      <p class="note" style="margin-top:0">Every change of the <em>Loop</em> pill, timestamped — stall episodes, live wedge reports, heartbeat loss (hard wedge, USB silent), recoveries, disconnects and the reset cause on reconnect — so an unattended hang is recorded even if you weren't watching. Saved in this browser (localStorage): it <strong>survives page refreshes</strong> and device reboots, and clears only with the button.</p>
-      <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
-        <span class="v" id="trailSummary" style="flex:1">no events yet</span>
-        <button id="trailClear">Clear</button>
-      </div>
-      <pre id="trailOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin:0;max-height:260px;overflow:auto;white-space:pre-wrap">—</pre>
-    </div>
-
-    <div class="card wide debugonly">
-      <h2>Flight recorder</h2>
-      <p class="note" style="margin-top:0">The trail of events the firmware recorded in the seconds before its most recent <b>watchdog hang</b> — the ring survives the reset in <code>.noinit</code> RAM (like the hang PC), so it's the post-mortem of what wedged the board. Loads automatically after a hang reconnects; click to reload. Same data the console <code>FR</code> command prints. <span id="flightWedge" style="font-family:ui-monospace,Menlo,monospace"></span></p>
-      <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
-        <span class="v" id="flightSummary" style="flex:1">no trail loaded</span>
-        <button id="flightLoad">Load last-hang trail</button>
-      </div>
-      <pre id="flightOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin:0;max-height:320px;overflow:auto;white-space:pre">—</pre>
-    </div>
-
-    <div class="card wide logonly">
-      <h2>Capture — host → controller commands</h2>
-      <p class="note" style="margin-top:0">The firmware logs everything from boot into a big RAM ring: Steam's writes (<code>ifN</code>), the frames we transmit to the controller (<code>TX→ctlr</code>), and RF <code>LINK UP/DOWN</code> edges. For the reconnect buzz: trigger it (it appears moments after the puck boots / the controller reconnects), then connect here and click <b>Dump from boot</b> — the trigger is still in the ring. (Only present in a logging build, <code>-DOPK_LOG=1</code>.)</p>
-      <div class="row" style="margin:0;flex-wrap:wrap">
-        <button id="capStart" class="primary">Dump from boot</button>
-        <button id="capStop" disabled>Stop</button>
-        <button id="capDl">Download .txt</button>
-      </div>
-      <p class="note">Dump streams the whole ring (oldest→newest) and then keeps live-updating until you press Stop. <code>cmd</code> is the command/report byte, then the raw bytes.</p>
-      <pre id="capOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin-top:10px;max-height:260px;overflow:auto;white-space:pre-wrap"></pre>
-    </div>
+    </div></div><!-- #pcLink -->
+    </div><!-- .ptab-body -->
     </div><!-- .cards -->
     </div><!-- #tabMain -->
-
+    </div>
+    <div class="mtab-col">
     <div id="tabUpdate" class="hide">
       <div id="updGate" class="card hide" style="border-color:#7a2233">
         <h2 style="color:var(--bad)">Panel updates not supported by this firmware</h2>
@@ -446,6 +500,53 @@
         <p class="note"><b style="color:var(--bad)">Factory reset</b> flashes the <code>-factory-reset</code> build of that version: on its first boot it wipes ALL settings and the controller pairing (you must re-pair), then behaves like the standard build. Use it to recover from a bad config or stale bond.</p>
       </div>
     </div><!-- #tabUpdate -->
+    </div>
+    <div class="mtab-col">
+    <div id="tabDiag" class="hide">
+    <div class="cards">
+    <div class="card wide debugonly">
+      <h2>Hang log</h2>
+      <p class="note" style="margin-top:0">One row per reset: uptime before it, reason, the stuck loop stage and captured PC (when the watchdog ISR could run), and usbd stack free. Accumulates across resets in this tab — a page refresh clears it. Pair with <em>Test stability</em> above for unattended runs.</p>
+      <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
+        <span class="v" id="hangSummary" style="flex:1">no resets logged yet</span>
+        <button id="hangCsv">Download CSV</button>
+        <button id="hangClear">Clear</button>
+      </div>
+      <pre id="hangOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin:0;max-height:260px;overflow:auto;white-space:pre"></pre>
+    </div>
+    <div class="card wide debugonly">
+      <h2>Loop-state trail</h2>
+      <p class="note" style="margin-top:0">Every change of the <em>Loop</em> pill, timestamped — stall episodes, live wedge reports, heartbeat loss (hard wedge, USB silent), recoveries, disconnects and the reset cause on reconnect — so an unattended hang is recorded even if you weren't watching. Saved in this browser (localStorage): it <strong>survives page refreshes</strong> and device reboots, and clears only with the button.</p>
+      <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
+        <span class="v" id="trailSummary" style="flex:1">no events yet</span>
+        <button id="trailClear">Clear</button>
+      </div>
+      <pre id="trailOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin:0;max-height:260px;overflow:auto;white-space:pre-wrap">—</pre>
+    </div>
+    <div class="card wide debugonly">
+      <h2>Flight recorder</h2>
+      <p class="note" style="margin-top:0">The trail of events the firmware recorded in the seconds before its most recent <b>watchdog hang</b> — the ring survives the reset in <code>.noinit</code> RAM (like the hang PC), so it's the post-mortem of what wedged the board. Loads automatically after a hang reconnects; click to reload. Same data the console <code>FR</code> command prints. <span id="flightWedge" style="font-family:ui-monospace,Menlo,monospace"></span></p>
+      <div class="row" style="margin:0 0 8px;flex-wrap:wrap">
+        <span class="v" id="flightSummary" style="flex:1">no trail loaded</span>
+        <button id="flightLoad">Load last-hang trail</button>
+      </div>
+      <pre id="flightOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin:0;max-height:320px;overflow:auto;white-space:pre">—</pre>
+    </div>
+    <div class="card wide logonly">
+      <h2>Capture — host → controller commands</h2>
+      <p class="note" style="margin-top:0">The firmware logs everything from boot into a big RAM ring: Steam's writes (<code>ifN</code>), the frames we transmit to the controller (<code>TX→ctlr</code>), and RF <code>LINK UP/DOWN</code> edges. For the reconnect buzz: trigger it (it appears moments after the puck boots / the controller reconnects), then connect here and click <b>Dump from boot</b> — the trigger is still in the ring. (Only present in a logging build, <code>-DOPK_LOG=1</code>.)</p>
+      <div class="row" style="margin:0;flex-wrap:wrap">
+        <button id="capStart" class="primary">Dump from boot</button>
+        <button id="capStop" disabled>Stop</button>
+        <button id="capDl">Download .txt</button>
+      </div>
+      <p class="note">Dump streams the whole ring (oldest→newest) and then keeps live-updating until you press Stop. <code>cmd</code> is the command/report byte, then the raw bytes.</p>
+      <pre id="capOut" style="font:12px ui-monospace,Menlo,monospace;color:var(--fg);background:#0e1017;border:1px solid #232a3a;border-radius:8px;padding:10px;margin-top:10px;max-height:260px;overflow:auto;white-space:pre-wrap"></pre>
+    </div>
+    </div><!-- .cards -->
+    </div><!-- #tabDiag -->
+    </div>
+    </div><!-- .mtab-body -->
 
     <div id="log"></div>
   </div>
@@ -534,6 +635,17 @@ $("#betaBtn").title = BETA_UI
   ? "Show beta-disable confirmation and return to the standard UI"
   : "Show beta warning and enable beta UI";
 $('#mainTabs .slot-tab[data-tab="tabUpdate"]').classList.toggle("beta-gated", !BETA_UI);
+// Tabbed layout: ?tabs=true puts body.tabs on, which the tabbed-layout CSS keys off. The button flips the
+// parameter and reloads, like Beta (no confirmation: the layout changes nothing on the puck).
+const TABS_UI = new URLSearchParams(location.search).get("tabs")==="true";
+document.body.classList.toggle("tabs", TABS_UI);
+$("#tabsBtn").textContent = TABS_UI ? "Tabs on" : "Tabs";
+$("#tabsBtn").classList.toggle("active", TABS_UI);
+$("#tabsBtn").onclick=()=>{
+  const u=new URL(location.href);
+  if(TABS_UI) u.searchParams.delete("tabs"); else u.searchParams.set("tabs","true");
+  location.href=u.toString();
+};
 function escHtml(s){
   return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 }
@@ -2798,10 +2910,22 @@ for(const t of document.querySelectorAll("#mainTabs .slot-tab")){
       return;
     }
     for(const x of document.querySelectorAll("#mainTabs .slot-tab")) x.classList.toggle("active",x===t);
-    $("#tabMain").classList.toggle("hide", t.dataset.tab!=="tabMain");
-    $("#tabUpdate").classList.toggle("hide", t.dataset.tab!=="tabUpdate");
+    for(const x of document.querySelectorAll("#mainTabs .slot-tab"))
+      $("#"+x.dataset.tab).classList.toggle("hide", x!==t);
+    $("#mtabBody").dataset.active=t.dataset.tab; // drives the slide when the tabbed layout is on
     if(t.dataset.tab==="tabUpdate") loadReleases(false); // lazy: first visit fetches the list
   };
+}
+// ---- optional tabbed layout: CSS does the switching; this only remembers the open controller tab ----
+{
+  const KEY="opk.tabs", radios=[...document.querySelectorAll('input[name="ptab"]')];
+  let st={};
+  try{ st=JSON.parse(localStorage.getItem(KEY)||"{}")||{}; }catch(e){}
+  const r=radios.find(x=>x.id===st.tab); if(r) r.checked=true;
+  const save=()=>{
+    try{ localStorage.setItem(KEY, JSON.stringify({tab:(radios.find(x=>x.checked)||{}).id})); }catch(e){}
+  };
+  for(const x of radios) x.addEventListener("change",save);
 }
 $("#backupExport").onclick=exportBackup;
 $("#backupImport").onclick=()=>$("#backupFile").click();
