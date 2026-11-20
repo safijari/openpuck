@@ -58,14 +58,17 @@
 // SInput: the open SDL-native gamepad protocol (docs.handheldlegend.com/s/sinput). Sticks + analog triggers +
 // gyro/accel + BOTH trackpads + battery, all bound natively by SDL3 / Steam Input with no impersonation.
 #define MODE_SINPUT 12
-#define MODE_MAX 12
+// Real PS5 console, signed by a P5General-class auth adapter on a MAX3421E USB host (mode_ps5_auth.h)
+#define MODE_PS5_AUTH 13
+#define MODE_MAX 13
 
 // The two "game" personalities drop the wake-mouse + WebUSB interfaces so the device is a genuine single-HID PS
 // controller (some PC games -- e.g. Fortnite/UE GameInput -- refuse PS classification when extra interfaces are
 // present). Cost: no config panel / host-wake while in these modes; chord back to Steam (back4 + A) for the panel.
 static inline bool modeIsCleanPS(uint8_t m)
 {
-	return m == MODE_PS5_GAME || m == MODE_DS4_GAME || m == MODE_PS3;
+	return m == MODE_PS5_GAME || m == MODE_DS4_GAME || m == MODE_PS3 ||
+	       m == MODE_PS5_AUTH;
 }
 
 static inline bool modeIsPuck(uint8_t m)
@@ -103,6 +106,7 @@ static inline uint8_t etypeForMode(uint8_t m)
 		return ET_DS4;
 	case MODE_PS5:
 	case MODE_PS5_GAME:
+	case MODE_PS5_AUTH:
 		return ET_DS5;
 	default:
 		// Steam / Lizard forward raw input for the host to remap. DirectInput and SInput expose every
