@@ -220,6 +220,9 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		 uint16_t rxWinUs = 0);
 // Mid-session channel hop: advertise newCh on the current channel a few times, then move the poll to newCh.
 void rfHopTo(uint8_t newCh);
+// Hitch-policy state for the panel's connection-quality readout (link_stats.h).
+struct LinkStatsPolicy;
+void rfHitchPolicyState(LinkStatsPolicy *out);
 bool rfChannelHandoffHostGrace(int slot);
 // Per-loop: host-frame beacons + connected-mode poll + remote-wakeup + QoS hop + per-second stats.
 void rfLinkTask();
