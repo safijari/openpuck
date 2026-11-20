@@ -60,7 +60,9 @@
 #define MODE_SINPUT 12
 // Real PS5 console, signed by a P5General-class auth adapter on a MAX3421E USB host (mode_ps5_auth.h)
 #define MODE_PS5_AUTH 13
-#define MODE_MAX 13
+// Nintendo Switch 2 Joy-Con 2 (BLE 5.0 L+R + Optical Mouse + 6-axis Gyro)
+#define MODE_SW_JC2 14
+#define MODE_MAX 14
 
 // The two "game" personalities drop the wake-mouse + WebUSB interfaces so the device is a genuine single-HID PS
 // controller (some PC games -- e.g. Fortnite/UE GameInput -- refuse PS classification when extra interfaces are
@@ -99,6 +101,7 @@ static inline uint8_t etypeForMode(uint8_t m)
 		return ET_XBOX;
 	case MODE_SW_HORI:
 	case MODE_SW_PRO:
+	case MODE_SW_JC2:
 		return ET_SWITCH;
 	case MODE_HIDGYRO:
 	case MODE_DS4_GAME:
@@ -175,7 +178,8 @@ extern TypeCfg g_type[ET_COUNT];
 #define PS_OFF 0
 #define PS_LEFT 1
 #define PS_RIGHT 2
-#define PS_MAX 2
+#define PS_MOUSE 3
+#define PS_MAX 3
 extern uint8_t g_padStickCfg[ET_COUNT][2];
 extern uint8_t
 	g_etype; // etypeForMode(g_usbMode), resolved at boot (ET_NONE for puck modes)

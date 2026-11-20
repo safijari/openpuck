@@ -466,12 +466,14 @@ void rfConnQueueHapticRelay()
 			g_hapticStop--;
 	}
 }
-// rfConnFlushRelay(ch, s1): drain one entry from the current slot's relay queue and TX it. Each slot's queue
-// is independent, so each controller only sees its own commands. With N connected slots the per-slot relay
-// rate is 1/N of the per-cycle rate; sustained buzz streams are still 1 packet/cycle/slot.
-bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
+// Pop and encode one queued relay frame for slot `cur` into `p[0..*outLen-1]`.
+// Shared by rfConnFlushRelay() (native ESB) and Joy-Con 2 BLE/ESB coex.
+static bool hapticPopRelayFrame(int cur, uint8_t *p, uint8_t *outLen,
+				uint8_t maxLen, RelayMsg *outMsg,
+				uint8_t *outRl)
 {
-	int cur = (g_curSlot >= 0 && g_curSlot < NSLOT) ? g_curSlot : 0;
+	if (cur < 0 || cur >= NSLOT || !p || !outLen)
+		return false;
 	// Snapshot one entry under a short critical section. relayEnqueue() (the producer) runs on the
 	// high-priority usbd task and, when the ring is full, evicts the oldest by advancing g_rqTail itself --
 	// the same variable this consumer reads/advances. Reading the entry while a producer could overwrite it
@@ -499,82 +501,109 @@ bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
 		}
 	}
 	__set_PRIMASK(pm);
-	if (have) {
-		RelayMsg &m = msg;
-		{
-			uint8_t rl = m.len;
-			if (rl > RELAY_MAXP)
-				rl = RELAY_MAXP;
-			// On-air sub-TLV framing. CONFIRMED from real puck<->controller sniffs: a command LANDS on
-			// the controller only with the type-01 + inner-len form E3 [2+rl][01][rid][innerlen][data];
-			// the legacy form E3 [1+rl][05][rid][data] makes the controller DISCARD any 0x87+ command.
+	if (!have)
+		return false;
 
-			// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
-			// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
-			// value=0. If the caller decides they want an answer, we add the queryTrailer.
-			// Should check later if there's a way to somehow determine which types need the trailer and which ones don't.
-			bool queryTrailer = m.expectReply;
-			uint8_t p[5 + RELAY_MAXP + 3], plen;
-			if (!m.isHaptic) {
-				// Non-haptics use type 01
-				p[0] = g_relayOp;
-				p[1] = (uint8_t)(2 + rl);
-				p[2] = 0x01;
-				p[3] = m.rid;
-				p[4] = rl;
-				memcpy(p + 5, m.data, rl);
-				plen = (uint8_t)(5 + rl);
-				if (queryTrailer && plen + 3 <= sizeof p) {
-					p[plen + 0] = 0x01;
-					p[plen + 1] = 0x03;
-					p[plen + 2] = 0x00;
-					plen = (uint8_t)(plen + 3);
-				}
-			} else {
-				// Haptics use type 05
-				p[0] = g_relayOp;
-				p[1] = (uint8_t)(1 + rl);
-				p[2] = 0x05;
-				p[3] = m.rid;
-				memcpy(p + 4, m.data, rl);
-				plen = (uint8_t)(4 + rl);
-			}
-			hapLogAdd(0xFE, m.rid, m.data, rl);
-			// Lifecycle log (CDC debug boot): EXACTLY what we TX to the controller, so a capture shows
-			// whether OpenPuck (or Steam in the background) pokes the controller right before a buzz
-			// latches -- the piece the I45 stream (controller->us) can't show. Low rate outside a haptic
-			// burst; guarded so it never blocks the loop. cur = target slot.
-			if (Serial.availableForWrite() > 60) {
-				// boosted: this print runs at relay-flood rate and CDC flush enters the same
-				// TinyUSB DMA claim window as HID sends (the issue-72 livelock; see usb_tx.cpp)
-				usbTxBoost();
-				Serial.printf("# TX t=%lu slot%d %s rid=%02X:",
-					      (unsigned long)millis(), cur,
-					      m.isHaptic ? "L05" : "L01",
-					      m.rid);
-				for (uint8_t i = 0; i < rl && i < 8; i++)
-					Serial.printf(" %02X", m.data[i]);
-				Serial.println();
-				usbTxUnboost();
-			}
-			// slot was already consumed under the critical section above.
-			// s1 carries a PID distinct from the GET poll (caller cycles it) so the controller's ESB
-			// dedup never treats the GET as a retransmit of this relay.
-			//
-			// HARVEST the relay's reply as INPUT. Like any frame we send, the controller auto-ACKs a
-			// relay with its current input in the ACK payload (~90us later, per the RE poll->ACK
-			// capture). The old 80us window closed BEFORE that reply arrived, so every relay's input was
-			// discarded -- and yet HW A/B showed the delivered input rate RISING when haptics relay
-			// (an extra frame/cycle during a trackpad drag), because each frame makes the controller
-			// refresh its ACK payload and the following E3 poll caught the fresher value. Reading the
-			// reply directly turns each relay into a SECOND input sample per cycle: rfConnTx runs the
-			// full F1 decode (seq-dedup guards double-forward), so a drag streaming haptics now collects
-			// ~2x the samples, closing the gap to the real puck. A present reply returns early (~90us);
-			// only a genuine no-reply pays the bounded 400us window, so airtime stays in budget.
-			rfConnTx(
-				ch, s1, p, plen,
-				400); // one relay per poll cycle -- reply harvested as input
+	RelayMsg &m = msg;
+	uint8_t rl = m.len;
+	if (rl > RELAY_MAXP)
+		rl = RELAY_MAXP;
+	// On-air sub-TLV framing. CONFIRMED from real puck<->controller sniffs: a command LANDS on
+	// the controller only with the type-01 + inner-len form E3 [2+rl][01][rid][innerlen][data];
+	// the legacy form E3 [1+rl][05][rid][data] makes the controller DISCARD any 0x87+ command.
+
+	// Same shape as the `[len][tag][value]` TLV grammar the F1 REPLY side
+	// already uses (tags 0x02/0x04/0x06, docs/PROTOCOL.md sec 7.3): read as len=1, tag=3,
+	// value=0. If the caller decides they want an answer, we add the queryTrailer.
+	// Should check later if there's a way to somehow determine which types need the trailer and which ones don't.
+	bool queryTrailer = m.expectReply;
+	uint8_t plen;
+	if (!m.isHaptic) {
+		// Non-haptics use type 01
+		if ((uint16_t)(5 + rl) > maxLen)
+			return false;
+		p[0] = g_relayOp;
+		p[1] = (uint8_t)(2 + rl);
+		p[2] = 0x01;
+		p[3] = m.rid;
+		p[4] = rl;
+		memcpy(p + 5, m.data, rl);
+		plen = (uint8_t)(5 + rl);
+		if (queryTrailer && plen + 3 <= maxLen) {
+			p[plen + 0] = 0x01;
+			p[plen + 1] = 0x03;
+			p[plen + 2] = 0x00;
+			plen = (uint8_t)(plen + 3);
 		}
+	} else {
+		// Haptics use type 05
+		if ((uint16_t)(4 + rl) > maxLen)
+			return false;
+		p[0] = g_relayOp;
+		p[1] = (uint8_t)(1 + rl);
+		p[2] = 0x05;
+		p[3] = m.rid;
+		memcpy(p + 4, m.data, rl);
+		plen = (uint8_t)(4 + rl);
+	}
+	hapLogAdd(0xFE, m.rid, m.data, rl);
+	*outLen = plen;
+	if (outMsg)
+		*outMsg = m;
+	if (outRl)
+		*outRl = rl;
+	return true;
+}
+
+bool hapticPopRelayPayload(int slot, uint8_t *out, uint8_t *outLen,
+			   uint8_t maxLen)
+{
+	return hapticPopRelayFrame(slot, out, outLen, maxLen, nullptr, nullptr);
+}
+
+// rfConnFlushRelay(ch, s1): drain one entry from the current slot's relay queue and TX it. Each slot's queue
+// is independent, so each controller only sees its own commands. With N connected slots the per-slot relay
+// rate is 1/N of the per-cycle rate; sustained buzz streams are still 1 packet/cycle/slot.
+bool rfConnFlushRelay(uint8_t ch, uint8_t s1)
+{
+	int cur = (g_curSlot >= 0 && g_curSlot < NSLOT) ? g_curSlot : 0;
+	uint8_t p[5 + RELAY_MAXP + 3], plen = 0, rl = 0;
+	RelayMsg m;
+	bool have = hapticPopRelayFrame(cur, p, &plen, sizeof p, &m, &rl);
+	if (have) {
+		// Lifecycle log (CDC debug boot): EXACTLY what we TX to the controller, so a capture shows
+		// whether OpenPuck (or Steam in the background) pokes the controller right before a buzz
+		// latches -- the piece the I45 stream (controller->us) can't show. Low rate outside a haptic
+		// burst; guarded so it never blocks the loop. cur = target slot.
+		if (Serial.availableForWrite() > 60) {
+			// boosted: this print runs at relay-flood rate and CDC flush enters the same
+			// TinyUSB DMA claim window as HID sends (the issue-72 livelock; see usb_tx.cpp)
+			usbTxBoost();
+			Serial.printf("# TX t=%lu slot%d %s rid=%02X:",
+				      (unsigned long)millis(), cur,
+				      m.isHaptic ? "L05" : "L01", m.rid);
+			for (uint8_t i = 0; i < rl && i < 8; i++)
+				Serial.printf(" %02X", m.data[i]);
+			Serial.println();
+			usbTxUnboost();
+		}
+		// slot was already consumed under the critical section above.
+		// s1 carries a PID distinct from the GET poll (caller cycles it) so the controller's ESB
+		// dedup never treats the GET as a retransmit of this relay.
+		//
+		// HARVEST the relay's reply as INPUT. Like any frame we send, the controller auto-ACKs a
+		// relay with its current input in the ACK payload (~90us later, per the RE poll->ACK
+		// capture). The old 80us window closed BEFORE that reply arrived, so every relay's input was
+		// discarded -- and yet HW A/B showed the delivered input rate RISING when haptics relay
+		// (an extra frame/cycle during a trackpad drag), because each frame makes the controller
+		// refresh its ACK payload and the following E3 poll caught the fresher value. Reading the
+		// reply directly turns each relay into a SECOND input sample per cycle: rfConnTx runs the
+		// full F1 decode (seq-dedup guards double-forward), so a drag streaming haptics now collects
+		// ~2x the samples, closing the gap to the real puck. A present reply returns early (~90us);
+		// only a genuine no-reply pays the bounded 400us window, so airtime stays in budget.
+		rfConnTx(
+			ch, s1, p, plen,
+			400); // one relay per poll cycle -- reply harvested as input
 	}
 	return have; // true = a relay frame went out this cycle (its reply is harvested as input, above)
 }
@@ -655,9 +684,10 @@ void hapticInit()
 static const uint32_t IMU_KEEP_MS = 5000;
 static bool modeWantsImu(uint8_t m)
 {
-	return m == MODE_SW_PRO || m == MODE_PS5 || m == MODE_PS5_GAME ||
-	       m == MODE_HIDGYRO || m == MODE_DS4_GAME || m == MODE_PS3 ||
-	       m == MODE_DINPUT || m == MODE_SINPUT || m == MODE_PS5_AUTH;
+	return m == MODE_SW_PRO || m == MODE_SW_JC2 || m == MODE_PS5 ||
+	       m == MODE_PS5_GAME || m == MODE_HIDGYRO || m == MODE_DS4_GAME ||
+	       m == MODE_PS3 || m == MODE_DINPUT || m == MODE_SINPUT ||
+	       m == MODE_PS5_AUTH;
 }
 // Steam can leave the controller's persisted IMU mode off, and it survives across pucks. Every emulated
 // gyro mode needs the raw RF samples that setting suppresses, so write raw accel + gyro for this slot.
@@ -776,7 +806,7 @@ void hapticTask()
 	//    haptics OFF for a type that doesn't want them.
 	if (g_lizKeep) {
 		static unsigned long lastKeep[NSLOT] = { 0 };
-		static bool landedAuto[NSLOT] = { false };
+		static uint8_t landedAuto[NSLOT] = { 0 };
 		static const uint8_t DATA_LIZARD_OFF[3] = { SETTING_LIZARD_MODE,
 							    0x00, 0x00 };
 		static const uint8_t DATA_LIZARD_ON[3] = { SETTING_LIZARD_MODE,
@@ -793,13 +823,25 @@ void hapticTask()
 				if (!g_slot[s].used || !hapticLinkUp(s)) {
 					// re-land id9 on the next (re)connect: a fresh controller defaults to
 					// autonomous, but one carrying our previous session's id9 does not
-					landedAuto[s] = false;
+					landedAuto[s] = 0;
 					lastKeep[s] = 0;
 					continue;
 				}
 				if (wantAuto) {
-					if (!landedAuto[s]) {
-						landedAuto[s] = true;
+					// Mode 14 BLE/ESB TDMA time-slicing can
+					// drop a single unacked 0x87 relay frame
+					// right after connect; pace 3 copies
+					// there (duplicate writes are silent).
+					const uint8_t copies =
+						(g_usbMode == MODE_SW_JC2) ?
+							3u :
+							1u;
+					if (landedAuto[s] < copies &&
+					    (!lastKeep[s] ||
+					     (uint32_t)(millis() -
+							lastKeep[s]) >= 250u)) {
+						landedAuto[s]++;
+						lastKeep[s] = millis();
 						relayEnqueue(
 							IBEX_CMD_SET_SETTINGS_VALUES,
 							DATA_LIZARD_ON,
@@ -807,7 +849,10 @@ void hapticTask()
 							false, (uint8_t)s);
 					}
 				} else {
-					landedAuto[s] = false;
+					if (landedAuto[s]) {
+						landedAuto[s] = 0;
+						lastKeep[s] = 0;
+					}
 					if (lastKeep[s] &&
 					    (uint32_t)(millis() - lastKeep[s]) <
 						    LIZKEEP_MS)

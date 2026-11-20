@@ -46,6 +46,7 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | WebUSB panel → mode 11 | DirectInput (flight/space sims) | Every axis at once, as two DirectInput joysticks |
 | WebUSB panel → mode 12 | SInput (SDL-native) | Sticks + analog triggers + gyro + both trackpads + battery |
 | WebUSB panel → mode 13 | PS5 console (auth adapter) | Real PS5 via a P5General auth adapter on a MAX3421E; extra hardware, see [docs/PS5_AUTH.md](docs/PS5_AUTH.md) |
+| WebUSB panel → mode 14 | Switch 2 Joy-Con 2 (BLE) | Wireless paired Joy-Con 2 (L + R) over BLE 5.0 + trackpad optical mouse (via [libjoycon2](https://github.com/bmmund/libjoycon2)) |
 
 **DirectInput mode** exists because Steam Input funnels everything through XInput, so only a handful of the
 controller's analog inputs can be live at once — a problem for flight and space sims, which bind axes through

@@ -180,6 +180,7 @@
         <button data-mode="2" class="modebtn">Switch (HORIPAD)</button>
         <button data-mode="3" class="modebtn">Lizard (always)</button>
         <button data-mode="4" class="modebtn">Switch Pro + gyro</button>
+        <button data-mode="14" class="modebtn">Joy-Con 2</button>
         <button data-mode="5" class="modebtn">PS5 DualSense</button>
         <button data-mode="6" class="modebtn">HID gyro (DS4)</button>
         <button data-mode="9" class="modebtn">PS3 (DualShock 3)</button>
@@ -300,10 +301,10 @@
     </div>
 
     <div class="card" id="mouseCard">
-      <h2>Trackpad mouse (lizard + Xbox)</h2>
+      <h2>Trackpad mouse (lizard + Xbox + Joy-Con 2)</h2>
       <div class="row"><label>Sensitivity</label><input type="range" id="mDiv" min="4" max="200" step="1"><span class="val" id="mDivV"></span></div>
       <div class="row"><label>Glide / friction</label><input type="range" id="mFric" min="0" max="99" step="1"><span class="val" id="mFricV"></span></div>
-      <p class="note">Right-pad cursor in Steam-mode lizard (Steam closed) and in Xbox mode. Sensitivity is a divisor — lower = faster pointer. Glide = how long the cursor coasts after a flick.</p>
+      <p class="note">Trackpad cursor in Steam-mode lizard (Steam closed), Xbox mode, and Switch 2 Joy-Con 2 optical mouse mode. Sensitivity is a divisor — lower = faster pointer (default 64 ≈ one pad swipe per screen). Glide = trackball coast after a fast flick (0 = off).</p>
     </div>
 
     <div class="card">
@@ -465,7 +466,7 @@
 </div>
 
 <script>
-const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)","Original Xbox","DirectInput (sims)","SInput (SDL native)","PS5 console (auth adapter)"];
+const MODE_NAMES = ["Steam (puck)","Xbox 360","Switch (HORIPAD)","Lizard (always)","Switch Pro + gyro","PS5 DualSense","HID gyro (DS4)","PS5 (game/clean)","DS4 (game/clean)","PS3 (DualShock 3)","Original Xbox","DirectInput (sims)","SInput (SDL native)","PS5 console (auth adapter)","Joy-Con 2"];
 const CHORD_FIELD = [17, 18, 19];          // back4 + B/X/Y
 const CHORD_DPAD_FIELD = [34, 35, 36, 37]; // back4 + D-pad left/up/right/down (firmware protocol >= 18)
 const CHORD_DPAD_DEF = [9, 8, 7, 2];       // firmware defaults: PS3, DS4 game, PS5 game, Switch HORIPAD
@@ -625,7 +626,7 @@ const TYPE_DEFS = [
   {key:"DS5", name:"DS5", labels:{1:"Cross",2:"Circle",3:"Square",4:"Triangle",5:"L1",6:"R1",7:"L3",8:"R3",9:"Create",10:"Options",11:"PS",19:"L2",20:"R2",...DPAD,16:"Touchpad Click",17:"Mute"}},
 ];
 // Which emulated type a USB mode belongs to (mirror of firmware etypeForMode); -1 = puck mode (no type).
-function etypeForMode(m){ switch(m){case 1:case 10:return 0; case 2:case 4:return 1; case 6:case 8:case 9:return 2; case 5:case 7:return 3; default:return -1;} }
+function etypeForMode(m){ switch(m){case 1:case 10:return 0; case 2:case 4:case 14:return 1; case 6:case 8:case 9:return 2; case 5:case 7:return 3; default:return -1;} }
 
 // ===================== Lizard (desktop) binding map =====================
 // Mirrors firmware lizard_map.h. A binding is {outType, od:[7], trig, hold}. Output types and the
@@ -747,9 +748,19 @@ function setTab(et){
       const lab=document.createElement("label"); lab.textContent=PAD_STICK_LABELS[pad]; row.appendChild(lab);
       const sel=document.createElement("select");
       for(const [v,lbl] of PAD_STICK_OPTS){ const o=document.createElement("option"); o.value=v; o.textContent=lbl; sel.appendChild(o); }
+      if(et===1){ const o=document.createElement("option"); o.value=3; o.textContent="Mouse (Joy-Con 2)"; sel.appendChild(o); }
       row.appendChild(sel); sec.appendChild(row);
       sel.addEventListener("change",()=>setField(PAD_STICK_FIELD0+et*2+pad, +sel.value));
       rec.padStick.push(sel);
+    }
+    if(et===1){
+      const row=document.createElement("div"); row.className="row";
+      const lab=document.createElement("label"); lab.textContent="Joy-Con 2 BLE pairing"; row.appendChild(lab);
+      const bPair=document.createElement("button"); bPair.textContent="Re-Pair BLE (L + R)";
+      bPair.onclick=()=>{ setField(102, 1); log("Joy-Con 2 BLE re-pair + L+R pulse triggered"); };
+      const bGrip=document.createElement("button"); bGrip.textContent="Press L + R (Bind Grip)";
+      bGrip.onclick=()=>{ setField(102, 2); log("Joy-Con 2 L+R grip pulse triggered (2.5s)"); };
+      row.appendChild(bPair); row.appendChild(bGrip); sec.appendChild(row);
     }
     host.appendChild(sec); typeEls.push(rec);
   });

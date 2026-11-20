@@ -67,10 +67,10 @@ using namespace Adafruit_LittleFS_Namespace;
 static uint8_t g_usbCfgDesc[512];
 
 // Per-mode USB serial suffix (modes 1..MODE_MAX: X=xbox N=hori L=lizard P=swpro S=ps5 G=hidgyro Q=ps5game
-// D=ds4game 3=ps3 O=original-xbox J=dinput I=sinput K=ps5 console via auth adapter).
+// D=ds4game 3=ps3 O=original-xbox J=dinput I=sinput K=ps5 console via auth adapter 2=joycon2 ble).
 // 'C' is reserved for the CDC mode, see puck_hid.cpp
 static const char MODE_SUFFIX[] = { 'X', 'N', 'L', 'P', 'S', 'G', 'Q',
-				    'D', '3', 'O', 'J', 'I', 'K' };
+				    'D', '3', 'O', 'J', 'I', 'K', '2' };
 // Fixed-interface flags captured at boot so usbReenumerate (dynamic mount, no reboot) replays them.
 static bool s_dynWantWebusb = false, s_dynWantWakeMouse = false;
 
@@ -177,7 +177,11 @@ void setup()
 	// panel / CDC 'D', auto-reverting after one boot) instead KEEPS the boot CDC composite and skips the wake
 	// mouse (no endpoint room for both). Clean modes always rebuild bare.
 	const bool puckMode = g_active->isPuck();
-	const bool keepCdc = puckMode && g_debugCdcThisBoot;
+
+	// Mode 14 exposes no USB gamepad HID interfaces, so keeping CDC fits
+	// alongside WebUSB without stealing endpoints.
+	const bool keepCdc = (puckMode && g_debugCdcThisBoot) ||
+			     g_usbMode == MODE_SW_JC2;
 	// The "game" PlayStation modes enumerate as a CLEAN single HID gamepad so games that classify off the raw HID
 	// device (Fortnite/UE GameInput, Windows.Gaming.Input) recognise them as PlayStation. A real Sony pad is just
 	// the gamepad HID (+ a USB-audio interface); our extra wake-mouse HID and WebUSB vendor interface make those
@@ -282,7 +286,8 @@ void setup()
 		"HIDGYRO(ds4+motion)",	 "PS5(dualsense,game/clean)",
 		"DS4(ds4,game/clean)",	 "PS3(dualshock3/sixaxis)",
 		"XBOX-OG(controller s)", "DINPUT(joystick+motion)",
-		"SINPUT(sdl-native)",	 "PS5(console via auth adapter)"
+		"SINPUT(sdl-native)",	 "PS5(console via auth adapter)",
+		"SWITCH2(joycon2+mouse)"
 	};
 	Serial.printf("# copycat up: unit=%s board=%s, mode=%s\n", g_unit,
 		      g_board,
@@ -377,13 +382,17 @@ void loop()
 	serialConsolePoll();
 	acc[2] += (uint32_t)(micros() - t);
 	t = micros();
-	faultDiagSetStage(3);
-	rfDiagTask();
-	acc[3] += (uint32_t)(micros() - t);
-	t = micros();
-	faultDiagSetStage(4);
-	rfLinkTask();
-	acc[4] += (uint32_t)(micros() - t);
+	if (g_active && g_active->pollRadioCoex()) {
+		acc[4] += (uint32_t)(micros() - t);
+	} else {
+		faultDiagSetStage(3);
+		rfDiagTask();
+		acc[3] += (uint32_t)(micros() - t);
+		t = micros();
+		faultDiagSetStage(4);
+		rfLinkTask();
+		acc[4] += (uint32_t)(micros() - t);
+	}
 	t = micros();
 	faultDiagSetStage(5);
 	hapticTask();
@@ -427,10 +436,12 @@ void loop()
 		g_active->task();
 	faultDiagSetStage(2);
 	serialConsolePoll();
-	faultDiagSetStage(3);
-	rfDiagTask();
-	faultDiagSetStage(4);
-	rfLinkTask();
+	if (!(g_active && g_active->pollRadioCoex())) {
+		faultDiagSetStage(3);
+		rfDiagTask();
+		faultDiagSetStage(4);
+		rfLinkTask();
+	}
 	faultDiagSetStage(5);
 	hapticTask();
 	faultDiagSetStage(6);

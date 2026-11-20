@@ -11,6 +11,7 @@
 #include "build_info.h"
 #include "fault_diag.h"
 #include "fw_update.h"
+#include "mode_joycon2_ble.h"
 #include "usb_tx.h"
 #include "usb_mount.h" // modeSwitchReboot()
 #include "xinput_auth.h"
@@ -1325,6 +1326,17 @@ void webusbPoll()
 				// Used to be g_landAll87, now g_isMachineInternal. Persisted to blob p[181].
 				case 29:
 					g_isMachineInternal = v ? 0xEE : 0;
+					break;
+
+				// Joy-Con 2 BLE pairing & L+R grip-binding triggers.
+				case 102:
+					if (v == 1u) {
+						jc2TriggerPairing(true);
+						jc2PulseGripLR(3000u);
+					} else if (v == 2u) {
+						jc2PulseGripLR(2500u);
+					}
+					persist = false;
 					break;
 				}
 				if (persist)
