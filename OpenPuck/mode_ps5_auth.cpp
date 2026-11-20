@@ -7,9 +7,13 @@
 #include "haptics.h"
 #include "usb_tx.h"
 #include <Adafruit_TinyUSB.h>
+#include <Adafruit_LittleFS.h>
+#include <InternalFileSystem.h>
 #include <SPI.h>
 #include <Arduino.h>
 #include <string.h>
+
+using namespace Adafruit_LittleFS_Namespace;
 
 Ps5AuthController g_ps5AuthCtl;
 
@@ -79,8 +83,11 @@ static const uint8_t P5_HID_DESC[] = {
 
 // Feature 0x03 "controller definition", payload after the report id. Byte-identical to what the adapter
 // itself returns; the console reads it at enumeration to classify the pad.
+// Controller definition (PS4ControllerConfig layout). Byte 3 is the capability mask the console honours:
+// 0x02 motion, 0x04 lightbar, 0x08 vibration, 0x40 touchpad. The adapter's own 0xC3 leaves vibration off,
+// so the console never sends motor values; 0xCF turns vibration and lightbar on.
 static const uint8_t P5_DEF_03[47] = {
-	0x21, 0x28, 0x03, 0xC3, 0x00, 0x2C, 0x56, 0x01, 0x00, 0xD0,
+	0x21, 0x28, 0x03, 0xCF, 0x00, 0x2C, 0x56, 0x01, 0x00, 0xD0,
 	0x07, 0x00, 0x80, 0x04, 0x00, 0x00, 0x80, 0x0D, 0x0D, 0x84,
 };
 
@@ -160,6 +167,120 @@ static uint16_t p5AuthRead(uint8_t *buf, uint16_t reqlen, uint16_t n)
 	return n;
 }
 
+// ---- console output capture (diagnostic) ----
+// Records what the console sends besides the F0 challenge (output reports, other SET_REPORTs) so a
+// rumble layout can be read back on a computer after the puck has been on a PS5. Slots 0-3 keep the
+// first reports, 4-7 a ring of the latest distinct ones. Saved to flash only on boots where a console
+// challenged us, so a later bench boot doesn't overwrite it; GET_REPORT 0xD0-0xD7 (entries) and 0xD8
+// (counters) return the copy loaded at boot.
+#define P5_CAP_N 8
+#define P5_CAP_DATA 48
+#define P5_CAP_FILE "/p5cap.bin"
+#define P5_CAP_SAVE_MS 3000u
+
+struct P5CapEnt {
+	uint8_t rid, type, len, used;
+	uint8_t d[P5_CAP_DATA];
+};
+struct P5Cap {
+	uint32_t nOut, nOther;
+	uint8_t ring;
+	P5CapEnt e[P5_CAP_N];
+};
+static P5Cap s_cap, s_capSaved;
+static volatile bool s_capDirty, s_sawChallenge;
+static unsigned long s_capSaveMs;
+
+static void p5CapStore(P5CapEnt *e, uint8_t rid, hid_report_type_t type,
+		       uint8_t const *b, uint16_t n)
+{
+	e->rid = rid;
+	e->type = (uint8_t)type;
+	e->len = n > 255 ? 255 : (uint8_t)n;
+	e->used = 1;
+	memset(e->d, 0, P5_CAP_DATA);
+	memcpy(e->d, b, n < P5_CAP_DATA ? n : P5_CAP_DATA);
+}
+
+static void p5Capture(uint8_t rid, hid_report_type_t type, uint8_t const *b,
+		      uint16_t n)
+{
+	taskENTER_CRITICAL();
+	if (type == HID_REPORT_TYPE_OUTPUT)
+		s_cap.nOut++;
+	else
+		s_cap.nOther++;
+	int k;
+	for (k = 0; k < 4 && s_cap.e[k].used; k++)
+		;
+	if (k < 4) {
+		p5CapStore(&s_cap.e[k], rid, type, b, n);
+		s_capDirty = true;
+	} else {
+		P5CapEnt *last = &s_cap.e[4 + (s_cap.ring + 3) % 4];
+		uint16_t m = n < P5_CAP_DATA ? n : P5_CAP_DATA;
+		if (!last->used || last->rid != rid || last->len != n ||
+		    memcmp(last->d, b, m)) {
+			p5CapStore(&s_cap.e[4 + s_cap.ring], rid, type, b, n);
+			s_cap.ring = (s_cap.ring + 1) % 4;
+			s_capDirty = true;
+		}
+	}
+	taskEXIT_CRITICAL();
+}
+
+static void p5CapLoad()
+{
+	File f(InternalFS);
+	if (f.open(P5_CAP_FILE, FILE_O_READ)) {
+		if (f.read(&s_capSaved, sizeof s_capSaved) != sizeof s_capSaved)
+			memset(&s_capSaved, 0, sizeof s_capSaved);
+		f.close();
+	}
+}
+
+static void p5CapSave()
+{
+	if (!s_capDirty || !s_sawChallenge ||
+	    millis() - s_capSaveMs < P5_CAP_SAVE_MS)
+		return;
+	static P5Cap snap;
+	taskENTER_CRITICAL();
+	snap = s_cap;
+	s_capDirty = false;
+	taskEXIT_CRITICAL();
+	s_capSaveMs = millis();
+	InternalFS.remove(P5_CAP_FILE);
+	File f(InternalFS);
+	if (f.open(P5_CAP_FILE, FILE_O_WRITE)) {
+		f.write((const uint8_t *)&snap, sizeof snap);
+		f.close();
+	}
+}
+
+static uint16_t p5CapRead(uint8_t rid, uint8_t *buf, uint16_t reqlen)
+{
+	uint8_t tmp[4 + P5_CAP_DATA];
+	uint16_t n;
+	if (rid == 0xD8) {
+		memcpy(tmp, &s_capSaved.nOut, 4);
+		memcpy(tmp + 4, &s_capSaved.nOther, 4);
+		n = 8;
+	} else {
+		P5CapEnt const *e = &s_capSaved.e[rid - 0xD0];
+		tmp[0] = e->used;
+		tmp[1] = e->rid;
+		tmp[2] = e->type;
+		tmp[3] = e->len;
+		memcpy(tmp + 4, e->d, P5_CAP_DATA);
+		n = sizeof tmp;
+	}
+	if (n > reqlen)
+		n = reqlen;
+	memcpy(buf, tmp, n);
+	return n;
+}
+
 static uint16_t p5GetReport(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 			    uint16_t reqlen)
 {
@@ -176,6 +297,8 @@ static uint16_t p5GetReport(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 		return p5AuthRead(buf, reqlen, 63);
 	case RID_STATUS:
 		return p5AuthRead(buf, reqlen, 15);
+	case 0xD0 ... 0xD8:
+		return p5CapRead(rid, buf, reqlen);
 	case 0xEE:
 		// Bench diagnostic for tools/p5_check.py; not in the descriptor, so a console never asks for it.
 		buf[0] = s_chipRev;
@@ -230,11 +353,17 @@ static void p5SetReport(uint8_t rid, hid_report_type_t type, uint8_t const *b,
 			uint16_t n)
 {
 	if (type == HID_REPORT_TYPE_OUTPUT) {
+		p5Capture(rid, type, b, n);
 		p5Rumble(rid, b, n);
 		return;
 	}
-	if (type != HID_REPORT_TYPE_FEATURE || rid != RID_CHALLENGE || n != 63)
+	if (type != HID_REPORT_TYPE_FEATURE || rid != RID_CHALLENGE) {
+		p5Capture(rid, type, b, n);
 		return;
+	}
+	if (n != 63)
+		return;
+	s_sawChallenge = true;
 	taskENTER_CRITICAL();
 	if (s_state == A_IDLE) {
 		s_auth[0] = RID_CHALLENGE;
@@ -413,13 +542,28 @@ static void p5Build(int slot, uint8_t r[P5_REPORT_LEN])
 	r[10] = ((b & TB_STEAM) ? 0x01 : 0) |
 		((b & (TB_TOUCH | TB_LPADC | TB_RPADC)) ? 0x02 : 0);
 
-	// Unlike the DS4 report, P5General carries the IMU big-endian.
+	// Little-endian, as on a DualSense. GP2040-CE byte-swaps here, but big-endian sends motion haywire on a
+	// real PS5.
 	PsImuFrame imu = psImuFromSteam(g_in[slot]);
-	const int16_t v[6] = { imu.gx, imu.gy, imu.gz, imu.ax, imu.ay, imu.az };
+	// P5_DEF_03 declares accel as 4 g full scale (8192/g); the SC2 reports 16384/g, so halve it or the
+	// console sees 2 g of gravity. The gyro (16/deg/s) already matches the declared 2000 deg/s.
+	const int16_t v[6] = { imu.gx,
+			       imu.gy,
+			       imu.gz,
+			       (int16_t)(imu.ax / 2),
+			       (int16_t)(imu.ay / 2),
+			       (int16_t)(imu.az / 2) };
 	for (int i = 0; i < 6; i++) {
-		r[16 + 2 * i] = (uint8_t)((uint16_t)v[i] >> 8);
-		r[17 + 2 * i] = (uint8_t)(v[i] & 0xFF);
+		r[16 + 2 * i] = (uint8_t)(v[i] & 0xFF);
+		r[17 + 2 * i] = (uint8_t)((uint16_t)v[i] >> 8);
 	}
+
+	// Bytes 28-29 are a 16-bit IMU timestamp the console integrates the gyro over (GP2040-CE leaves it zero,
+	// which kills rotation). Ticks are assumed to be 1 us; the DualSense's 0.33 us ticks spun rotation ~3x
+	// too fast. Byte 30 is the battery/status byte, 0x1A = charging, full, as the P5General sends it.
+	uint16_t ts = (uint16_t)g_in[slot].imuTimestampUs;
+	r[28] = (uint8_t)ts;
+	r[29] = (uint8_t)(ts >> 8);
 
 	bool lTouch = g_padStick[0] == PS_OFF &&
 		      ((b & TB_LPADT) || (b & TB_LPADC)),
@@ -523,6 +667,7 @@ static uint8_t p5ProbeChip()
 void Ps5AuthController::begin()
 {
 	usbIdentity();
+	p5CapLoad();
 	g_p5.enableOutEndpoint(true);
 	g_p5.setReportCallback(p5GetReport, p5SetReport);
 	g_p5.setReportDescriptor(P5_HID_DESC, sizeof P5_HID_DESC);
@@ -554,6 +699,7 @@ static void p5HostStart()
 void Ps5AuthController::task()
 {
 	p5Led();
+	p5CapSave();
 	if (!s_stage && millis() >= P5_HOST_START_MS)
 		p5HostStart();
 	if (!s_hostUp)

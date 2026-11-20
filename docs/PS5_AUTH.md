@@ -106,13 +106,24 @@ wiki page has the step-by-step version with photos.
 
 ## Status / limits
 
-- The challenge relay and signing path follow GP2040-CE's P5General driver,
-  which works on a real PS5. Bench-verified with a modded "UHS mini v2.0"
-  MAX3421E board: the adapter enumerates and the puck's input stream comes back
-  signed. **Not yet verified on a real PS5.**
-- The gyro/accel are written big-endian, following GP2040-CE. This is
-  unverified, so if motion is garbled, this is the first thing to check.
-- Rumble comes from output report 0x02, decoded with the DualSense layout
-  (byte 2 = high-frequency motor, byte 3 = low-frequency motor) and sent to
-  the active controller. The lightbar and player LEDs are ignored.
+- **Tested on a real PS5** with a modded "UHS mini v2.0" MAX3421E board and a
+  P5 NEX Plus: auth passes, and buttons, sticks and motion work.
+- Motion follows the DualSense report: little-endian gyro/accel at bytes 16-27
+  (GP2040-CE byte-swaps these, which sends motion haywire). Bytes 28-29 are a
+  16-bit IMU timestamp the console integrates the gyro over. Left at zero,
+  rotation is dead. Its tick unit is still being tuned. Byte 30 is the
+  battery/status byte (`0x1A` = charging, full). Anything else there shows up
+  as "battery low".
+- The controller-definition report (feature `0x03`) advertises vibration
+  (capability `0xCF`; the adapter's own `0xC3` leaves it off).
+- **No rumble on PS5 yet.** Output report `0x02` is forwarded with the
+  DualSense motor layout (byte 2 = high-frequency, byte 3 = low-frequency), and
+  this works from a PC. But in Astro's Playroom the console sent only
+  lightbar, LED and volume updates. PS5-native games drive DualSense haptics
+  as audio, which a non-DualSense device never receives. PS4 titles are
+  untested.
+- Diagnostics: GET feature `0xEE` reports MAX3421E/adapter state, and
+  `0xD0`-`0xD8` return the console output reports captured during the last
+  PS5 session (saved to flash only on boots where a console sent an auth
+  challenge).
 - Only `2B81:0101` adapters are recognised.
