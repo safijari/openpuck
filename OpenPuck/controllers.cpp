@@ -7,6 +7,7 @@
 #include "mode_ps5.h"
 #include "mode_hidgyro.h"
 #include "mode_ps3.h"
+#include "mode_ps5_auth.h"
 #include "mode_dinput.h"
 #include "mode_sinput.h"
 #include "mode_xbox_og.h"
@@ -48,6 +49,8 @@ IController *controllerFor(uint8_t mode)
 		return &g_dinputCtl;
 	case MODE_SINPUT:
 		return &g_sinputCtl;
+	case MODE_PS5_AUTH:
+		return &g_ps5AuthCtl;
 	default:
 		return &g_steamPuck;
 	}

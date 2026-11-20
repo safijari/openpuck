@@ -657,7 +657,7 @@ static bool modeWantsImu(uint8_t m)
 {
 	return m == MODE_SW_PRO || m == MODE_PS5 || m == MODE_PS5_GAME ||
 	       m == MODE_HIDGYRO || m == MODE_DS4_GAME || m == MODE_PS3 ||
-	       m == MODE_DINPUT || m == MODE_SINPUT;
+	       m == MODE_DINPUT || m == MODE_SINPUT || m == MODE_PS5_AUTH;
 }
 // Steam can leave the controller's persisted IMU mode off, and it survives across pucks. Every emulated
 // gyro mode needs the raw RF samples that setting suppresses, so write raw accel + gyro for this slot.
