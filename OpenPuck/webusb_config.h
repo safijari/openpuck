@@ -7,6 +7,8 @@
 //               0x0C                 reboot into UF2 bootloader (USB mass storage)
 //               0x16                 test rumble: buzz every connected controller with the current
 //                                    style/strength for RUMBLE_TEST_MS (auto-stops)
+//               0x35                 grip PCM stream counters -> 0xB1 frame (debug)
+//               0x36                 Switch Pro HD pan test: a tone panned left-right-left twice
 //               0x20 <size u32> <crc32 u32>        firmware update: begin staging (disarms any previous)
 //               0x21 <off u32> <len> <data...>     firmware update: sequential chunk (len<=128, %4==0)
 //               0x22                 firmware update: verify staged image + COMMIT (applies on next reboot)

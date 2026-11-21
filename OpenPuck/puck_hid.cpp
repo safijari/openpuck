@@ -232,7 +232,7 @@ static unsigned long g_resumeMs = 0;
 static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		      uint8_t const *b, uint16_t n)
 {
-	// Steam OUTPUT reports 0x80-0x89. The haptic/actuator reports (0x80-0x86) are relayed to the controller,
+	// Steam OUTPUT reports 0x80-0x89, all haptic/actuator reports, relayed to the controller
 	// and ONLY when they arrive on the CONNECTED slot's interface: we have one controller but expose 4 puck
 	// slots, and a report aimed at a DIFFERENT slot made the controller buzz at random (the slot gate below
 	// fixes that). Must NOT clamp to 0x82-only -- Steam drives the actuators through the WHOLE Triton OUTPUT
@@ -242,8 +242,11 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	//   0x83 HAPTIC_LFO_TONE(9) 0x84 HAPTIC_LOG_SWEEP(8) 0x85 HAPTIC_SCRIPT(3)  0x86 (3, unnamed)
 	// These ids are NOT the feature-0x01 command ids (controller_constants.h) -- same numbers, different
 	// meanings -- so a rule written for one channel must never be applied to the other.
-	// The 63-byte settings/config reports 0x87/0x88/0x89 are NOT haptics and reach the controller via the
-	// feature-0x01 passthrough path instead.
+	// The 63-byte reports are raw haptic sample streams, not settings (controller firmware OUTPUT table):
+	//   0x87 [target][samples] to one actuator set (trackpads / grips)
+	//   0x88 [n<=31][31 samples grip B][31 samples grip A] stereo grip stream
+	//   0x89 [len][0x87 payload] length-prefixed 0x87
+	// They carry streamed haptic audio; the real puck forwards every OUTPUT report up to 64 bytes unfiltered.
 	if (type == HID_REPORT_TYPE_OUTPUT) {
 		if (rid >= 0x80 && rid <= 0x89) {
 			// capture ALL OUTPUT reports (even un-relayed) for the 'H' dump
@@ -269,7 +272,7 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// (issues #163 / #166): "Soft Press" survived because it rides 0x82 ID_OUT_REPORT_HAPTIC_COMMAND,
 		// while every pulse-based click was thrown away. Pulses are self-terminating (repeat_count in the
 		// payload), so there is no latch to strand and no stop frame to lose.
-		if (g_hapticRelay && rid >= 0x80 && rid <= 0x86 && n >= 1 &&
+		if (g_hapticRelay && rid >= 0x80 && rid <= 0x89 && n >= 1 &&
 		    hapticRelaySlotOk(slot) && !lizardActive() && !muted) {
 			if (!haptic82Blocked(slot)) {
 				relayEnqueue(rid, b,
@@ -389,10 +392,11 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 			// 18B cap, and the chopped frames were why those settings never landed on the controller.
 			uint8_t rl = (len <= pln) ? len : (uint8_t)pln;
 #if OPK_LOG
-			if (len > RELAY_MAXP && Serial.availableForWrite() > 60)
+			if (len > RELAY_CMD_MAXP &&
+			    Serial.availableForWrite() > 60)
 				Serial.printf(
 					"# RELAY TRUNC cmd=%02X len=%u>%u\n",
-					cmd, len, (unsigned)RELAY_MAXP);
+					cmd, len, (unsigned)RELAY_CMD_MAXP);
 #endif
 			relayEnqueue(cmd, pl, rl, false, (uint8_t)slot,
 				     relayQuery);

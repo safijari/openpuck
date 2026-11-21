@@ -216,6 +216,9 @@ void rfRecoveryStatusSnapshot(RfRecoveryStatus *status);
 // TX one connected packet [LEN][S1][payload] on channel ch, then RX the reply into rfrx; decodes 0xF1.
 // rxWinUs overrides the reply-wait window (0 = use g_rxWin). Pass a tiny value for NO-ACK relays that expect
 // no reply, so they don't burn a full ~1.2ms window of dead air per haptic.
+// The last rfConnTx's reply: microseconds from RX enable to its end (0 = none inside the window), and its CRC
+extern uint16_t g_rfReplyUs;
+extern bool g_rfReplyCrcOk;
 uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 		 uint16_t rxWinUs = 0);
 // Mid-session channel hop: advertise newCh on the current channel a few times, then move the poll to newCh.

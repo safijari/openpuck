@@ -14,8 +14,9 @@ PsImuFrame psImuFromSteam(const PuckInput &in)
 static bool g_psPadClickDown[NSLOT] = {};
 static unsigned long g_psPadClickReplyMs[NSLOT] = {};
 
-void psPadClickEdge(uint8_t slot, bool pressed)
+void psPadClickEdge(uint8_t slot, uint32_t clicks)
 {
+	bool pressed = clicks != 0;
 	if (slot >= NSLOT)
 		return;
 	const unsigned long replyMs = g_connReplyMs[slot];
@@ -32,14 +33,19 @@ void psPadClickEdge(uint8_t slot, bool pressed)
 	g_psPadClickDown[slot] = pressed;
 	if (!rising || !g_padHaptics || haptic82Blocked(slot))
 		return;
-	static const uint8_t click[3] = { 0x01, 0x01, 0xF7 };
-	relayEnqueue(0x82, click, sizeof click, true, slot);
+	// buzz the pad(s) actually clicked
+	const uint8_t click[3] = {
+		hsidePads(clicks & TB_LPADC, clicks & TB_RPADC), 0x01, 0xF7
+	};
+	// ahead of any queued PCM stream frames, which would delay the click by their length
+	relayEnqueueFront(0x82, click, sizeof click, true, slot);
 }
 
 void psNeutralCalib(uint8_t *buf)
 {
-	// Payload offsets = kernel buf[] index minus 1. buf[0..5] gyro bias stays zero (caller memset). Symmetric
-	// ranges -> non-zero divisors on the host.
+	// Payload offsets = kernel buf[] index minus 1. buf[0..5] gyro bias stays zero (caller memset).
+	// speed_plus and speed_minus must both be positive (+2844) so that (speed_plus + speed_minus) != 0
+	// in SDL2/Steam gyro scale calculations, while pitch/yaw/roll minus fields remain negative for delta.
 	le16(buf + 6, 2844);
 	le16(buf + 8, -2844); // gyro pitch +/-
 	le16(buf + 10, 2844);
