@@ -38,7 +38,7 @@ jobs:
       - name: Install adafruit-nrfutil
         # The Adafruit nRF52 build recipe shells out to adafruit-nrfutil to
         # package the DFU .zip; it is not bundled with the core on the runner.
-        run: pip install adafruit-nrfutil
+        run: pip install adafruit-nrfutil intelhex
 
       - name: Install Adafruit nRF52 core
         run: |
@@ -94,6 +94,15 @@ jobs:
       - name: Compile MDBT50Q-CX-40
         run: make build-raytac
 
+      - name: Compile Makerdiary MDK USB Dongle
+        run: make build-mdk
+
+      - name: Build and verify Makerdiary bootloader
+        run: make build-mdk-bootloader
+
+      - name: Generate UF2 (Makerdiary MDK application)
+        run: ./gen_uf2.sh build/mdk/OpenPuck.ino.hex build/mdk/OpenPuck-MDK-application.uf2
+
       - name: Generate UF2 (OpenPuck)
         # The Adafruit nRF52 core leaves its UF2 objcopy recipe commented out in
         # platform.txt, so arduino-cli only emits .hex/.zip. Convert the .hex to
@@ -127,6 +136,26 @@ jobs:
           retention-days: 7
           if-no-files-found: error
           path: build/openpuck/OpenPuck.ino.hex
+
+      - name: Upload Makerdiary MDK application artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenPuck-${{ steps.build_version.outputs.artifact_version }}-mdk-application
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            build/mdk/OpenPuck.ino.hex
+            build/mdk/OpenPuck-MDK-application.uf2
+
+      - name: Upload Makerdiary bootloader artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: OpenPuck-${{ steps.build_version.outputs.artifact_version }}-mdk-bootloader
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            build/mdk-bootloader/OpenPuck-MDK-bootloader-0.7.1-openpuck.zip
+            build/mdk-bootloader/Adafruit_nRF52_Bootloader/_build/build-mdk_nrf52840_dongle/mdk_nrf52840_dongle_bootloader-0.7.1-openpuck.hex
 
       - name: Upload ReversePuckFirmware UF2 artifact
         uses: actions/upload-artifact@v7

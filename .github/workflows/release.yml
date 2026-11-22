@@ -93,7 +93,7 @@ jobs:
           python-version: '3.x'
 
       - name: Install adafruit-nrfutil
-        run: pip install adafruit-nrfutil
+        run: pip install adafruit-nrfutil intelhex
 
       - name: Install Adafruit nRF52 core
         run: |
@@ -111,6 +111,35 @@ jobs:
         run: |
           mkdir -p build/openpuck build/cache/openpuck
           make build BUILD_PATH=build/cache/openpuck OUTPUT_DIR=build/openpuck
+
+      - name: Compile Makerdiary MDK USB Dongle
+        run: make build-mdk
+
+      - name: Generate UF2 (Makerdiary MDK application)
+        run: ./gen_uf2.sh build/mdk/OpenPuck.ino.hex build/mdk/OpenPuck-MDK-application.uf2
+
+      - name: Extract S140 6.1.1 provisioning image
+        run: |
+          COMBINED="$(find "$HOME/.arduino15/packages/adafruit/hardware/nrf52" -path '*/bootloader/feather_nrf52840_express/*_s140_6.1.1.hex' -print -quit)"
+          test -n "$COMBINED"
+          python3 - "$COMBINED" build/mdk/s140-6.1.1.hex <<'PY'
+          from intelhex import IntelHex
+          import sys
+          source, output = sys.argv[1:]
+          ih = IntelHex(source)
+          out = IntelHex()
+          for start, end in ih.segments():
+              lo, hi = max(start, 0), min(end, 0x26000)
+              for addr in range(lo, hi):
+                  out[addr] = ih[addr]
+          out.write_hex_file(output)
+          PY
+
+      - name: Package Makerdiary first-install UF2
+        run: make package-mdk-first-install SOFTDEVICE_HEX=build/mdk/s140-6.1.1.hex
+
+      - name: Build and verify Makerdiary bootloader
+        run: make build-mdk-bootloader
 
       - name: Generate UF2 (standard)
         run: ./gen_uf2.sh build/openpuck/OpenPuck.ino.hex build/openpuck/OpenPuck.ino.uf2
@@ -160,6 +189,16 @@ jobs:
             ext="${f##*.}"
             cp "$f" "release_assets/ReversePuckFirmware-${VERSION}.${ext}"
           done
+          cp build/mdk/OpenPuck-MDK-application.uf2 \
+            "release_assets/OpenPuck-${VERSION}-mdk-application.uf2"
+          cp build/mdk/OpenPuck.ino.hex \
+            "release_assets/OpenPuck-${VERSION}-mdk-application.hex"
+          cp build/mdk/OpenPuck-MDK-first-install-S140.uf2 \
+            "release_assets/OpenPuck-${VERSION}-mdk-first-install-S140.uf2"
+          cp build/mdk-bootloader/OpenPuck-MDK-bootloader-0.7.1-openpuck.zip \
+            "release_assets/OpenPuck-${VERSION}-mdk-bootloader.zip"
+          cp build/mdk-bootloader/Adafruit_nRF52_Bootloader/_build/build-mdk_nrf52840_dongle/mdk_nrf52840_dongle_bootloader-0.7.1-openpuck.hex \
+            "release_assets/OpenPuck-${VERSION}-mdk-bootloader.hex"
           test -n "$(find release_assets -maxdepth 1 -type f -print -quit)"
           ls -la release_assets
 
