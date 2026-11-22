@@ -1,0 +1,11 @@
+#!/bin/bash
+# AppImage entry point: the bundled Python (with pygame/pyserial/pyusb) runs openctrl.py.
+HERE="$(dirname "$(readlink -f "$0")")"
+APPDIR="${APPDIR:-$HERE}"
+# The AppImage is read-only and Steam may start it from anywhere, so the log lives in the user's state dir.
+LOGDIR="${XDG_STATE_HOME:-$HOME/.local/state}/reversepuck"
+mkdir -p "$LOGDIR"
+export PYGAME_HIDE_SUPPORT_PROMPT=1
+unset PYTHONHOME PYTHONPATH
+exec "$APPDIR/opt/python3.12/bin/python3.12" -s -E -B \
+	"$APPDIR/usr/share/reversepuck/openctrl.py" --logfile "$LOGDIR/openctrl.log" "$@"

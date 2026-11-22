@@ -38,7 +38,24 @@ analog offsets in `input_source.py` if anything's off. The IMU axis remap (`IMU_
 | `frame.py` | The USB-CDC wire protocol (kept in lock-step with `../ReversePuckFirmware/deck_input.*`). |
 | `scpair.py` | Linux hidraw pairing tool (the on-Deck equivalent of `pairtui`). |
 | `ReversePuck` | `uv` launcher (`pyserial`+`pygame`+`pyusb`) — add this as a non-Steam game. |
-| `setup.sh` | Per-boot `sudo`: opens `/dev/ttyACM*` + the controller's usbfs node (read-only SteamOS). |
+| `setup.sh` | Per-boot `sudo`: opens `/dev/ttyACM*` + the controller's usbfs node. Not needed on SteamOS (see below). |
+
+## AppImage (easiest: launch from Game Mode)
+
+One file with Python and all its dependencies inside: no `uv`, no network, no `sudo ./setup.sh`. On
+SteamOS, Steam's own udev rule already gives the logged-in user access to every Valve (`28DE`) USB device,
+which covers both the dongle's CDC port and the Deck controller's usbfs node.
+
+1. Download it from a release, or from the **ReversePuck AppImage** workflow's artifacts (built for every
+   commit that touches `ReversePuck/`). Or build it (macOS with `brew install squashfs`, or x86_64 Linux):
+   `ReversePuck/packaging/build-appimage.sh` → `build/reversepuck-appimage/ReversePuck-<version>-x86_64.AppImage`.
+2. Copy it to the Deck (e.g. `~/Applications/ReversePuck.AppImage`) and make it executable.
+3. In Desktop Mode, add it to Steam as a non-Steam game. In its **Properties → Controller**, set
+   **Disable Steam Input**.
+4. Launch it from Game Mode like any game.
+
+The log goes to `~/.local/state/reversepuck/openctrl.log`. Exiting the game from Steam hands the Deck
+controls back, and if a previous run was killed while holding them, the next launch gives them back.
 
 ## Run with `uv` (no system install, read-only SteamOS friendly)
 
@@ -62,18 +79,19 @@ Add the `ReversePuck` launcher as a non-Steam game (Target = `ReversePuck`, **St
 In the shortcut's **Properties → Controller**, set **Disable Steam Input** so Steam doesn't fight us for
 the built-in pad while we grab it.
 
-### Device permissions (read-only rootfs, no persistent udev)
-`/dev/input/event*` is already granted to the active-session user (logind ACL), so the `--evdev` fallback
-works without any setup. The two devices the **default** (libusb) path needs are not, so run once per
-boot from Desktop Mode:
+### Device permissions
+On **SteamOS nothing is needed**: Steam's own udev rule (`TAG+="uaccess"` for every Valve `28DE` USB
+device) already gives the logged-in user the nRF CDC (`/dev/ttyACM*`) and the Deck controller's
+`/dev/bus/usb/...` node.
+
+Elsewhere (no Steam udev rules), run this once per boot so the libusb `DeckSource` can open both:
 
 ```bash
 sudo ./setup.sh     # chmod a+rw /dev/ttyACM* (nRF CDC) + the Deck controller's usbfs node; not persistent
 ```
 
-`setup.sh` opens the nRF CDC (`/dev/ttyACM*`) and the Deck controller's `/dev/bus/usb/...` node (so the
-libusb `DeckSource` can detach + read it). We can't install a udev rule because `/etc` is read-only.
-Without it you'll get a permission error and the app falls back to `--evdev`.
+Without access you'll get a permission error and the app falls back to `--evdev`
+(`/dev/input/event*` is granted to the active session by logind).
 
 ## Pair the controller to a puck
 
@@ -108,8 +126,12 @@ resyncs past these `#` lines, so they're harmless when forwarding.)
 
 ## Using it
 
-Tap a puck tile that shows **● available** to detach the Deck controls and start forwarding. Tap
-anywhere (or unplug the puck/dongle) to hand control back to the Deck. `Esc`/`Q` quits. The app survives
+Tap a puck tile that shows **● available** to detach the Deck controls and start forwarding. Hold
+anywhere (or unplug the puck/dongle) to hand control back to the Deck; that works whether the screen is
+on or black. When forwarding to a puck connects, the screen counts down a few seconds and goes black (on
+an OLED Deck that's the pixels off; on an LCD Deck the backlight stays at your brightness setting); tap
+during the countdown to keep it on instead. After that, a tap turns the screen off or back on.
+`Esc`/`Q` quits. The app survives
 the dongle or the Deck pad being unplugged and replugged mid-session — it tears down cleanly and rebuilds
 when the device reappears, so a transient USB hiccup never wedges it or leaves the pad detached.
 
@@ -138,9 +160,11 @@ Build a flashable dongle image with `make reversepuck` (from the repo root); fla
 - **IMU (gyro + accel)** is read straight from the libusb `DeckSource` and remapped to the SC2 axes via
   `IMU_GYRO_MAP` / `IMU_ACCEL_MAP` in `input_source.py`. Accel and gyro must share handedness or the
   host's sensor fusion mixes axes — calibrate both together in Steam's gyro test.
-- **Game Mode / gamescope** — the libusb detach and evdev `EVIOCGRAB` both behave cleanly in **Desktop
-  Mode**. In Game Mode, Steam Input owns the controller, so detach behaves differently; run from Desktop
-  Mode for now.
+- **Lizard mode** — while forwarding, the app keeps the Deck pad out of lizard mode (its watchdog would
+  otherwise turn the trackpad mouse and its haptic ticks back on), and it hands the pad back when it's
+  closed or killed.
+- **Game Mode / gamescope** — use the AppImage (see above) and set **Disable Steam Input** on its
+  shortcut; it runs from Game Mode and hands the pad back when Steam exits it.
 - **Button mapping** lives in `input_source.DECK_BTN_MAP` (libusb) / `KEYMAP` (evdev); adjust if your
   Deck maps face buttons or back paddles differently.
 - **Real Valve puck interop** — the RF reconnect (`../ReversePuckFirmware/ctrl_link.cpp`) adopts the
