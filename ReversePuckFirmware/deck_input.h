@@ -10,7 +10,9 @@
 //
 //   Deck -> nRF:  0x01 INPUT (38B fields), 0x02 CONTROL ([sub][..]: sub 0x01=set-forwarding[0/1],
 //                 sub 0x02=clear-bond[slot]), 0x03 REQUEST_STATUS (no payload)
-//   nRF -> Deck:  0x10 STATUS, 0x11 HAPTIC (relayed Steam rumble), 0x1F TEXT(debug)
+//   nRF -> Deck:  0x10 STATUS, 0x11 HAPTIC (relayed Steam rumble), 0x12 PULSE (relayed trackpad haptic
+//                 pulse: [side u8][on_us u16][off_us u16][repeat u16], played as Deck cmd 0x8F),
+//                 0x1F TEXT(debug)
 #pragma once
 #include <stdint.h>
 
@@ -22,6 +24,7 @@
 #define DECK_T_REQ_STATUS 0x03
 #define DECK_T_STATUS 0x10
 #define DECK_T_HAPTIC 0x11
+#define DECK_T_PULSE 0x12
 #define DECK_T_TEXT 0x1F
 
 // Pump the CDC RX state machine: parse any complete frames, fill g_in, update forwarding state.

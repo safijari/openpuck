@@ -165,11 +165,72 @@ static unsigned long g_lastHapMs = 0;
 // cap CDC haptic frames to ~60 Hz: enough for smooth rumble, but no flood of the CDC link / Deck USB.
 #define HAPTIC_MIN_MS 16u
 
+// Trackpad haptic pulses, staged per side ([side][on_us u16][off_us u16][repeat u16]) and flushed as PULSE
+// frames by deckHapticTask. The Deck renders these natively (its own 0x8F pulse, the same shape as the
+// relayed 0x81) but IGNORES the 0xEB rumble the HAPTIC frame turns into, so flattening a pulse into
+// "rumble on" made every trackpad click silent. Per side so a left click can't overwrite a right one.
+#define PULSE_LEN 7
+static uint8_t g_pulsePayload[2][PULSE_LEN];
+static volatile bool g_pulsePending[2] = { false, false };
+// relayed haptic report ids already traced to the Deck log
+static uint8_t g_hapSeenRid[32];
+
+static void stagePulse(uint8_t side, uint16_t on_us, uint16_t off_us,
+		       uint16_t repeat)
+{
+	uint8_t *p = g_pulsePayload[side & 1];
+	p[0] = side & 1;
+	p[1] = (uint8_t)(on_us & 0xFF);
+	p[2] = (uint8_t)(on_us >> 8);
+	p[3] = (uint8_t)(off_us & 0xFF);
+	p[4] = (uint8_t)(off_us >> 8);
+	p[5] = (uint8_t)(repeat & 0xFF);
+	p[6] = (uint8_t)(repeat >> 8);
+	g_pulsePending[side & 1] = true;
+}
+
 void deckForwardHaptic(uint8_t rid, const uint8_t *d, uint8_t n)
 {
 	// Only while forwarding -- otherwise the Deck isn't grabbed and there's nothing to buzz.
 	if (!g_forwarding)
 		return;
+	// trace the first sample of each relayed haptic report id to the Deck log (which ones Steam uses)
+	if (!(g_hapSeenRid[rid >> 3] & (1 << (rid & 7)))) {
+		g_hapSeenRid[rid >> 3] |= (uint8_t)(1 << (rid & 7));
+		char line[64];
+		int k = snprintf(line, sizeof line,
+				 "# haptic rid=%02X n=%u:", rid, n);
+		for (uint8_t i = 0; i < n && i < 8 && k < (int)sizeof line - 4;
+		     i++)
+			k += snprintf(line + k, sizeof line - k, " %02X", d[i]);
+		deckText(line);
+	}
+	if (rid == 0x81 && n >= 7) {
+		// OUTPUT report 0x81 = HAPTIC_PULSE [side][on_us u16][off_us u16][repeat u16] -- Steam's trackpad
+		// CLICK and trigger full-pull cues -- passed through as-is. (0x81 in the FEATURE command space is
+		// CLEAR_DIGITAL_MAPPINGS, a different thing; this path only ever sees relayed OUTPUT reports.)
+		uint16_t on_us = (uint16_t)(d[1] | (d[2] << 8));
+		if (on_us)
+			stagePulse(d[0], on_us, (uint16_t)(d[3] | (d[4] << 8)),
+				   (uint16_t)(d[5] | (d[6] << 8)));
+		return;
+	}
+	if (rid == 0x82 || rid == 0x8F) {
+		// discrete haptic click with no timing of its own, data ~ [pad][type][gain] e.g. [01 01 F7]
+		// (gain F7=on, 00=off): a short click on that pad, or on both pads for any other pad value.
+		// Steam numbers the pads 0=left 1=right here, the Deck's pulse side is 0=right 1=left
+		// (verified on hardware: a left swipe sends pad 0), hence the flip.
+		bool on = (n >= 3) ? (d[2] != 0) : (n >= 1 && d[0] != 0);
+		if (on) {
+			if (n >= 3 && d[0] <= 1) {
+				stagePulse(d[0] ^ 1, 3000, 0, 1);
+			} else {
+				stagePulse(0, 3000, 0, 1);
+				stagePulse(1, 3000, 0, 1);
+			}
+		}
+		return;
+	}
 	uint16_t intensity = 0, left = 0, right = 0;
 	uint8_t lgain = 0, rgain = 0;
 	if (rid == 0x80 && n >= 9) {
@@ -181,23 +242,6 @@ void deckForwardHaptic(uint8_t rid, const uint8_t *d, uint8_t n)
 			lgain = d[5];
 			right = (uint16_t)(d[6] | (d[7] << 8));
 			rgain = d[8];
-		}
-	} else if (rid == 0x81 && n >= 3) {
-		// OUTPUT report 0x81 = HAPTIC_PULSE [side][on_us u16][off_us u16][repeat u16] -- Steam's trackpad
-		// CLICK and trigger full-pull cues. (0x81 in the FEATURE command space is CLEAR_DIGITAL_MAPPINGS,
-		// a different thing entirely; this path only ever sees relayed OUTPUT reports.) The Deck has no
-		// per-pad clicker, so synthesize a short mid-strength buzz on both motors.
-		if (d[1] || d[2]) { // on_us != 0
-			intensity = 0x6000;
-			left = right = 0x6000;
-		}
-	} else if (rid == 0x82 || rid == 0x8F) {
-		// discrete haptic click/pulse (data ~ [01 01 F7]; trailing byte F7=on, 00=off). The Deck has no
-		// per-pad clicker, so synthesize a short mid-strength buzz on both motors.
-		bool on = (n >= 3) ? (d[2] != 0) : (n >= 1 && d[0] != 0);
-		if (on) {
-			intensity = 0x6000;
-			left = right = 0x6000;
 		}
 	} else {
 		return; // not a haptic the Deck can render
@@ -216,6 +260,13 @@ void deckForwardHaptic(uint8_t rid, const uint8_t *d, uint8_t n)
 
 void deckHapticTask()
 {
+	// pulses are discrete clicks: flush as soon as they're staged (each side keeps only its newest)
+	for (int s = 0; s < 2; s++) {
+		if (g_pulsePending[s]) {
+			g_pulsePending[s] = false;
+			sendFrame(DECK_T_PULSE, g_pulsePayload[s], PULSE_LEN);
+		}
+	}
 	if (!g_hapPending)
 		return;
 	if (millis() - g_lastHapMs < HAPTIC_MIN_MS)
