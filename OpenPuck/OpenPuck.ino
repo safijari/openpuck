@@ -43,6 +43,7 @@ using namespace Adafruit_LittleFS_Namespace;
 #include "fault_diag.h"
 #include "fw_update.h"
 #include "usb_tx.h"
+#include "paddle_profiles.h"
 #include <stdio.h>
 
 #if CFG_TUD_HID < 4
@@ -152,6 +153,8 @@ void setup()
 #endif
 	loadCfg();
 	rfApplyStartupLastGoodChannel();
+	// after loadCfg: the active paddle profile lives in g_type[]
+	paddleProfilesLoad();
 	loadBonds();
 	// Lizard (desktop) keyboard/mouse binding table. Custom remapping applies ONLY in pure
 	// MODE_LIZARD: there we install the user's saved/editable map. In every other mode the
@@ -392,6 +395,8 @@ void loop()
 	faultDiagSetStage(6);
 	ledTask();
 	acc[6] += (uint32_t)(micros() - t);
+	paddleProfilesTask();
+	cfgSaveTask();
 #if OPK_PWR_SWITCH
 	pwrSwitchTask();
 #endif
@@ -435,6 +440,8 @@ void loop()
 	hapticTask();
 	faultDiagSetStage(6);
 	ledTask();
+	paddleProfilesTask();
+	cfgSaveTask();
 #if OPK_PWR_SWITCH
 	pwrSwitchTask();
 #endif

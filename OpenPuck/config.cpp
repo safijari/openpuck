@@ -1,6 +1,9 @@
 #include "config.h"
 #include "rf_link.h" // g_rxWin (poll RX window persisted here)
 #include "haptics.h" // g_hapticBlockOn, g_hapticBlockMs
+#include "paddle_profiles.h" // paddleProfilesSaveIfDirty()
+#include "input_idle.h" // inputIdleQuiet()
+#include <Arduino.h>
 #include <Adafruit_LittleFS.h>
 #include <InternalFileSystem.h>
 #include <string.h>
@@ -134,8 +137,31 @@ void cfgExtWrite(uint8_t index, uint8_t value)
 		g_cfgExt[index] = value;
 }
 
+static bool s_savePending = false;
+static unsigned long s_savePendingSinceMs = 0;
+
+void requestCfgSave()
+{
+	if (!s_savePending) {
+		s_savePending = true;
+		s_savePendingSinceMs = millis();
+	}
+}
+
+void cfgSaveTask()
+{
+	if (!s_savePending)
+		return;
+	if (!inputIdleQuiet() &&
+	    millis() - s_savePendingSinceMs < CFG_SAVE_MAX_DEFER_MS)
+		return;
+	saveCfg();
+}
+
 void saveCfg()
 {
+	// any save writes everything, so it also satisfies a pending request
+	s_savePending = false;
 	Cfg c = { CFG_MAGIC,
 		  g_usbMode,
 		  (uint8_t)g_mDiv,
@@ -168,6 +194,8 @@ void saveCfg()
 		f.write((uint8_t *)&c, sizeof c);
 		f.close();
 	}
+	// keep the paddle-profile file in step with every config save (mode switch, panel edit, deferred save)
+	paddleProfilesSaveIfDirty();
 }
 
 void loadCfg()
