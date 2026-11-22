@@ -11,6 +11,7 @@
 #include "mode_dinput.h"
 #include "mode_sinput.h"
 #include "mode_xbox_og.h"
+#include "mode_joycon2_ble.h"
 
 IController *g_active = nullptr;
 
@@ -51,6 +52,8 @@ IController *controllerFor(uint8_t mode)
 		return &g_sinputCtl;
 	case MODE_PS5_AUTH:
 		return &g_ps5AuthCtl;
+	case MODE_SW_JC2:
+		return &g_joycon2Ble;
 	default:
 		return &g_steamPuck;
 	}

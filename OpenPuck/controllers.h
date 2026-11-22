@@ -85,6 +85,16 @@ class IController {
 	{
 		(void)k;
 	}
+
+	// ---- Shared NRF_RADIO coexistence ----
+	// Modes that also drive a wireless host transport (e.g. BLE) share the
+	// sole NRF_RADIO peripheral with the 2.4 GHz Steam Controller ESB link.
+	// Override and return true while this mode owns NRF_RADIO and schedules
+	// ESB inside its radio idle gaps so loop() skips rfDiagTask()/rfLinkTask().
+	virtual bool pollRadioCoex()
+	{
+		return false;
+	}
 };
 
 // The singleton for a given mode (nullptr if the mode is unknown). Defined in controllers.cpp.

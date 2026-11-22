@@ -169,6 +169,8 @@ extern bool g_stabTest;
 void hapticStabTask();
 
 void rfConnQueueHapticRelay();
+bool hapticPopRelayPayload(int slot, uint8_t *out, uint8_t *outLen,
+			   uint8_t maxLen);
 // returns true if a relay frame was actually transmitted this call (queue had an entry), so the poll loop can
 // count relay TXs separately from poll cycles.
 bool rfConnFlushRelay(uint8_t ch, uint8_t s1);
