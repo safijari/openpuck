@@ -23,8 +23,9 @@
 // degraded/latched state (slow/stuck/missing haptics until a re-init). Runtime-adjustable (g_hapticBlockMs) and
 // toggleable (g_hapticBlockOn) from the WebUSB panel; this is the boot default.
 #define HAPTIC_BLOCK_MS_DEFAULT 10000u
-// max relayed payload bytes per entry: RF frame = [E3][len][05][rid][payload] and MAXLEN=64 -> 60
-#define RELAY_MAXP 60u
+// max relayed payload bytes per entry: RF frame = [E3][len][05][rid][payload] (up to 67 B for 63-byte
+// 0x88 PCM grip haptics; radio PCNF1 MAXLEN=96 and rftx[100] easily hold it)
+#define RELAY_MAXP 63u
 // Controller power-off: hapticSendShutdown() relays Steam's confirmed "turn off controller" command (feature-0x01
 // cmd 0x9F, payload "off!" -- captured from the real puck). Sent as a small burst because the RF relay is NO-ACK.
 #define HAPTIC_SHUTDOWN_SHOTS 3u

@@ -329,11 +329,11 @@ joins/departures do not change its USB layout or trigger re-enumeration.
   the same command, leaving the controller buzzing; suppressing them keeps the lizard state clean. The
   same gate applies during the post-resume input mute (`POST_RESUME_MUTE_MS`): Steam can't read `0x45`
   back in that window either, so a wake-time haptic would loop identically.
-- **Which OUTPUT reports are relayed**: the haptic/actuator reports `0x80`–`0x86` are forwarded to the
-  **connected slot only** (the slot gate is what stops a haptic aimed at another of the four exposed
-  slots from buzzing the single controller). The 63-byte settings/config reports `0x87`/`0x88`/`0x89`
-  are not haptics and are not pushed on this path (`0x87` lizard-off reaches the controller via the
-  feature `0x01` passthrough). Steam owns `IMU_MODE` in native puck mode. Switch Pro mode instead writes
+- **Which OUTPUT reports are relayed**: the haptic/actuator reports `0x80`–`0x86` and `0x88` (63-byte
+  mu-law grip PCM audio) are forwarded to the **connected slot only** (the slot gate is what stops a
+  haptic aimed at another of the four exposed slots from buzzing the single controller). The 63-byte
+  settings/config reports `0x87`/`0x89` are not haptics and are not pushed on this path (`0x87` lizard-off
+  reaches the controller via the feature `0x01` passthrough). Steam owns `IMU_MODE` in native puck mode. Switch Pro mode instead writes
   raw accelerometer + gyroscope (`0x18`) when the RF link comes up because the controller retains Steam's
   IMU-off state across pucks. Restricting haptics to `0x82` alone silently dropped the ping/grip/test
   haptics, which use other report IDs.
@@ -353,8 +353,9 @@ from the feature-`0x01` **command** space even though the numbers overlap. Groun
 | `0x83` | `HAPTIC_LFO_TONE` `[side][gain_db][freq u16][dur u16][lfo_freq u16][lfo_depth]` | 9 | `GET_ATTRIBUTES_VALUES` |
 | `0x84` | `HAPTIC_LOG_SWEEP` `[side][gain_db][dur u16][start u16][end u16]` | 8 | `GET_ATTRIBUTE_LABEL` |
 | `0x85` | `HAPTIC_SCRIPT` `[side][script_id][gain_db]` | 3 | `SET_DEFAULT_DIGITAL_MAPPINGS` |
-| `0x86` | (unnamed) | 3 | `FACTORY_RESET` |
-| `0x87`+ | 63-byte settings/config | 63 | `SET_SETTINGS_VALUES` … |
+| `0x86` | `HAPTIC_PCM_MODE` `[op][channel][format]` | 3 | `FACTORY_RESET` |
+| `0x87`/`0x89` | 63-byte settings/config | 63 | `SET_SETTINGS_VALUES` … |
+| `0x88` | `HAPTIC_PCM_AUDIO` `[samples=31][left 31B][right 31B]` (mu-law) | 63 | — |
 
 
 ### 9.2 Xbox mode

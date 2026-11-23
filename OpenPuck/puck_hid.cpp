@@ -239,10 +239,11 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 	// report space (ValveTritonOutReportMessageIDs, SDL steam/controller_structs.h; the ids match this
 	// interface's descriptor payload sizes exactly):
 	//   0x80 HAPTIC_RUMBLE(9)  0x81 HAPTIC_PULSE(7)   0x82 HAPTIC_COMMAND(3)
-	//   0x83 HAPTIC_LFO_TONE(9) 0x84 HAPTIC_LOG_SWEEP(8) 0x85 HAPTIC_SCRIPT(3)  0x86 (3, unnamed)
+	//   0x83 HAPTIC_LFO_TONE(9) 0x84 HAPTIC_LOG_SWEEP(8) 0x85 HAPTIC_SCRIPT(3)  0x86 PCM_MODE(3)
+	//   0x88 HAPTIC_PCM_AUDIO(63) -- 31 left + 31 right mu-law grip samples (LiveHaptics / RenHDrum)
 	// These ids are NOT the feature-0x01 command ids (controller_constants.h) -- same numbers, different
 	// meanings -- so a rule written for one channel must never be applied to the other.
-	// The 63-byte settings/config reports 0x87/0x88/0x89 are NOT haptics and reach the controller via the
+	// The 63-byte settings/config reports 0x87/0x89 are NOT haptics and reach the controller via the
 	// feature-0x01 passthrough path instead.
 	if (type == HID_REPORT_TYPE_OUTPUT) {
 		if (rid >= 0x80 && rid <= 0x89) {
@@ -269,7 +270,8 @@ static void handleSet(int slot, uint8_t rid, hid_report_type_t type,
 		// (issues #163 / #166): "Soft Press" survived because it rides 0x82 ID_OUT_REPORT_HAPTIC_COMMAND,
 		// while every pulse-based click was thrown away. Pulses are self-terminating (repeat_count in the
 		// payload), so there is no latch to strand and no stop frame to lose.
-		if (g_hapticRelay && rid >= 0x80 && rid <= 0x86 && n >= 1 &&
+		if (g_hapticRelay &&
+		    ((rid >= 0x80 && rid <= 0x86) || rid == 0x88) && n >= 1 &&
 		    hapticRelaySlotOk(slot) && !lizardActive() && !muted) {
 			if (!haptic82Blocked(slot)) {
 				relayEnqueue(rid, b,
