@@ -53,6 +53,13 @@
 // all four back paddles held -> mode-switch chord guard
 #define CHORD_BACK4 (TB_R4 | TB_L4 | TB_R5 | TB_L5)
 
+// back4 + both full trigger pulls + A + D-pad down, held 3 s -> reboot into the bootloader. A trigger pull
+// also suppresses the back4 mode-switch chords, so the A / D-pad down in this chord can't trip Steam mode or
+// the D-pad-down mode on the way in.
+#define CHORD_TRIGGERS (TB_L2 | TB_R2)
+#define CHORD_DFU (CHORD_BACK4 | CHORD_TRIGGERS | TB_A | TB_DDN)
+#define CHORD_DFU_HOLD_MS 3000u
+
 // analog-trigger fraction (of 0xFF) at which digital ZL/ZR (Switch) etc. trip
 #define SW_TRIG_ON 40
 

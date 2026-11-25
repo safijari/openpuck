@@ -47,6 +47,10 @@ Similarly you can hold all 4 back buttons and press Y to switch (teehee) over to
 | WebUSB panel → mode 12 | SInput (SDL-native) | Sticks + analog triggers + gyro + both trackpads + battery |
 | WebUSB panel → mode 13 | PS5 console (auth adapter) | Real PS5 via a P5General auth adapter on a MAX3421E; extra hardware, see [docs/PS5_AUTH.md](docs/PS5_AUTH.md) |
 
+**Bootloader chord:** hold all 4 back buttons, both triggers (fully pulled), A and D-pad down for 3
+seconds. The LED blinks 5 times and the puck reboots into its bootloader for flashing, the same as
+double-tapping reset. Pull the triggers before pressing A, since back-4 + A alone switches to Steam mode.
+
 **DirectInput mode** exists because Steam Input funnels everything through XInput, so only a handful of the
 controller's analog inputs can be live at once — a problem for flight and space sims, which bind axes through
 DirectInput. DirectInput itself caps a device at 8 axes, so this mode presents the controller as **two**
