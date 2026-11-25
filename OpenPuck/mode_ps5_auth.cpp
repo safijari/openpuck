@@ -138,6 +138,12 @@ static uint8_t s_plain[P5_REPORT_LEN];
 static bool s_hashInFlight = false;
 static uint32_t s_hashMs = 0, s_lastSendMs = 0, s_ledMs = 0;
 
+// Signing latency stats for the 0xEE diagnostic, in us, reset on every read: adapter round trip
+// (send -> signed copy back) and the longest gap between task() calls (how promptly the host is serviced).
+static uint32_t s_sendUs, s_taskUs;
+static volatile uint32_t s_rttMin = 0xFFFFFFFF, s_rttMax, s_rttSum, s_rttN,
+			 s_taskGapMax;
+
 static int p5ActiveSlot()
 {
 	unsigned long now = millis();
@@ -315,7 +321,17 @@ static uint16_t p5GetReport(uint8_t rid, hid_report_type_t type, uint8_t *buf,
 		buf[5] = s_oscIrq;
 		buf[6] = s_oscOk;
 		buf[7] = s_oscOk2;
-		return 8;
+		if (reqlen < 28)
+			return 8;
+		{
+			uint32_t st[5] = { s_rttN, s_rttN ? s_rttMin : 0,
+					   s_rttN ? s_rttSum / s_rttN : 0,
+					   s_rttMax, s_taskGapMax };
+			memcpy(buf + 8, st, sizeof st);
+			s_rttMin = 0xFFFFFFFF;
+			s_rttMax = s_rttSum = s_rttN = s_taskGapMax = 0;
+		}
+		return 28;
 	default:
 		return 0;
 	}
@@ -413,6 +429,13 @@ void tuh_hid_report_received_cb(uint8_t dev, uint8_t inst,
 		return;
 	// The adapter's only input report is the signed copy of what we sent; byte 0 is its report id.
 	if (s_hashInFlight && len == P5_REPORT_LEN && report[0] == 0x01) {
+		uint32_t rtt = micros() - s_sendUs;
+		if (rtt < s_rttMin)
+			s_rttMin = rtt;
+		if (rtt > s_rttMax)
+			s_rttMax = rtt;
+		s_rttSum += rtt;
+		s_rttN++;
 		usbTxHid(&g_p5, report[0], report + 1, len - 1);
 		s_hashInFlight = false;
 	}
@@ -586,13 +609,23 @@ static void p5SignStep()
 			return;
 		s_hashInFlight = false;
 	}
-	if (now - s_lastSendMs < USB_STREAM_MS ||
+	// Sign a report as soon as a new controller frame lands (each carries a fresh IMU timestamp, so the
+	// struct always differs) instead of on a free-running 4 ms tick, which added up to 4 ms of wait on
+	// top of the adapter's ~2 ms signing round trip. The tick stays as the keep-alive for an idle link.
+	static PuckInput lastIn[NSLOT];
+	int slot = p5ActiveSlot();
+	bool fresh = slot >= 0 &&
+		     memcmp(&g_in[slot], &lastIn[slot], sizeof(PuckInput)) != 0;
+	if ((!fresh && now - s_lastSendMs < USB_STREAM_MS) ||
 	    !tuh_hid_send_ready(s_dev, s_inst))
 		return;
-	p5Build(p5ActiveSlot(), s_plain);
+	if (slot >= 0)
+		lastIn[slot] = g_in[slot];
+	p5Build(slot, s_plain);
 	if (tuh_hid_send_report(s_dev, s_inst, 0, s_plain, P5_REPORT_LEN)) {
 		s_hashInFlight = true;
 		s_hashMs = s_lastSendMs = now;
+		s_sendUs = micros();
 	}
 }
 
@@ -698,6 +731,10 @@ static void p5HostStart()
 
 void Ps5AuthController::task()
 {
+	uint32_t nowUs = micros();
+	if (s_taskUs && nowUs - s_taskUs > s_taskGapMax)
+		s_taskGapMax = nowUs - s_taskUs;
+	s_taskUs = nowUs;
 	p5Led();
 	p5CapSave();
 	if (!s_stage && millis() >= P5_HOST_START_MS)
