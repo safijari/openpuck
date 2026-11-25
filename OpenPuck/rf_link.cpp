@@ -3319,6 +3319,37 @@ bool rfRecoveryRequestHop(uint8_t channel)
 	       !g_rfChHandoffManualImmediate;
 }
 
+// Bootloader chord (CHORD_DFU held CHORD_DFU_HOLD_MS): blink the user LED 5 times, then reboot into the UF2 /
+// serial-DFU bootloader, so a puck in a panel-less console mode can be reflashed without a reset-pin tap.
+static void chordDfuCheck(uint8_t slot)
+{
+	static unsigned long since[NSLOT];
+	if ((g_in[slot].buttons & CHORD_DFU) != CHORD_DFU) {
+		since[slot] = 0;
+		return;
+	}
+	unsigned long now = millis();
+	if (!since[slot]) {
+		since[slot] = now ? now : 1;
+		return;
+	}
+	if (now - since[slot] < CHORD_DFU_HOLD_MS)
+		return;
+	pinMode(WAKE_LED_PIN_A, OUTPUT);
+	pinMode(WAKE_LED_PIN_B, OUTPUT);
+	for (int i = 0; i < 5; i++) {
+		digitalWrite(WAKE_LED_PIN_A, WAKE_LED_ON);
+		digitalWrite(WAKE_LED_PIN_B, WAKE_LED_ON);
+		delay(150);
+		digitalWrite(WAKE_LED_PIN_A, !WAKE_LED_ON);
+		digitalWrite(WAKE_LED_PIN_B, !WAKE_LED_ON);
+		delay(150);
+		NRF_WDT->RR[0] = WDT_RR_RR_Reload;
+	}
+	faultDiagArmIntentionalReset();
+	enterUf2Dfu();
+}
+
 // TX one connected packet [LEN][S1][payload] on channel ch, then RX the reply into rfrx; decodes 0xF1.
 // rxWinUs overrides the reply-wait window (0 = use g_rxWin). Pass a tiny value for NO-ACK relays that expect
 // no reply, so they don't burn a full ~1.2ms window of dead air per haptic. Per-slot: the connected poll runs
@@ -3892,9 +3923,12 @@ uint8_t rfConnTx(uint8_t ch, uint8_t s1, const uint8_t *payload, uint8_t plen,
 					};
 					static uint8_t chCnt[NSLOT] = { 0, 0, 0,
 									0 };
+					chordDfuCheck(g_curSlot);
 					uint8_t want = 0xFF;
 					if ((g_in[g_curSlot].buttons &
-					     CHORD_BACK4) == CHORD_BACK4) {
+					     CHORD_BACK4) == CHORD_BACK4 &&
+					    !(g_in[g_curSlot].buttons &
+					      CHORD_TRIGGERS)) {
 						if (g_in[g_curSlot].buttons &
 						    TB_A)
 							want = MODE_STEAM;
